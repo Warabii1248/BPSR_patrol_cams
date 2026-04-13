@@ -42,7 +42,7 @@ type Config struct {
 	MumuClearLength int `json:"mumu_clear_length"`
 	// MumuPreKeycode はタップ前に送るキーコード
 	MumuPreKeycode string `json:"mumu_pre_keycode"`
-	// MumuDelayMs は各ADBコマンド間のウェイト(ms)。デフォルト: 800
+	// MumuDelayMs は各ADBコマンド間のウェイト(ms)。デフォルト: 1200
 	MumuDelayMs int `json:"mumu_delay_ms"`
 
 	// --- チャンネル巡回設定 ---
@@ -50,7 +50,7 @@ type Config struct {
 	// PatrolChannelsFile はチャンネルリストファイルのパス。デフォルト: "channels.txt"
 	PatrolChannelsFile string `json:"patrol_channels_file"`
 
-	// PatrolDwellSecs はch移動完了後〜次ch移動開始までの待機秒数。デフォルト: 60
+	// PatrolDwellSecs はch移動完了後〜次ch移動開始までの待機秒数。デフォルト: 10
 	PatrolDwellSecs float64 `json:"patrol_dwell_secs"`
 
 	// PatrolMoveTimeoutSecs は1台目の[0x2E]パケットを待つ最大秒数。
@@ -112,16 +112,16 @@ func defaultConfig() *Config {
 		MumuTapY:               664,
 		MumuClearLength:        3,
 		MumuPreKeycode:         "KEYCODE_P",
-		MumuDelayMs:            800,
+		MumuDelayMs:            1200,
 		ParallelLimit:             0,
 		ParallelGroupDelaySecs:    0,
 		PatrolChannelsFile:        "channels.txt",
-		PatrolDwellSecs:           60,
+		PatrolDwellSecs:           10,
 		PatrolMoveTimeoutSecs:     30,
 		PatrolMergeTimeoutSecs:    15,
 		ActiveDeviceCount:         0,
 		FullThreshold:             0.0, // 0=従来通り全台
-		ConsecutiveFullThreshold:  5,   // 5連続満員でクラッシュ判定
+		ConsecutiveFullThreshold:  3,   // 3連続満員でクラッシュ判定
 		SceneMapIds: map[string]uint32{
 			"阿斯特里亚平原": 7, // アステリア平原
 		},
@@ -171,7 +171,7 @@ func Load(path string) (*Config, error) {
 		cfg.MumuPreKeycode = "KEYCODE_P"
 	}
 	if cfg.MumuDelayMs == 0 {
-		cfg.MumuDelayMs = 800
+		cfg.MumuDelayMs = 1200
 	}
 	// ParallelLimit: 0は有効値（無制限）なのでデフォルト補正しない
 	// 旧フィールド parallel_group_delay_ms からの移行
