@@ -479,7 +479,7 @@ func (s *Server) RunWindow(ctx context.Context) error {
 	w := webview.NewWithOptions(webview.WebViewOptions{
 		Debug: false,
 		WindowOptions: webview.WindowOptions{
-			Title:  "LoyalBoarlet Monitor",
+			Title:  "BPSR_patrol_cams",
 			Width:  1000,
 			Height: 720,
 			Center: true,
@@ -1059,591 +1059,408 @@ const indexHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LoyalBoarlet Monitor</title>
+<title>BPSR_patrol_cams</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0a0a1a;color:#eaeaea;font-family:'Segoe UI',sans-serif;font-size:14px;height:100vh;width:100vw;overflow:hidden;display:flex;flex-direction:column}
-.panel-header,.panel-btn,.panel-resizer,.splitter-h{user-select:none}
-h1{font-size:1.1em;padding:6px 12px;background:#0d1b33;border-bottom:1px solid #1a3a6a;display:flex;align-items:center;gap:8px;height:36px;flex-shrink:0}
-button{background:#1a3a6a;color:#eaeaea;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.88em;transition:background .15s}
-button:hover{background:#2a5aa0}
-button:disabled{opacity:.4;cursor:default}
-button.green{background:#1b5e20}
-button.green:hover{background:#2e7d32}
-button.secondary{background:#1a2a3a}
-button.secondary:hover{background:#2a3a4a}
-button.toggle-btn{padding:5px 12px;font-size:0.85em}
-button.toggle-btn.active{background:#1565c0}
-button.toggle-btn.active:hover{background:#1976d2}
-input[type=text],input[type=number],textarea,select{background:#0f3460;color:#eaeaea;border:1px solid #334466;border-radius:4px;padding:5px 8px;font-size:0.88em}
-input[type=checkbox]{accent-color:#e94560;width:16px;height:16px}
-.flex-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-/* ─── Layout ─── */
-#workspace{display:flex;flex-direction:row;flex:1;overflow:hidden;min-height:0;width:100%}
-.panel-col{display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;min-width:200px;min-height:0}
-.splitter-h{width:5px;background:#1a3a6a;cursor:col-resize;flex-shrink:0}
-.splitter-h:hover,.splitter-h.active{background:#2a7ae0}
-/* ─── Panel ─── */
-.panel{display:flex;flex-direction:column;background:#0d1b33;border:1px solid #1a3a6a;border-radius:6px;margin:3px;overflow:hidden;transition:none;flex-shrink:0}
-.panel.flexible{flex-shrink:1;min-height:120px}
-.panel.minimized{flex:none!important;flex-shrink:0!important}
-.panel-header{display:flex;align-items:center;gap:6px;padding:5px 10px;background:#111e38;border-bottom:1px solid #1a3a6a;cursor:grab;flex-shrink:0;height:32px;border-radius:5px 5px 0 0}
-.panel-header:active{cursor:grabbing}
-.panel.minimized .panel-header{border-bottom:none;border-radius:5px}
-.panel-title{font-size:0.85em;font-weight:bold;flex:1;pointer-events:none;white-space:nowrap}
-.panel-btn{background:none;border:none;color:#aaa;cursor:pointer;padding:2px 6px;font-size:1em;border-radius:3px;line-height:1}
-.panel-btn:hover{background:#2a3a5a;color:#fff}
-.panel-body{flex:1;overflow-y:auto;padding:10px;min-height:0;flex-shrink:1}
-.panel.minimized .panel-body{display:none!important}
-.panel-resizer{height:5px;background:transparent;cursor:row-resize;flex-shrink:0;transition:background .15s}
-.panel-resizer:hover,.panel-resizer.active{background:#2a7ae0}
-/* Drop indicator */
-.drop-indicator{display:none;position:fixed;background:rgba(42,122,224,.3);border:2px dashed #2a7ae0;border-radius:4px;pointer-events:none;z-index:999}
-.drop-indicator.visible{display:block}
-/* Content */
-.device-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
-.device-entry{background:#0d0d1a;border-radius:6px;padding:8px 10px}
-.device-entry .serial{color:#7ec8e3;font-family:monospace;font-size:0.85em}
-.device-entry .uid{color:#a0a0b0;font-size:0.8em}
-.device-entry.matched .uid{color:#ffd700}
-.no-devices{color:#606080;font-size:0.85em;padding:4px 0}
-.log-area{flex:1;background:#0a0a14;overflow-y:auto;padding:8px;font-family:monospace;font-size:0.8em;min-height:0}
-.log-line{color:#b0b0c0;padding:1px 0;white-space:pre-wrap;word-break:break-all}
-.log-line.detect{color:#ffd700;font-weight:bold}
-#status-bar{color:#4caf50;font-size:0.82em}
-.patrol-status{background:#090f20;border-radius:4px;padding:6px 10px;font-size:0.82em;margin-bottom:6px}
-.patrol-status span{margin-right:12px}
-.patrol-status .running{color:#4caf50;font-weight:bold}
-.patrol-status .stopped{color:#888}
-.ch-editor{display:flex;flex-direction:column;gap:4px;max-height:150px;overflow-y:auto;margin-bottom:6px}
-.ch-row{display:flex;gap:6px;align-items:center;background:#0d0d1a;border-radius:4px;padding:4px 8px}
-.ch-row .ch-num{color:#7ec8e3;font-family:monospace;font-size:0.9em;min-width:24px;text-align:right}
+:root{
+  --bg0:#0d1018;--bg1:#141926;--bg2:#1b2232;--bg3:#222a3d;
+  --accent:#5b9cf6;--accent2:#3dd68c;--warn:#f5a623;--danger:#e94b4b;
+  --text1:#eef0f6;--text2:#c0cbdf;--text3:#8a96b4;
+  --border:#283044;--radius:8px;--radius-lg:12px;
+}
+body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;font-size:13px;line-height:1.5;height:100vh;overflow:hidden}
+.app{display:grid;grid-template-rows:44px 1fr;grid-template-columns:210px 1fr;height:100vh}
+/* Titlebar */
+.titlebar{grid-column:1/-1;background:var(--bg1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;padding:0 16px;}
+.logo{width:22px;height:22px;background:var(--accent);border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.titlebar .title{font-size:13px;font-weight:500;color:var(--text1);letter-spacing:.3px}
+.titlebar .version{font-size:11px;color:var(--text3);margin-left:2px}
+.titlebar .status-dot{width:7px;height:7px;border-radius:50%;background:var(--accent2);margin-left:auto;box-shadow:0 0 6px var(--accent2);transition:background .3s,box-shadow .3s}
+.titlebar .status-dot.stopped{background:var(--text3);box-shadow:none}
+.titlebar .status-lbl{font-size:11px;font-weight:500;color:var(--accent2);margin-left:5px;transition:color .3s}
+.titlebar .status-lbl.stopped{color:var(--text3);font-weight:400}
+/* Sidebar */
+.sidebar{background:var(--bg1);border-right:1px solid var(--border);padding:10px 0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;}
+.nav-section{padding:8px 14px 3px;font-size:10px;font-weight:500;color:var(--text3);letter-spacing:.8px;text-transform:uppercase}
+.nav-item{display:flex;align-items:center;gap:9px;padding:7px 14px;cursor:pointer;color:var(--text1);border-left:2px solid transparent;transition:all .15s;font-size:13px;user-select:none;}
+.nav-item:hover{background:var(--bg2);color:var(--text1)}
+.nav-item.active{background:var(--bg2);color:var(--accent);border-left-color:var(--accent)}
+.nav-icon{width:14px;height:14px;flex-shrink:0;opacity:.9}
+.nav-badge{margin-left:auto;background:var(--danger);color:#fff;font-size:9px;padding:1px 5px;border-radius:9px;font-weight:600}
+.nav-badge.ok{background:var(--accent2)}
+/* Main */
+.main{background:var(--bg0);overflow:hidden;padding:12px;display:flex;flex-direction:column;min-height:0}
+.view{display:none;flex-direction:column;gap:10px;flex:1;min-height:0}
+.view.active{display:flex}
+#view-dashboard{overflow-y:auto}
+/* Card */
+.card{background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px}
+.card-title{font-size:10px;font-weight:600;color:var(--text2);letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:7px}
+/* Stats */
+.status-grid{display:grid;gap:8px}
+.stat{background:var(--bg2);border-radius:var(--radius);padding:10px 12px;border:1px solid var(--border)}
+.stat-label{font-size:10px;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+.stat-value{font-size:20px;font-weight:500;color:var(--text1)}
+.stat-sub{font-size:10px;color:var(--text3);margin-top:2px}
+.stat-value.ok{color:var(--accent2)}
+.stat-value.warn{color:var(--warn)}
+/* Layout helpers */
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.col{display:flex;flex-direction:column;gap:10px}
+.flex-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+/* Device row (dashboard summary) */
+.device-row{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg2);border-radius:var(--radius);border:1px solid var(--border);margin-bottom:6px}
+.device-icon{width:28px;height:28px;border-radius:6px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+.device-info{flex:1;min-width:0}
+.device-name{font-size:12px;font-weight:500;color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.device-sub{font-size:10px;color:var(--text2)}
+.device-badge{font-size:10px;padding:2px 8px;border-radius:9px;font-weight:500;flex-shrink:0}
+.device-badge.connected{background:rgba(56,201,122,.15);color:var(--accent2);border:1px solid rgba(56,201,122,.3)}
+.device-badge.offline{background:rgba(233,75,75,.15);color:var(--danger);border:1px solid rgba(233,75,75,.3)}
+/* Device list (full view) */
+.device-list{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+.device-entry{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:7px 9px;transition:border-color .15s}
+.device-entry:hover{border-color:var(--text3)}
+.device-entry .serial{color:var(--accent);font-family:monospace;font-size:.88em}
+.device-entry .uid{color:var(--text3);font-size:.82em}
+.device-entry.matched .uid{color:var(--warn)}
+.no-devices{color:var(--text2);font-size:.85em;padding:4px 0}
+/* Buttons */
+button,.btn{background:var(--bg2);border:1px solid var(--border);color:var(--text1);border-radius:var(--radius);padding:5px 10px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .15s;white-space:nowrap;font-family:inherit;}
+button:hover,.btn:hover{background:var(--bg3);color:var(--text1);border-color:var(--text3)}
+button:disabled,.btn:disabled{opacity:.35;cursor:default}
+button.green,.btn.success{background:rgba(56,201,122,.15);border-color:rgba(56,201,122,.3);color:var(--accent2)}
+button.green:hover,.btn.success:hover{background:rgba(56,201,122,.25)}
+.btn.primary{background:rgba(79,142,247,.15);border-color:rgba(79,142,247,.4);color:var(--accent)}
+.btn.primary:hover{background:rgba(79,142,247,.25)}
+.btn.danger{background:rgba(233,75,75,.1);border-color:rgba(233,75,75,.3);color:var(--danger)}
+.btn.danger:hover{background:rgba(233,75,75,.2)}
+button.toggle-btn,.btn.toggle-btn{padding:4px 10px;font-size:11px}
+button.toggle-btn.active,.btn.toggle-btn.active,.btn.active{background:rgba(79,142,247,.15);border-color:rgba(79,142,247,.4);color:var(--accent)}
+.btn-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+input[type=text],input[type=number],textarea,select{
+  background:var(--bg2);color:var(--text1);
+  border:1px solid var(--border);border-radius:var(--radius);
+  padding:4px 8px;font-size:11px;font-family:inherit;outline:none;transition:border-color .15s;
+}
+input[type=text]:focus,input[type=number]:focus,textarea:focus,select:focus{
+  border-color:rgba(79,142,247,.5);box-shadow:0 0 0 2px rgba(79,142,247,.12);
+}
+input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
+/* Log */
+.log-area{background:var(--bg0);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;padding:6px 8px;font-family:'Consolas',monospace;font-size:11px;display:flex;flex-direction:column;gap:1px;min-height:0}
+.log-area.full{flex:1;max-height:none}
+.log-line{display:flex;gap:7px;align-items:flex-start;padding:2px 2px;border-radius:3px}
+.log-line:hover{background:var(--bg2)}
+.log-time{color:var(--text3);flex-shrink:0;min-width:52px;font-size:10px;padding-top:2px}
+.log-tag{flex-shrink:0;font-size:9px;padding:2px 5px;border-radius:3px;font-weight:600;min-width:42px;text-align:center;margin-top:1px}
+.log-tag.info{background:rgba(79,142,247,.15);color:var(--accent)}
+.log-tag.ok{background:rgba(56,201,122,.15);color:var(--accent2)}
+.log-tag.warn{background:rgba(245,166,35,.15);color:var(--warn)}
+.log-tag.err{background:rgba(233,75,75,.15);color:var(--danger)}
+.log-msg{color:var(--text1);flex:1;word-break:break-all;line-height:1.5;white-space:pre-wrap}
+.log-line.detect .log-msg{color:var(--warn);font-weight:500}
+/* Log filter chips */
+.chip-row{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
+.chip{background:var(--bg2);border:1px solid var(--border);border-radius:99px;padding:3px 9px;font-size:10px;color:var(--text2);cursor:pointer;transition:all .15s;}
+.chip.active{background:rgba(79,142,247,.15);border-color:rgba(79,142,247,.4);color:var(--accent)}
+.chip:hover{color:var(--text1);border-color:var(--text3)}
+/* Patrol */
+.patrol-status{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:.82em;margin-bottom:8px}
+.patrol-status span{margin-right:10px}
+.patrol-status .running{color:var(--accent2);font-weight:bold}
+.patrol-status .stopped{color:var(--text3)}
+.ch-editor{display:flex;flex-direction:column;gap:3px;max-height:180px;overflow-y:auto;margin:6px 0}
+.ch-row{display:flex;gap:5px;align-items:center;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;transition:border-color .15s}
+.ch-row:hover{border-color:var(--text3)}
+.ch-row .ch-num{color:var(--accent);font-family:monospace;font-size:.9em;min-width:24px;text-align:right}
+/* Gold table */
+.gold-table{width:100%;border-collapse:collapse;font-size:.82em;table-layout:fixed}
+.gold-table th{color:var(--warn);text-align:left;padding:4px 8px;border-bottom:1px solid rgba(245,166,35,.2);white-space:nowrap;position:sticky;top:0;background:var(--bg1);z-index:1;font-size:.88em;font-weight:500}
+.gold-table col.col-time{width:90px}.gold-table col.col-ch{width:46px}.gold-table col.col-name{width:110px}
+.gold-table td{padding:4px 8px;border-bottom:1px solid var(--border);vertical-align:middle;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gold-table tr:hover td{background:var(--bg2)}
+.gold-table .ch-cell{color:var(--accent);font-family:monospace;font-weight:bold}
+.gold-table .time-cell{color:var(--text3);font-size:.85em}
+.gold-table .name-cell{color:var(--warn)}
+.no-history{color:var(--text2);font-size:.85em;padding:8px 0}
+#gold-history-container{max-height:160px;overflow-y:auto}
+/* Config */
 .cfg-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px}
 .cfg-field{display:flex;flex-direction:column;gap:3px}
-.cfg-field label{color:#a0a0b0;font-size:0.82em}
+.cfg-field label{color:var(--text1);font-size:.82em;font-weight:500}
 .cfg-field input{width:100%}
 .cfg-save-bar{display:flex;gap:8px;align-items:center;margin-top:10px}
-.cfg-note{font-size:0.75em;color:#606080;margin-top:4px}
-.check-label{display:flex;align-items:center;gap:6px;cursor:pointer;color:#eaeaea}
-.section-title{font-size:0.8em;color:#7ec8e3;font-weight:bold;margin:10px 0 4px;border-bottom:1px solid #1a3a6a;padding-bottom:3px}
-.gold-table{width:100%;border-collapse:collapse;font-size:0.82em;table-layout:fixed}
-.gold-table th{color:#ffd700;text-align:left;padding:3px 8px;border-bottom:1px solid #1a3a6a;white-space:nowrap;position:sticky;top:0;background:#0d1b33;z-index:1}
-.gold-table col.col-time{width:90px}
-.gold-table col.col-ch{width:46px}
-.gold-table col.col-name{width:110px}
-.gold-table td{padding:3px 8px;border-bottom:1px solid #0d1530;vertical-align:middle;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.gold-table tr:hover td{background:#111e38}
-.gold-table .ch-cell{color:#7ec8e3;font-family:monospace;font-weight:bold}
-.gold-table .time-cell{color:#a0a0b0;font-size:0.85em}
-.gold-table .name-cell{color:#ffd700}
-.no-history{color:#606080;font-size:0.85em;padding:8px 0}
-#gold-history-container{max-height:110px;overflow-y:auto}
-/* ログフィルター */
-.log-filter-bar{display:flex;flex-wrap:wrap;gap:4px;padding:5px 8px;border-bottom:1px solid #1a3a6a;flex-shrink:0;background:#090f20}
-.log-filter-bar button{padding:2px 8px;font-size:0.75em;border-radius:10px;background:#1a2a3a;color:#a0a0b0;border:1px solid #334466}
-.log-filter-bar button.on{background:#1565c0;color:#fff;border-color:#2a7ae0}
-/* クラッシュ警告 */
-.crash-warning{display:none;background:#4a0000;border:1px solid #e57373;border-radius:4px;padding:5px 10px;font-size:0.8em;color:#ef9a9a;margin-bottom:6px}
+.cfg-note{font-size:.75em;color:var(--text3);margin-top:3px}
+.section-title{font-size:.78em;color:var(--accent);font-weight:500;margin:10px 0 5px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:4px}
+.check-label{display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text1)}
+/* Chat */
+.chat-toolbar{padding:5px 10px;border-bottom:1px solid var(--border);background:var(--bg1);display:flex;align-items:center;gap:8px;font-size:12px;flex-shrink:0;}
+.chat-msg{padding:5px 10px;border-bottom:1px solid var(--border);line-height:1.5;transition:background .15s;font-size:.82em}
+.chat-msg:hover{background:var(--bg2)}
+/* Crash warning */
+.crash-warning{display:none;background:rgba(233,75,75,.1);border:1px solid rgba(233,75,75,.3);border-radius:var(--radius);padding:6px 10px;font-size:.8em;color:var(--danger);margin-bottom:6px}
+/* Scrollbar */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--text3)}
+input[type=text],input[type=number],textarea,select{background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;font-size:11px;font-family:inherit;outline:none;transition:border-color .15s;}
+input[type=text]:focus,input[type=number]:focus,textarea:focus,select:focus{border-color:rgba(79,142,247,.5);box-shadow:0 0 0 2px rgba(79,142,247,.12);}
+input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 </style>
 </head>
 <body>
-<h1>🐗 LoyalBoarlet Monitor</h1>
-<div id="workspace">
-  <!-- 左カラム -->
-  <div class="panel-col" id="col-left" style="flex:1.3">
-    <div class="panel" id="panel-devices">
-      <div class="panel-header" draggable="true" data-panel="panel-devices">
-        <span class="panel-title">📱 デバイス一覧 &amp; 手動切替</span>
-        <button class="panel-btn panel-min-btn" onclick="minimizePanel('panel-devices')" title="最小化">─</button>
-      </div>
-      <div class="panel-body">
-        <div class="flex-row">
-          <button onclick="refreshDevices()">🔄 再取得</button>
-          <label>一括 Ch:</label>
-          <input type="number" id="allch" min="1" max="999" value="1" style="width:65px">
-          <button onclick="switchAll()">▶ 全切替</button>
-          <span id="status-bar"></span>
-        </div>
-        <div class="device-list" id="device-list"><div class="no-devices">読み込み中...</div></div>
-      </div>
-      <div class="panel-resizer" data-panel="panel-devices"></div>
-    </div>
-    <div class="panel flexible" id="panel-patrol" style="flex:2">
-      <div class="panel-header" draggable="true" data-panel="panel-patrol">
-        <span class="panel-title">🔁 チャンネル巡回</span>
-        <button class="panel-btn panel-min-btn" onclick="minimizePanel('panel-patrol')" title="最小化">─</button>
-      </div>
-      <div class="panel-body">
-        <div class="patrol-status">
-          <span class="stopped" id="ps-state">■ 停止中</span>
-          <span id="ps-ch"></span>
-          <span id="ps-prog"></span>
-          <span id="ps-parallel"></span>
-        </div>
-        <div id="crash-warning" class="crash-warning">⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。</div>
-        <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">
-          <div id="ps-full" style="font-size:0.78em;color:#e57373;flex:1"></div>
-          <button id="btn-clear-full" class="secondary" style="font-size:0.75em;padding:2px 8px;display:none" onclick="clearFullChannels()">✕ クリア</button>
-        </div>
-        <div class="flex-row" style="margin-bottom:8px">
-          <label>開始Ch:</label>
-          <input type="number" id="patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開">
-          <button class="secondary toggle-btn" id="btn-reversed" onclick="toggleReversed()">⬆ 正順</button>
-          <button class="secondary toggle-btn" id="btn-loop" onclick="toggleLoop()">🔁 ループ</button>
-        </div>
-        <div class="flex-row" style="margin-bottom:8px">
-          <button class="green" id="btn-patrol-start" onclick="patrolStart()">▶ 巡回開始</button>
-          <button class="secondary" id="btn-patrol-stop" onclick="patrolStop()" disabled>■ 停止</button>
-        </div>
-        <div class="section-title">巡回チャンネル</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">
-          <button class="secondary" style="padding:3px 8px;font-size:0.8em" onclick="addChannel()">＋ 追加</button>
-          <button class="secondary" style="padding:3px 8px;font-size:0.8em" onclick="sortChannels('asc')">↑ 昇順</button>
-          <button class="secondary" style="padding:3px 8px;font-size:0.8em" onclick="sortChannels('desc')">↓ 降順</button>
-          <button class="secondary" style="padding:3px 8px;font-size:0.8em" id="btn-ch-save" onclick="saveChannels()" disabled>💾 保存</button>
-          <span id="ch-save-status" style="font-size:0.8em;color:#a0a0b0"></span>
-        </div>
-        <div class="ch-editor" id="ch-editor"><div class="no-devices">読み込み中...</div></div>
-        <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
-          <input type="text" id="ch-bulk-input" placeholder="例: 6,13,23,35,41..." style="flex:1;width:auto;font-size:0.85em">
-          <button class="secondary" style="padding:3px 10px;font-size:0.8em;white-space:nowrap" onclick="bulkImportChannels()">上書き</button>
-        </div>
-      </div>
-      <div class="panel-resizer" data-panel="panel-patrol"></div>
-    </div>
+<div class="app">
+<!-- Titlebar -->
+<div class="titlebar">
+  <div class="logo">
+    <svg width="14" height="13" viewBox="0 0 14 13" fill="none">
+      <rect x="0" y="3" width="14" height="10" rx="1.5" fill="white" opacity=".9"/>
+      <path d="M5 3L6 1h2l1 2" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <circle cx="7" cy="8" r="2.5" fill="#4f8ef7"/>
+      <circle cx="7" cy="8" r="1.2" fill="white" opacity=".9"/>
+    </svg>
   </div>
-
-  <div class="splitter-h" id="splitter-main"></div>
-
-  <!-- 右カラム -->
-  <div class="panel-col" id="col-right" style="flex:1">
-    <div class="panel" id="panel-gold">
-      <div class="panel-header" draggable="true" data-panel="panel-gold">
-        <span class="panel-title">🌟 金ウリボ検知履歴</span>
-        <button class="panel-btn" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')" title="ウィンドウ分離">⧉</button>
-        <button class="panel-btn panel-min-btn" onclick="minimizePanel('panel-gold')" title="最小化">─</button>
+  <span class="title">BPSR_patrol_cams</span>
+  <div class="status-dot stopped" id="hdr-dot"></div>
+  <span class="status-lbl stopped" id="hdr-lbl">停止中</span>
+</div>
+<!-- Sidebar -->
+<div class="sidebar">
+  <div class="nav-section">メイン</div>
+  <div class="nav-item active" id="nav-dashboard" onclick="switchView('dashboard',this)">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
+    ダッシュボード
+  </div>
+  <div class="nav-item" id="nav-detect-log" onclick="switchView('detect-log',this)">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5v4l2.5 1.5" stroke-linecap="round"/></svg>
+    検知ログ
+  </div>
+  <div class="nav-item" id="nav-chat-log" onclick="switchView('chat-log',this)">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
+    チャットログ
+  </div>
+  <div class="nav-section">制御</div>
+  <div class="nav-item" id="nav-devices" onclick="switchView('devices',this)">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>
+    デバイス管理
+  </div>
+  <div class="nav-item" id="nav-patrol" onclick="switchView('patrol',this)">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke-linecap="round"/></svg>
+    チャンネル巡回
+  </div>
+  <div class="nav-section">設定</div>
+  <div class="nav-item" id="nav-settings" onclick="switchView('settings',this)">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round"/></svg>
+    設定
+  </div>
+</div>
+<!-- Main content -->
+<div class="main">
+<!-- ===== DASHBOARD ===== -->
+<div class="view active" id="view-dashboard">
+  <div class="status-grid" style="grid-template-columns:repeat(2,1fr)">
+    <div class="stat"><div class="stat-label">検知イベント</div><div class="stat-value warn" id="dash-detect-count">0</div><div class="stat-sub">累計</div></div>
+    <div class="stat"><div class="stat-label">稼働時間</div><div class="stat-value ok" id="dash-uptime">00:00:00</div><div class="stat-sub">起動から</div></div>
+  </div>
+  <div class="row2">
+    <div class="col">
+      <div class="card">
+        <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>接続デバイス</div>
+        <div id="dash-device-list"><div class="no-devices">読み込み中...</div></div>
+        <div class="btn-row">
+          <button class="btn primary" onclick="refreshDevices();switchView('devices',document.getElementById('nav-devices'))">🔄 再スキャン</button>
+          <button class="btn" onclick="switchView('devices',document.getElementById('nav-devices'))">管理 →</button>
+        </div>
       </div>
-      <div class="panel-body">
+      <div class="card">
+        <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke-linecap="round"/></svg>巡回状態</div>
+        <div class="patrol-status"><span id="dash-ps-state" class="stopped">■ 停止中</span><span id="dash-ps-ch" style="color:var(--accent)"></span><span id="dash-ps-prog" style="color:var(--text3)"></span></div>
+        <div id="dash-crash-warning" class="crash-warning"></div>
+        <div class="btn-row">
+          <button class="btn success" id="dash-btn-patrol-start" onclick="patrolStart()">▶ 巡回開始</button>
+          <button class="btn danger" id="dash-btn-patrol-stop" onclick="patrolStop()" style="display:none">■ 停止</button>
+          <button class="btn" onclick="switchView('patrol',document.getElementById('nav-patrol'))">詳細 →</button>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <div class="card-title">🌟 金ウリボ検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
         <div id="gold-history-container"><div class="no-history">検知履歴なし</div></div>
       </div>
-      <div class="panel-resizer" data-panel="panel-gold"></div>
-    </div>
-    <div class="panel flexible" id="panel-chat" style="flex:1.5">
-      <div class="panel-header" draggable="true" data-panel="panel-chat">
-        <span class="panel-title">💬 チャットログ</span>
-        <button class="panel-btn" onclick="window.open('/chat-log','chat-log','width=700,height=500')" title="別ウィンドウ">⧉</button>
-        <button class="panel-btn panel-min-btn" onclick="minimizePanel('panel-chat')" title="最小化">─</button>
-      </div>
-      <div class="panel-body" style="padding:0;display:flex;flex-direction:column">
-        <div style="padding:4px 8px;border-bottom:1px solid #1a3a6a;display:flex;align-items:center;gap:8px;flex-shrink:0;font-size:0.82em">
-          <select id="chat-device-select" onchange="renderChatPanel()" style="background:#0d1b33;border:1px solid #1a3a6a;color:#eaeafa;padding:2px 4px;border-radius:3px;font-size:0.9em;max-width:140px">
-            <option value="">すべて</option>
-          </select>
-          <input type="text" id="chat-search" placeholder="検索..." style="background:#0d1b33;border:1px solid #1a3a6a;color:#eaeafa;padding:2px 5px;border-radius:3px;width:90px;font-size:0.9em" oninput="renderChatPanel()">
-          <button class="secondary" style="padding:2px 7px;font-size:0.85em;margin-left:auto" onclick="clearChatPanel()">クリア</button>
+      <div class="card" style="flex:1;display:flex;flex-direction:column;padding:0;overflow:hidden">
+        <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
+          チャットログ
+          <button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="switchView('chat-log',document.getElementById('nav-chat-log'))">展開 →</button>
         </div>
-        <div class="log-area" id="chat-area" style="flex:1"></div>
+        <div style="flex:1;overflow-y:auto;max-height:200px" id="dash-chat-area"></div>
       </div>
-      <div class="panel-resizer" data-panel="panel-chat"></div>
-    </div>
-    <div class="panel flexible" id="panel-log" style="flex:2">
-      <div class="panel-header" draggable="true" data-panel="panel-log">
-        <span class="panel-title">📋 検知ログ</span>
-        <button class="panel-btn panel-min-btn" onclick="minimizePanel('panel-log')" title="最小化">─</button>
-      </div>
-      <div class="panel-body" style="padding:0;display:flex;flex-direction:column">
-        <div class="log-filter-bar" id="log-filter-bar"></div>
-        <div class="log-area" id="log-area"></div>
-        <div style="padding:6px 10px;border-top:1px solid #1a3a6a;display:flex;gap:8px;flex-shrink:0">
-          <button class="secondary" style="font-size:0.8em;padding:3px 10px" onclick="document.getElementById('log-area').innerHTML=''">クリア</button>
-          <button style="font-size:0.8em;padding:3px 10px" onclick="testDetect()">🔔 テスト通知</button>
-          <button class="secondary toggle-btn" id="btn-monster-scan" style="font-size:0.8em;padding:3px 10px" onclick="toggleMonsterScan()" title="出現した全モンスターのtmplID・名前・座標をログに出力します">🔍 怪物スキャン</button>
-        </div>
-      </div>
-      <div class="panel-resizer" data-panel="panel-log"></div>
-    </div>
-    <div class="panel" id="panel-config">
-      <div class="panel-header" draggable="true" data-panel="panel-config">
-        <span class="panel-title">⚙ 設定</span>
-        <button class="panel-btn panel-min-btn" onclick="minimizePanel('panel-config')" title="最小化">─</button>
-      </div>
-      <div class="panel-body">
-        <div id="cfg-form" class="cfg-grid"></div>
-        <div class="cfg-save-bar">
-          <button onclick="saveConfig()">💾 保存</button>
-          <span id="cfg-status" style="font-size:0.82em;color:#a0a0b0"></span>
-        </div>
-        <p class="cfg-note">* 滞在時間・タイムアウト・並列設定は保存後すぐ反映されます。その他は再起動が必要です。</p>
-      </div>
-      <div class="panel-resizer" data-panel="panel-config"></div>
     </div>
   </div>
 </div>
-<div class="drop-indicator" id="drop-indicator"></div>
-
+<!-- ===== 検知ログ ===== -->
+<div class="view" id="view-detect-log">
+  <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0">
+    <div class="card-title" style="margin-bottom:6px"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h8M2 12h10" stroke-linecap="round"/></svg>検知ログ</div>
+    <div class="chip-row" id="log-filter-bar"></div>
+    <div class="log-area full" id="log-area" style="flex:1;max-height:calc(100vh - 200px)"></div>
+    <div style="display:flex;gap:6px;margin-top:8px">
+      <button class="btn" onclick="document.getElementById('log-area').innerHTML=''">クリア</button>
+      <button class="btn primary" onclick="testDetect()">🔔 テスト通知</button>
+      <button class="btn toggle-btn" id="btn-monster-scan" onclick="toggleMonsterScan()" title="出現した全モンスターのtmplID・名前・座標をログに出力します">🔍 怪物スキャン</button>
+      <button class="btn" style="margin-left:auto" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉ 別ウィンドウ</button>
+    </div>
+  </div>
+</div>
+<!-- ===== チャットログ ===== -->
+<div class="view" id="view-chat-log">
+  <div class="card" style="flex:1;display:flex;flex-direction:column;padding:0;overflow:hidden;min-height:0">
+    <div class="chat-toolbar">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
+      <span style="font-weight:500;color:var(--text2);text-transform:uppercase;font-size:10px;letter-spacing:.6px">チャットログ</span>
+      <select id="chat-device-select" onchange="renderChatPanel()" style="font-size:11px;padding:2px 6px;max-width:140px"><option value="">すべて</option></select>
+      <input type="text" id="chat-search" placeholder="キーワード検索..." style="width:130px;font-size:11px" oninput="renderChatPanel()">
+      <button class="btn" style="margin-left:auto" onclick="window.open('/chat-log','chat-log','width=700,height=500')">⧉ 別ウィンドウ</button>
+      <button class="btn" onclick="clearChatPanel()">クリア</button>
+    </div>
+    <div class="log-area full" id="chat-area" style="flex:1;max-height:calc(100vh - 180px);border-radius:0;border:none;border-top:1px solid var(--border)"></div>
+  </div>
+</div>
+<!-- ===== デバイス管理 ===== -->
+<div class="view" id="view-devices">
+  <div class="card">
+    <div class="card-title">接続デバイス一覧</div>
+    <div class="flex-row" style="margin-bottom:10px">
+      <label style="font-size:11px;color:var(--text2)">一括 Ch:</label>
+      <input type="number" id="allch" min="1" max="999" value="1" style="width:65px">
+      <button class="btn primary" onclick="switchAll()">▶ 全切替</button>
+      <span id="status-bar" style="font-size:.82em;color:var(--accent2)"></span>
+      <button class="btn" style="margin-left:auto" onclick="refreshDevices()">🔄 再スキャン / ADB再起動</button>
+    </div>
+    <div class="device-list" id="device-list"><div class="no-devices">読み込み中...</div></div>
+  </div>
+</div>
+<!-- ===== チャンネル巡回 ===== -->
+<div class="view" id="view-patrol">
+  <div class="row2" style="align-items:start">
+    <div class="col">
+      <div class="card">
+        <div class="card-title">巡回制御</div>
+        <div class="patrol-status"><span class="stopped" id="ps-state">■ 停止中</span><span id="ps-ch"></span><span id="ps-prog"></span><span id="ps-parallel"></span></div>
+        <div id="crash-warning" class="crash-warning">⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。</div>
+        <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">
+          <div id="ps-full" style="font-size:.78em;color:#fca5a5;flex:1"></div>
+          <button id="btn-clear-full" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearFullChannels()">✕ クリア</button>
+        </div>
+        <div class="flex-row" style="margin-bottom:8px">
+          <label style="font-size:11px">開始Ch:</label>
+          <input type="number" id="patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開">
+          <button class="btn toggle-btn" id="btn-reversed" onclick="toggleReversed()">⬆ 正順</button>
+          <button class="btn toggle-btn" id="btn-loop" onclick="toggleLoop()">🔁 ループ</button>
+        </div>
+        <div class="flex-row">
+          <button class="btn success" id="btn-patrol-start" onclick="patrolStart()">▶ 巡回開始</button>
+          <button class="btn" id="btn-patrol-stop" onclick="patrolStop()" disabled>■ 停止</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">巡回チャンネル</div>
+        <div class="flex-row" style="margin-bottom:6px">
+          <button class="btn" style="padding:3px 8px;font-size:.8em" onclick="addChannel()">＋ 追加</button>
+          <button class="btn" style="padding:3px 8px;font-size:.8em" onclick="sortChannels('asc')">↑ 昇順</button>
+          <button class="btn" style="padding:3px 8px;font-size:.8em" onclick="sortChannels('desc')">↓ 降順</button>
+          <button class="btn primary" style="padding:3px 8px;font-size:.8em" id="btn-ch-save" onclick="saveChannels()" disabled>💾 保存</button>
+          <span id="ch-save-status" style="font-size:.8em;color:var(--text2)"></span>
+        </div>
+        <div class="ch-editor" id="ch-editor"><div class="no-devices">読み込み中...</div></div>
+        <div class="flex-row" style="margin-top:6px">
+          <input type="text" id="ch-bulk-input" placeholder="例: 6,13,23,35,41..." style="flex:1;font-size:.85em">
+          <button class="btn" style="padding:3px 10px;font-size:.8em" onclick="bulkImportChannels()">上書き</button>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <div class="card-title">🌟 金ウリボ検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
+        <div id="gold-history-container-patrol"><div class="no-history">検知履歴なし</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ===== 設定 ===== -->
+<div class="view" id="view-settings">
+  <div class="card">
+    <div id="cfg-form" class="cfg-grid"></div>
+    <div class="cfg-save-bar">
+      <button class="btn primary" onclick="saveConfig()">💾 保存・反映</button>
+      <span id="cfg-status" style="font-size:.82em;color:var(--text2)"></span>
+    </div>
+    <p class="cfg-note" style="margin-top:6px">* 滞在時間・タイムアウト・並列設定は保存後すぐ反映されます。その他は再起動が必要です。</p>
+  </div>
+</div>
+</div><!-- /main -->
+</div><!-- /app -->
 <script>
-// ── Minimize ──
-function minimizePanel(id) {
-  const p = document.getElementById(id);
-  const btn = p.querySelector('.panel-min-btn');
-  if (p.classList.toggle('minimized')) { btn.textContent='＋'; btn.title='展開'; }
-  else { btn.textContent='─'; btn.title='最小化'; }
-  saveLayout();
+// ── View switch ──
+function switchView(id,navEl){
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  const v=document.getElementById('view-'+id);if(v)v.classList.add('active');
+  if(navEl)navEl.classList.add('active');
 }
-
-// ── Layout persistence ──
-const LAYOUT_KEY = 'loyalboarlet_layout';
-function saveLayout() {
-  const L = document.getElementById('col-left');
-  const R = document.getElementById('col-right');
-  const totalW = L.getBoundingClientRect().width + R.getBoundingClientRect().width;
-  const leftRatio = totalW > 0 ? L.getBoundingClientRect().width / totalW : 0.57;
-  const panelState = p => ({
-    id: p.id,
-    minimized: p.classList.contains('minimized'),
-    height: p.style.height || null
-  });
-  const layout = {
-    leftRatio,
-    left:  [...L.querySelectorAll('.panel')].map(panelState),
-    right: [...R.querySelectorAll('.panel')].map(panelState),
-  };
-  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch(_){}
-}
-function restoreLayout() {
-  let layout;
-  try { layout = JSON.parse(localStorage.getItem(LAYOUT_KEY)||'null'); } catch(_){}
-  if (!layout) return;
-  const L = document.getElementById('col-left');
-  const R = document.getElementById('col-right');
-  if (layout.leftRatio) {
-    L.style.flex = layout.leftRatio + ' 1 0';
-    R.style.flex = (1 - layout.leftRatio) + ' 1 0';
-  }
-  [[L, layout.left],[R, layout.right]].forEach(([col, entries])=>{
-    if (!entries) return;
-    entries.forEach(({id, minimized, height})=>{
-      const panel = document.getElementById(id);
-      if (!panel) return;
-      col.appendChild(panel);
-      const btn = panel.querySelector('.panel-min-btn');
-      if (minimized) {
-        panel.classList.add('minimized');
-        if (btn) { btn.textContent='＋'; btn.title='展開'; }
-      } else {
-        panel.classList.remove('minimized');
-        if (btn) { btn.textContent='─'; btn.title='最小化'; }
-        if (height) { panel.style.flex='none'; panel.style.height=height; }
-      }
-    });
-  });
-}
-
-// ── Splitter ──
-(function(){
-  const sp = document.getElementById('splitter-main');
-  const L = document.getElementById('col-left');
-  const R = document.getElementById('col-right');
-  let drag=false,sx=0,slw=0,srw=0;
-  sp.addEventListener('mousedown', e=>{
-    drag=true; sx=e.clientX;
-    slw=L.getBoundingClientRect().width;
-    srw=R.getBoundingClientRect().width;
-    sp.classList.add('active');
-    document.body.style.cursor='col-resize';
-    e.preventDefault();
-  });
-  document.addEventListener('mousemove', e=>{
-    if(!drag) return;
-    const dx=e.clientX-sx, total=slw+srw;
-    const nl=Math.max(180,Math.min(total-180,slw+dx));
-    const nr=total-nl;
-    const ratio=nl/total;
-    L.style.flex=ratio+' 1 0';
-    R.style.flex=(1-ratio)+' 1 0';
-    L.style.width=''; R.style.width='';
-  });
-  document.addEventListener('mouseup', ()=>{
-    if(!drag) return;
-    drag=false; sp.classList.remove('active');
-    document.body.style.cursor='';
-    saveLayout();
-  });
-})();
-
-// ── Panel vertical resize ──
-(function(){
-  let dragging=null, startY=0, startH=0;
-  document.addEventListener('mousedown', e=>{
-    const rz=e.target.closest('.panel-resizer');
-    if(!rz) return;
-    const panel=rz.closest('.panel');
-    if(!panel||panel.classList.contains('minimized')) return;
-    dragging=panel;
-    startY=e.clientY;
-    startH=panel.getBoundingClientRect().height;
-    rz.classList.add('active');
-    document.body.style.cursor='row-resize';
-    // flex固定にして高さをpxで管理
-    panel.style.flex='none';
-    panel.style.height=startH+'px';
-    e.preventDefault();
-  });
-  document.addEventListener('mousemove', e=>{
-    if(!dragging) return;
-    const dy=e.clientY-startY;
-    const newH=Math.max(60, startH+dy);
-    dragging.style.height=newH+'px';
-  });
-  document.addEventListener('mouseup', e=>{
-    if(!dragging) return;
-    dragging.querySelector('.panel-resizer').classList.remove('active');
-    document.body.style.cursor='';
-    saveLayout();
-    dragging=null;
-  });
-})();
-let dragPanel=null;
-const dropInd=document.getElementById('drop-indicator');
-document.querySelectorAll('.panel-header[draggable]').forEach(h=>{
-  h.addEventListener('dragstart', e=>{
-    dragPanel=document.getElementById(h.dataset.panel);
-    e.dataTransfer.effectAllowed='move';
-    e.dataTransfer.setData('text/plain',h.dataset.panel);
-    setTimeout(()=>{ if(dragPanel) dragPanel.style.opacity='0.4'; },0);
-  });
-  h.addEventListener('dragend', ()=>{
-    if(dragPanel) dragPanel.style.opacity='';
-    dragPanel=null;
-    dropInd.classList.remove('visible');
-    saveLayout();
-  });
-});
-document.querySelectorAll('.panel').forEach(p=>{
-  p.addEventListener('dragover', e=>{
-    if(!dragPanel||p===dragPanel) return;
-    e.preventDefault();
-    const r=p.getBoundingClientRect();
-    const before=e.clientY<r.top+r.height/2;
-    dropInd.style.left=r.left+'px'; dropInd.style.width=r.width+'px';
-    dropInd.style.height='3px'; dropInd.style.top=((before?r.top:r.bottom)-2)+'px';
-    dropInd.classList.add('visible');
-    p._dropBefore=before;
-  });
-  p.addEventListener('dragleave',()=>dropInd.classList.remove('visible'));
-  p.addEventListener('drop', e=>{
-    e.preventDefault();
-    dropInd.classList.remove('visible');
-    if(!dragPanel||p===dragPanel) return;
-    p.parentNode.insertBefore(dragPanel, p._dropBefore?p:p.nextSibling);
-  });
-});
-['col-left','col-right'].forEach(id=>{
-  const col=document.getElementById(id);
-  col.addEventListener('dragover', e=>{
-    if(!dragPanel||dragPanel.closest('.panel-col')===col) return;
-    e.preventDefault();
-    const r=col.getBoundingClientRect();
-    dropInd.style.left=r.left+'px'; dropInd.style.width=r.width+'px';
-    dropInd.style.height=r.height+'px'; dropInd.style.top=r.top+'px';
-    dropInd.classList.add('visible');
-  });
-  col.addEventListener('drop', e=>{
-    e.preventDefault();
-    dropInd.classList.remove('visible');
-    if(!dragPanel||dragPanel.closest('.panel-col')===col) return;
-    col.appendChild(dragPanel);
-  });
-});
-
-// ── Devices ──
-let selectedDevices=new Set();
-function selectedSerials(){ return [...selectedDevices]; }
-async function refreshDevices(){
-  const bar=document.getElementById('status-bar');
-  bar.textContent='ADB再起動中...';
-  await fetch('/api/adb/restart',{method:'POST'});
-  bar.textContent='デバイス取得中...';
-  const r=await fetch('/api/devices');
-  const res=await r.json();
-  const devs=Array.isArray(res)?res:(res.devices||[]);
-  const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
-  if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
-  if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
-  const el=document.getElementById('device-list');
-  bar.textContent='';
-  if(!devs||devs.length===0){ el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>'; return; }
-  el.innerHTML=devs.map(d=>{
-    const info=mapRes[d]||{};
-    const uid=info.user_uid||'', ch=info.line_id||'', confirmed=info.confirmed||false;
-    const checked=selectedDevices.has(d)?'checked':'';
-    const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
-    const eid='ch-'+encodeURIComponent(d);
-    return '<div class="device-entry'+(confirmed?' matched':'')+'">'
-      +'<label class="check-label">'
-      +'<input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)">'
-      +'<span class="serial">'+escHtml(d)+'</span>'+uidHtml
-      +'</label>'
-      +'<div style="display:flex;gap:6px;margin-top:4px">'
-      +'<input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px">'
-      +'<button style="padding:3px 8px;font-size:0.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button>'
-      +'</div></div>';
-  }).join('');
-}
-function toggleDevice(s,c){ c?selectedDevices.add(s):selectedDevices.delete(s); }
-
-// ── Chat Panel ──
-let chatEvents=[];
-let chatIPToSerial={};
-let chatKnownSerials=[];
-function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-function escAttrJs(s){return JSON.stringify(String(s)).replace(/"/g,'&quot;');}
-function chatMsgHtml(ev){
-  const serial=chatIPToSerial[ev.client_ip]||ev.client_ip;
-  const ch=ev.has_ch?'<span style="color:#7ec8e3;margin-right:3px;font-size:0.88em">Ch'+ev.channel+'</span>':'';
-  return '<div style="padding:3px 8px;border-bottom:1px solid #0d1530;font-size:0.82em;line-height:1.5">'
-    +'<span style="color:#606080;margin-right:5px">'+ev.time+'</span>'
-    +'<span style="color:#7a6030;font-size:0.88em;margin-right:3px">['+escHtml(serial)+']</span>'
-    +ch
-    +'<span style="color:#ffd700;font-weight:bold;margin-right:3px">'+escHtml(ev.sender)+'</span>'
-    +'<span style="color:#d0d0e0">'+escHtml(ev.message)+'</span>'
-    +'</div>';
-}
-function refreshChatDeviceDropdown(){
-  const sel=document.getElementById('chat-device-select');
-  if(!sel)return;
-  const current=sel.value;
-  const serials=chatKnownSerials.length?[...chatKnownSerials]:[...new Set(Object.values(chatIPToSerial))].sort();
-  sel.innerHTML='<option value="">すべて</option>'
-    +serials.map(s=>'<option value="'+escHtml(s)+'">'+escHtml(s)+'</option>').join('');
-  if(serials.includes(current))sel.value=current;
-}
-function chatMatchFilter(ev){
-  const sel=document.getElementById('chat-device-select');
-  const filterSerial=sel?sel.value:'';
-  if(filterSerial){
-    const serial=chatIPToSerial[ev.client_ip];
-    if(!serial||serial!==filterSerial)return false;
-  }
-  const q=document.getElementById('chat-search').value.toLowerCase();
-  if(q&&!(ev.sender.toLowerCase().includes(q)||ev.message.toLowerCase().includes(q)))return false;
-  return true;
-}
-function renderChatPanel(){
-  const el=document.getElementById('chat-area');
-  if(!el)return;
-  const filtered=chatEvents.filter(chatMatchFilter);
-  // 同一メッセージ（送信者+内容+チャンネル）の重複を除去（最初の出現を残す）
-  const seen=new Set();
-  const deduped=filtered.filter(ev=>{const k=ev.channel+'|'+ev.sender+'|'+ev.message;if(seen.has(k))return false;seen.add(k);return true;});
-  if(!deduped.length){el.innerHTML='<div style="color:#606080;padding:8px;font-size:0.82em">チャットなし</div>';return;}
-  el.innerHTML=deduped.map(chatMsgHtml).join('');
-  el.scrollTop=el.scrollHeight;
-}
-function appendChatToPanel(ev){
-  // 直近50件に同じ送信者+メッセージ+チャンネルがあれば重複として無視
-  const isDup=chatEvents.slice(-50).some(e=>e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
-  if(isDup)return;
-  chatEvents.push(ev);
-  if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
-  if(!chatMatchFilter(ev))return;
-  const el=document.getElementById('chat-area');
-  if(!el)return;
-  if(el.querySelector('div[style*="606080"]')&&el.children.length===1)el.innerHTML='';
-  const tmp=document.createElement('div');
-  tmp.innerHTML=chatMsgHtml(ev);
-  el.appendChild(tmp.firstChild);
-  if(el.children.length>500)el.removeChild(el.firstChild);
-  el.scrollTop=el.scrollHeight;
-}
-function clearChatPanel(){chatEvents=[];const el=document.getElementById('chat-area');if(el)el.innerHTML='';}
-async function initChat(){
-  const dm=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
-  if(dm.devices)dm.devices.forEach(e=>{if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
-  refreshChatDeviceDropdown();
-  const h=await fetch('/api/chat-log').then(r=>r.json()).catch(()=>[]);
-  chatEvents=h||[];
-  renderChatPanel();
-  const es=new EventSource('/api/chat-events');
-  es.onmessage=e=>{try{appendChatToPanel(JSON.parse(e.data));}catch(_){}};
-}
-async function switchAll(){
-  const ch=document.getElementById('allch').value;
-  const bar=document.getElementById('status-bar');
-  bar.textContent='切替中...';
-  const serials=selectedSerials(); // 空 = 全台
-  const r=await fetch('/api/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:parseInt(ch),serials})});
-  const d=await r.json();
-  if(d.results){
-    const failed=d.results.filter(x=>!x.ok);
-    bar.textContent=failed.length===0?'✓ 完了':'✗ '+failed.length+'台失敗';
-  } else {
-    bar.textContent=d.error?'✗ '+d.error:'✗ 失敗';
-  }
-  setTimeout(()=>bar.textContent='',3000);
-}
-async function switchOne(serial){
-  const ch=parseInt(document.getElementById('ch-'+encodeURIComponent(serial)).value);
-  const bar=document.getElementById('status-bar');
-  bar.textContent='切替中...';
-  const r=await fetch('/api/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:ch,serial})});
-  const d=await r.json();
-  const res=d.results&&d.results[0];
-  bar.textContent=res&&res.ok?'✓ 完了':'✗ '+(res&&res.error||d.error||'失敗');
-  setTimeout(()=>bar.textContent='',3000);
-}
-
-// ── Log Filter ──
+// ── Log filter chips ──
 const LOG_CATS=[
-  {id:'mumu',  label:'[MuMu]',  test:l=>l.includes('[MuMu]')},
-  {id:'det',   label:'検知',     test:l=>l.includes('[DETECTION]')||l.includes('[検知]')},
-  {id:'chat',  label:'チャット', test:l=>l.includes('[チャット')},
-  {id:'pkt',   label:'パケット', test:l=>/\[0x[0-9a-fA-F]+\]/.test(l)||/\[Instance-/.test(l)},
-  {id:'gas',   label:'GAS',     test:l=>l.includes('[GASFetch]')},
-  {id:'gui',   label:'GUI',     test:l=>l.includes('[GUI]')},
-  {id:'other', label:'その他',  test:_=>true},
+  {id:'mumu',  label:'[MuMu]', test:l=>l.includes('[MuMu]')},
+  {id:'det',   label:'検知',    test:l=>l.includes('[DETECTION]')||l.includes('[検知]')},
+  {id:'chat',  label:'チャット',test:l=>l.includes('[チャット')},
+  {id:'pkt',   label:'パケット',test:l=>/\[0x[0-9a-fA-F]+\]/.test(l)||/\[Instance-/.test(l)},
+  {id:'gas',   label:'GAS',    test:l=>l.includes('[GASFetch]')},
+  {id:'gui',   label:'GUI',    test:l=>l.includes('[GUI]')},
+  {id:'other', label:'その他', test:_=>true},
 ];
-// デフォルト: パケット非表示
 const logFilter={mumu:true,det:true,chat:true,pkt:false,gas:true,gui:true,other:true};
-function getCat(line){ for(const c of LOG_CATS){ if(c.test(line)) return c.id; } return 'other'; }
-function isVisible(line){ return logFilter[getCat(line)]!==false; }
+function getCat(line){for(const c of LOG_CATS){if(c.test(line))return c.id;}return 'other';}
+function isVisible(line){return logFilter[getCat(line)]!==false;}
 function buildFilterBar(){
-  const bar=document.getElementById('log-filter-bar');
-  if(!bar) return;
-  bar.innerHTML=LOG_CATS.map(c=>'<button id="fc-'+c.id+'" class="'+(logFilter[c.id]?'on':'')+'" onclick="toggleCat(\''+c.id+'\')">'+c.label+'</button>').join('');
+  const bar=document.getElementById('log-filter-bar');if(!bar)return;
+  bar.innerHTML=LOG_CATS.map(c=>'<div id="fc-'+c.id+'" class="chip'+(logFilter[c.id]?' active':'')+'" onclick="toggleCat(\''+c.id+'\')">'+c.label+'</div>').join('');
 }
 function toggleCat(id){
   logFilter[id]=!logFilter[id];
-  const btn=document.getElementById('fc-'+id);
-  if(btn) btn.className=logFilter[id]?'on':'';
-  document.querySelectorAll('#log-area .log-line').forEach(div=>{
-    div.style.display=isVisible(div.textContent)?'':'none';
-  });
+  const chip=document.getElementById('fc-'+id);if(chip)chip.className='chip'+(logFilter[id]?' active':'');
+  document.querySelectorAll('#log-area .log-line').forEach(div=>{div.style.display=isVisible(div.textContent)?'':'none';});
 }
-
+// ── Escape ──
+function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function escAttrJs(s){return JSON.stringify(String(s)).replace(/"/g,'&quot;');}
 // ── Log / SSE ──
 (function(){
-  const la=document.getElementById('log-area');
-  let userScrolling=false;
-  if(la){
-    la.addEventListener('scroll',()=>{
-      userScrolling=(la.scrollHeight-la.scrollTop-la.clientHeight)>20;
-    });
-  }
+  const la=document.getElementById('log-area');let userScrolling=false;
+  if(la){la.addEventListener('scroll',()=>{userScrolling=(la.scrollHeight-la.scrollTop-la.clientHeight)>20;});}
   window._logUserScrolling=()=>userScrolling;
 })();
 function appendLog(line){
-  const la=document.getElementById('log-area');
+  const la=document.getElementById('log-area');if(!la)return;
   const div=document.createElement('div');
-  div.className='log-line'+(line.includes('[DETECTION]')||line.includes('金')?' detect':'');
-  div.textContent=line;
-  if(!isVisible(line)) div.style.display='none';
+  const isDetect=line.includes('[DETECTION]')||line.includes('金');
+  div.className='log-line'+(isDetect?' detect':'');
+  let tagCls='info',tagTxt='INFO';
+  if(line.toLowerCase().includes('error')||line.includes('失敗')||line.toLowerCase().includes('fatal')){tagCls='err';tagTxt='ERR';}
+  if(line.includes('完了')||line.includes('確立')||line.includes('起動完了')||line.includes(' ok')||line.includes('[OK]')){tagCls='ok';tagTxt='OK';}
+  if(isDetect||line.toLowerCase().includes('warn')||line.includes('[DETECTION]')){tagCls='warn';tagTxt='WARN';}
+  const tm=line.match(/\d{4}\/\d{2}\/\d{2} (\d{2}:\d{2}:\d{2})/);
+  const timeStr=tm?tm[1]:'';const rest=tm?line.slice(tm[0].length).trim():line;
+  div.innerHTML='<span class="log-time">'+escHtml(timeStr)+'</span>'
+    +'<span class="log-tag '+tagCls+'">'+tagTxt+'</span>'
+    +'<span class="log-msg">'+escHtml(rest)+'</span>';
+  if(!isVisible(line))div.style.display='none';
   la.appendChild(div);
-  if(!window._logUserScrolling||!window._logUserScrolling()){
-    la.scrollTop=la.scrollHeight;
-  }
+  if(!window._logUserScrolling||!window._logUserScrolling()){la.scrollTop=la.scrollHeight;}
 }
-async function testDetect(){ await fetch('/api/test-detect',{method:'POST'}); }
+async function testDetect(){await fetch('/api/test-detect',{method:'POST'});}
 let monsterScanEnabled=false;
 async function toggleMonsterScan(){
   monsterScanEnabled=!monsterScanEnabled;
@@ -1656,150 +1473,234 @@ async function toggleMonsterScan(){
   const src=new EventSource('/events');
   src.onmessage=e=>{
     appendLog(e.data);
-    if(e.data.includes('[GUI] 金ウリボ')||e.data.includes('[DETECTION]')){
-      loadGoldHistory(); loadPatrolChannels();
-    }
-    if(e.data.includes('channels.txt')){
-      loadPatrolChannels();
-    }
+    if(e.data.includes('[GUI] 金ウリボ')||e.data.includes('[DETECTION]')){loadGoldHistory();loadPatrolChannels();}
+    if(e.data.includes('channels.txt')){loadPatrolChannels();}
   };
   fetch('/api/logs').then(r=>r.json()).then(lines=>(lines||[]).forEach(appendLog));
 })();
-
 // ── Gold History ──
 async function loadGoldHistory(){
   try{
     const h=await fetch('/api/gold-history').then(r=>r.json());
-    const c=document.getElementById('gold-history-container');
-    if(!h||h.length===0){ c.innerHTML='<div class="no-history">検知履歴なし</div>'; return; }
-    c.innerHTML='<table class="gold-table"><colgroup><col class="col-time"><col class="col-name"><col class="col-ch"><col></colgroup>'
+    const detEl=document.getElementById('dash-detect-count');if(detEl)detEl.textContent=h?h.length:0;
+    const tbl=(!h||h.length===0)?'<div class="no-history">検知履歴なし</div>'
+      :'<table class="gold-table"><colgroup><col class="col-time"><col class="col-name"><col class="col-ch"><col></colgroup>'
       +'<thead><tr><th>時刻</th><th>名前</th><th>Ch</th><th>場所</th></tr></thead><tbody>'
-      +h.map(e=>'<tr>'
-        +'<td class="time-cell">'+escHtml(e.time||'')+'</td>'
-        +'<td class="name-cell">'+escHtml(e.monster_name||'ゴールドウリボ')+'</td>'
-        +'<td class="ch-cell">Ch'+Number(e.channel)+'</td>'
-        +'<td>'+escHtml(e.location||'')+'</td>'
-        +'</tr>').join('')
+      +h.map(e=>'<tr><td class="time-cell">'+escHtml(e.time||'')+'</td><td class="name-cell">'+escHtml(e.monster_name||'ゴールドウリボ')+'</td><td class="ch-cell">Ch'+Number(e.channel)+'</td><td>'+escHtml(e.location||'')+'</td></tr>').join('')
       +'</tbody></table>';
+    const c1=document.getElementById('gold-history-container');if(c1)c1.innerHTML=tbl;
+    const c2=document.getElementById('gold-history-container-patrol');if(c2)c2.innerHTML=tbl;
   }catch(_){}
 }
-
+// ── Dashboard device summary ──
+function renderDashDevices(devs,deviceMap){
+  const el=document.getElementById('dash-device-list');if(!el)return;
+  if(!devs||devs.length===0){el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return;}
+  el.innerHTML=devs.map(d=>{
+    const info=deviceMap[d]||{};
+    const confirmed=info.confirmed||false,uid=info.user_uid||'',ch=info.line_id||'';
+    const sub=uid?((confirmed?'🔗 ':'')+' UID:'+uid+(ch?' Ch'+ch:'')):'未認証';
+    return '<div class="device-row"><div class="device-icon">📱</div>'
+      +'<div class="device-info"><div class="device-name">'+escHtml(d)+'</div><div class="device-sub">'+escHtml(sub)+'</div></div>'
+      +'<div class="device-badge '+(confirmed?'connected':'offline')+'">'+(confirmed?'接続済':'未認証')+'</div></div>';
+  }).join('');
+}
+// ── Devices ──
+let selectedDevices=new Set();
+function selectedSerials(){return[...selectedDevices];}
+async function refreshDevices(){
+  const bar=document.getElementById('status-bar');if(bar)bar.textContent='ADB再起動中...';
+  await fetch('/api/adb/restart',{method:'POST'});
+  if(bar)bar.textContent='デバイス取得中...';
+  const r=await fetch('/api/devices');const res=await r.json();
+  const devs=Array.isArray(res)?res:(res.devices||[]);
+  const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
+  const deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
+  if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
+  renderDashDevices(devs,deviceMap);
+  const el=document.getElementById('device-list');if(bar)bar.textContent='';
+  if(!devs||devs.length===0){if(el)el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return;}
+  if(el)el.innerHTML=devs.map(d=>{
+    const info=deviceMap[d]||{};const uid=info.user_uid||'',ch=info.line_id||'',confirmed=info.confirmed||false;
+    const checked=selectedDevices.has(d)?'checked':'';
+    const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
+    const eid='ch-'+encodeURIComponent(d);
+    return '<div class="device-entry'+(confirmed?' matched':'')+'">'
+      +'<label class="check-label"><input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)"><span class="serial">'+escHtml(d)+'</span>'+uidHtml+'</label>'
+      +'<div style="display:flex;gap:6px;margin-top:4px"><input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px"><button style="padding:3px 8px;font-size:.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button></div></div>';
+  }).join('');
+}
+function toggleDevice(s,c){c?selectedDevices.add(s):selectedDevices.delete(s);}
+// ── Chat Panel ──
+let chatEvents=[],chatIPToSerial={},chatKnownSerials=[];
+function chatMsgHtml(ev){
+  const serial=chatIPToSerial[ev.client_ip]||ev.client_ip;
+  const ch=ev.has_ch?'<span style="color:#4f8ef7;margin-right:3px;font-size:.88em">Ch'+ev.channel+'</span>':'';
+  return '<div class="chat-msg" onmouseover="this.style.background=\'var(--bg2)\'" onmouseout="this.style.background=\'\'">'
+    +'<span style="color:var(--text3);margin-right:5px">'+escHtml(ev.time)+'</span>'
+    +'<span style="color:var(--text2);font-size:.88em;margin-right:3px">['+escHtml(serial)+']</span>'
+    +ch+'<span style="color:var(--warn);font-weight:600;margin-right:3px">'+escHtml(ev.sender)+'</span>'
+    +'<span style="color:var(--text1)">'+escHtml(ev.message)+'</span></div>';
+}
+function refreshChatDeviceDropdown(){
+  const sel=document.getElementById('chat-device-select');if(!sel)return;
+  const current=sel.value;
+  const serials=chatKnownSerials.length?[...chatKnownSerials]:[...new Set(Object.values(chatIPToSerial))].sort();
+  sel.innerHTML='<option value="">すべて</option>'+serials.map(s=>'<option value="'+escHtml(s)+'">'+escHtml(s)+'</option>').join('');
+  if(serials.includes(current))sel.value=current;
+}
+function chatMatchFilter(ev){
+  const sel=document.getElementById('chat-device-select');const filterSerial=sel?sel.value:'';
+  if(filterSerial){const serial=chatIPToSerial[ev.client_ip];if(!serial||serial!==filterSerial)return false;}
+  const q=document.getElementById('chat-search')?document.getElementById('chat-search').value.toLowerCase():'';
+  if(q&&!(ev.sender.toLowerCase().includes(q)||ev.message.toLowerCase().includes(q)))return false;
+  return true;
+}
+function renderDashChat(evs){
+  const el=document.getElementById('dash-chat-area');if(!el)return;
+  if(!evs||!evs.length){el.innerHTML='<div style="color:var(--text3);padding:8px;font-size:.82em">チャットなし</div>';return;}
+  el.innerHTML=evs.map(chatMsgHtml).join('');el.scrollTop=el.scrollHeight;
+}
+function renderChatPanel(){
+  const el=document.getElementById('chat-area');if(!el)return;
+  const filtered=chatEvents.filter(chatMatchFilter);
+  const seen=new Set();
+  const deduped=filtered.filter(ev=>{const k=ev.channel+'|'+ev.sender+'|'+ev.message;if(seen.has(k))return false;seen.add(k);return true;});
+  if(!deduped.length){el.innerHTML='<div style="color:var(--text3);padding:8px;font-size:.82em">チャットなし</div>';return;}
+  el.innerHTML=deduped.map(chatMsgHtml).join('');el.scrollTop=el.scrollHeight;
+  renderDashChat(deduped.slice(-8));
+}
+function appendChatToPanel(ev){
+  const isDup=chatEvents.slice(-50).some(e=>e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
+  if(isDup)return;
+  chatEvents.push(ev);if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
+  renderDashChat(chatEvents.slice(-8));
+  if(!chatMatchFilter(ev))return;
+  const el=document.getElementById('chat-area');if(!el)return;
+  if(el.children.length===1&&el.firstChild&&el.firstChild.textContent&&el.firstChild.style&&el.firstChild.style.color)el.innerHTML='';
+  const tmp=document.createElement('div');tmp.innerHTML=chatMsgHtml(ev);el.appendChild(tmp.firstChild);
+  if(el.children.length>500)el.removeChild(el.firstChild);
+  el.scrollTop=el.scrollHeight;
+}
+function clearChatPanel(){chatEvents=[];const el=document.getElementById('chat-area');if(el)el.innerHTML='';renderDashChat([]);}
+async function initChat(){
+  const dm=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
+  if(dm.devices)dm.devices.forEach(e=>{if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
+  refreshChatDeviceDropdown();
+  const h=await fetch('/api/chat-log').then(r=>r.json()).catch(()=>[]);
+  chatEvents=h||[];renderChatPanel();
+  const es=new EventSource('/api/chat-events');
+  es.onmessage=e=>{try{appendChatToPanel(JSON.parse(e.data));}catch(_){}};
+}
+async function switchAll(){
+  const ch=document.getElementById('allch').value;
+  const bar=document.getElementById('status-bar');if(bar)bar.textContent='切替中...';
+  const serials=selectedSerials();
+  const r=await fetch('/api/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:parseInt(ch),serials})});
+  const d=await r.json();
+  if(d.results){const failed=d.results.filter(x=>!x.ok);if(bar)bar.textContent=failed.length===0?'✓ 完了':'✗ '+failed.length+'台失敗';}
+  else{if(bar)bar.textContent=d.error?'✗ '+d.error:'✗ 失敗';}
+  setTimeout(()=>{if(bar)bar.textContent='';},3000);
+}
+async function switchOne(serial){
+  const ch=parseInt(document.getElementById('ch-'+encodeURIComponent(serial)).value);
+  const bar=document.getElementById('status-bar');if(bar)bar.textContent='切替中...';
+  const r=await fetch('/api/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:ch,serial})});
+  const d=await r.json();const res=d.results&&d.results[0];
+  if(bar)bar.textContent=res&&res.ok?'✓ 完了':'✗ '+(res&&res.error||d.error||'失敗');
+  setTimeout(()=>{if(bar)bar.textContent='';},3000);
+}
 // ── Patrol ──
 let patrolChannels=[],patrolReversed=localStorage.getItem('patrolReversed')==='true',patrolLoopMode=localStorage.getItem('patrolLoopMode')!=='false';
-function applyReversedUI(){ const b=document.getElementById('btn-reversed'); b.textContent=patrolReversed?'⬇ 逆順':'⬆ 正順'; b.classList.toggle('active',patrolReversed); }
-function applyLoopUI(){ const b=document.getElementById('btn-loop'); b.textContent=patrolLoopMode?'🔁 ループ':'1️⃣ 一巡'; b.classList.toggle('active',!patrolLoopMode); }
+function applyReversedUI(){const b=document.getElementById('btn-reversed');b.textContent=patrolReversed?'⬇ 逆順':'⬆ 正順';b.classList.toggle('active',patrolReversed);}
+function applyLoopUI(){const b=document.getElementById('btn-loop');b.textContent=patrolLoopMode?'🔁 ループ':'1️⃣ 一巡';b.classList.toggle('active',!patrolLoopMode);}
 async function loadPatrolChannels(){
   const d=await fetch('/api/patrol/channels').then(r=>r.json());
-  patrolChannels=d.channels||[];
-  renderChannelEditor();
+  patrolChannels=d.channels||[];renderChannelEditor();
 }
 function renderChannelEditor(){
   const el=document.getElementById('ch-editor');
-  if(patrolChannels.length===0){ el.innerHTML='<div class="no-devices">チャンネルなし</div>'; document.getElementById('btn-ch-save').disabled=true; return; }
-  el.innerHTML=patrolChannels.map((ch,i)=>
-    '<div class="ch-row">'
-    +'<span class="ch-num">'+(i+1)+'.</span>'
-    +'<input type="number" value="'+ch+'" min="1" max="9999" style="width:75px"'
-    +' onchange="patrolChannels['+i+']=parseInt(this.value)||1;document.getElementById(\'btn-ch-save\').disabled=false">'
-    +'<button class="secondary" style="padding:2px 8px;font-size:0.8em" onclick="removeChannel('+i+')">✕</button>'
-    +'</div>'
-  ).join('');
+  if(patrolChannels.length===0){el.innerHTML='<div class="no-devices">チャンネルなし</div>';document.getElementById('btn-ch-save').disabled=true;return;}
+  el.innerHTML=patrolChannels.map((ch,i)=>'<div class="ch-row"><span class="ch-num">'+(i+1)+'.</span>'
+    +'<input type="number" value="'+ch+'" min="1" max="9999" style="width:75px" onchange="patrolChannels['+i+']=parseInt(this.value)||1;document.getElementById(\'btn-ch-save\').disabled=false">'
+    +'<button class="btn" style="padding:2px 8px;font-size:.8em" onclick="removeChannel('+i+')">✕</button></div>').join('');
   document.getElementById('btn-ch-save').disabled=false;
 }
-function addChannel(){ const v=parseInt(prompt('追加するチャンネル番号:',''))||0; if(v>0){patrolChannels.push(v);renderChannelEditor();} }
-function removeChannel(i){ patrolChannels.splice(i,1); renderChannelEditor(); document.getElementById('btn-ch-save').disabled=false; }
-function sortChannels(dir){ patrolChannels.sort((a,b)=>dir==='asc'?a-b:b-a); renderChannelEditor(); document.getElementById('btn-ch-save').disabled=false; }
+function addChannel(){const v=parseInt(prompt('追加するチャンネル番号:',''))||0;if(v>0){patrolChannels.push(v);renderChannelEditor();}}
+function removeChannel(i){patrolChannels.splice(i,1);renderChannelEditor();document.getElementById('btn-ch-save').disabled=false;}
+function sortChannels(dir){patrolChannels.sort((a,b)=>dir==='asc'?a-b:b-a);renderChannelEditor();document.getElementById('btn-ch-save').disabled=false;}
 function bulkImportChannels(){
   const nums=document.getElementById('ch-bulk-input').value.split(/[,\s]+/).map(s=>parseInt(s)).filter(n=>n>0);
-  if(!nums.length) return;
-  patrolChannels=nums; renderChannelEditor(); document.getElementById('ch-bulk-input').value=''; document.getElementById('btn-ch-save').disabled=false;
+  if(!nums.length)return;
+  patrolChannels=nums;renderChannelEditor();document.getElementById('ch-bulk-input').value='';document.getElementById('btn-ch-save').disabled=false;
 }
 async function saveChannels(){
   const r=await fetch('/api/patrol/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:patrolChannels})});
-  const d=await r.json();
-  const st=document.getElementById('ch-save-status');
+  const d=await r.json();const st=document.getElementById('ch-save-status');
   st.textContent=d.ok?'✓ 保存済':'✗ 失敗';
   if(d.ok){document.getElementById('btn-ch-save').disabled=true;loadPatrolChannels();}
   setTimeout(()=>st.textContent='',3000);
 }
-function toggleReversed(){ patrolReversed=!patrolReversed; localStorage.setItem('patrolReversed',patrolReversed); applyReversedUI(); }
-function toggleLoop(){ patrolLoopMode=!patrolLoopMode; localStorage.setItem('patrolLoopMode',patrolLoopMode); applyLoopUI(); }
+function toggleReversed(){patrolReversed=!patrolReversed;localStorage.setItem('patrolReversed',patrolReversed);applyReversedUI();}
+function toggleLoop(){patrolLoopMode=!patrolLoopMode;localStorage.setItem('patrolLoopMode',patrolLoopMode);applyLoopUI();}
 async function patrolStart(){
-  // channels が空なら送らない（Go側が s.patrolChannels を使う）
-  const chs = patrolChannels.length > 0 ? patrolChannels : [];
-  const body = {
-    serials: selectedSerials(),
-    reversed: patrolReversed,
-    loop_mode: patrolLoopMode,
-    start_channel: parseInt(document.getElementById('patrol-start-ch').value)||0
-  };
-  if(chs.length > 0) body.channels = chs;
+  const chs=patrolChannels.length>0?patrolChannels:[];
+  const body={serials:selectedSerials(),reversed:patrolReversed,loop_mode:patrolLoopMode,start_channel:parseInt(document.getElementById('patrol-start-ch').value)||0};
+  if(chs.length>0)body.channels=chs;
   const r=await fetch('/api/patrol/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const d=await r.json();
-  if(!d.ok) alert('巡回開始失敗: '+(d.error||''));
+  const d=await r.json();if(!d.ok)alert('巡回開始失敗: '+(d.error||''));
 }
-async function patrolStop(){ await fetch('/api/patrol/stop',{method:'POST'}); }
-async function clearFullChannels(){
-  await fetch('/api/patrol/clear-full',{method:'POST'});
+async function patrolStop(){await fetch('/api/patrol/stop',{method:'POST'});}
+async function clearFullChannels(){await fetch('/api/patrol/clear-full',{method:'POST'});}
+function updatePatrolUI(running){
+  const bs=document.getElementById('btn-patrol-start'),bp=document.getElementById('btn-patrol-stop');
+  if(bs)bs.disabled=running;if(bp)bp.disabled=!running;
+  const ds=document.getElementById('dash-btn-patrol-start'),dp=document.getElementById('dash-btn-patrol-stop');
+  if(ds)ds.style.display=running?'none':'';if(dp)dp.style.display=running?'':'none';
+  const dot=document.getElementById('hdr-dot'),lbl=document.getElementById('hdr-lbl');
+  if(dot){dot.className=running?'status-dot':'status-dot stopped';}
+  if(lbl){lbl.textContent=running?'稼働中':'停止中';lbl.className=running?'status-lbl':'status-lbl stopped';}
 }
-function updatePatrolUI(running){ document.getElementById('btn-patrol-start').disabled=running; document.getElementById('btn-patrol-stop').disabled=!running; }
 async function pollPatrolStatus(){
   try{
     const d=await fetch('/api/patrol/status').then(r=>r.json());
-    const stateEl=document.getElementById('ps-state');
-    const chEl=document.getElementById('ps-ch');
-    const progEl=document.getElementById('ps-prog');
-    const parEl=document.getElementById('ps-parallel');
+    const els=(id)=>document.getElementById(id);
     if(d.running){
-      stateEl.className='running';
-      stateEl.textContent='▶ 巡回中'+(d.waiting_move?' ⏳':'');
-      chEl.textContent='Ch'+d.current_channel;
-      progEl.textContent=(d.current_index+1)+'/'+d.total_channels;
-      const delay=d.parallel_group_delay>0?'(+'+d.parallel_group_delay+'s)':'';
-      parEl.textContent=(d.parallel_limit===0?'並列:無制限':'並列:'+d.parallel_limit+'台'+delay)
-        +(d.move_timeout_secs>0?' | timeout:'+d.move_timeout_secs+'s':'')
-        +' | 滞在:'+Math.round(d.dwell_secs)+'s';
+      ['ps-state','dash-ps-state'].forEach(id=>{const e=els(id);if(e){e.className='running';e.textContent='▶ 巡回中'+(id==='ps-state'&&d.waiting_move?' ⏳':'');}});
+      ['ps-ch','dash-ps-ch'].forEach(id=>{const e=els(id);if(e)e.textContent='Ch'+d.current_channel;});
+      ['ps-prog','dash-ps-prog'].forEach(id=>{const e=els(id);if(e)e.textContent=(d.current_index+1)+'/'+d.total_channels;});
+      const par=els('ps-parallel');if(par){
+        const delay=d.parallel_group_delay>0?'(+'+d.parallel_group_delay+'s)':'';
+        par.textContent=(d.parallel_limit===0?'並列:無制限':'並列:'+d.parallel_limit+'台'+delay)+(d.move_timeout_secs>0?' | timeout:'+d.move_timeout_secs+'s':'')+' | 滞在:'+Math.round(d.dwell_secs)+'s';
+      }
       updatePatrolUI(true);
     }else{
-      stateEl.className='stopped'; stateEl.textContent='■ 停止中';
-      chEl.textContent=d.last_channel>0?'前回: Ch'+d.last_channel:'';
-      progEl.textContent=''; parEl.textContent='';
+      ['ps-state','dash-ps-state'].forEach(id=>{const e=els(id);if(e){e.className='stopped';e.textContent='■ 停止中';}});
+      ['ps-ch','dash-ps-ch','ps-prog','dash-ps-prog'].forEach(id=>{const e=els(id);if(e)e.textContent=id==='ps-ch'&&d.last_channel>0?'前回: Ch'+d.last_channel:'';});
+      const par=els('ps-parallel');if(par)par.textContent='';
       updatePatrolUI(false);
     }
-    const fullEl=document.getElementById('ps-full');
-    const clearBtn=document.getElementById('btn-clear-full');
-    if(d.full_channels&&d.full_channels.length){
-      fullEl.textContent='🚫 満員スキップ: Ch'+d.full_channels.join(', Ch');
-      clearBtn.style.display='';
-    }else{
-      fullEl.textContent='';
-      clearBtn.style.display='none';
-    }
-    const warnEl=document.getElementById('crash-warning');
-    if(warnEl){
-      const crashed=d.crashed_instances&&d.crashed_instances.length?d.crashed_instances:null;
-      if(crashed){
-        warnEl.style.display='';
-        warnEl.textContent='⚠ クラッシュ判定: '+crashed.join(', ')+' (3回連続未応答)';
-      }else{
-        warnEl.style.display=(d.running&&(d.consecutive_full_count||0)>=3)?'':'none';
-        if(warnEl.style.display!='none') warnEl.textContent='⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。';
-      }
-    }
-  }catch(e){
-    console.warn('patrol status error:', e);
-  }finally{
-    setTimeout(pollPatrolStatus,2000);
-  }
+    const fullEl=els('ps-full'),clearBtn=els('btn-clear-full');
+    if(d.full_channels&&d.full_channels.length){if(fullEl)fullEl.textContent='🚫 満員スキップ: Ch'+d.full_channels.join(', Ch');if(clearBtn)clearBtn.style.display='';}
+    else{if(fullEl)fullEl.textContent='';if(clearBtn)clearBtn.style.display='none';}
+    const crashed=d.crashed_instances&&d.crashed_instances.length?d.crashed_instances:null;
+    const showWarn=!crashed&&d.running&&(d.consecutive_full_count||0)>=3;
+    const warnMsg=crashed?'⚠ クラッシュ判定: '+crashed.join(', ')+' (3回連続未応答)':'⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。';
+    ['crash-warning','dash-crash-warning'].forEach(id=>{
+      const e=els(id);if(!e)return;
+      const show=crashed||(id==='crash-warning'&&showWarn);
+      e.style.display=show?'':'none';if(show)e.textContent=warnMsg;
+    });
+  }catch(e){console.warn('patrol status error:',e);}
+  finally{setTimeout(pollPatrolStatus,2000);}
 }
-
 // ── Config ──
 const CFG_FIELDS=[
   {k:'discord_webhook',label:'Discord Webhook URL',type:'text',desc:'空にするとDiscord通知無効'},
   {k:'chat_exclude',label:'チャット除外キーワード',type:'csv',desc:'カンマ区切り。例: いない,終わった'},
   {k:'patrol_dwell_secs',label:'滞在時間 (秒)',type:'number',desc:'ch移動完了後〜次ch移動開始までの待機秒数'},
-  {k:'patrol_move_timeout_secs',label:'初回マージ待ちタイムアウト (秒)',type:'number',desc:'1台目のマージを待つ最大秒数。0=無効（時間内に1台も来なければ満員と判定）'},
-  {k:'patrol_merge_timeout_secs',label:'残りマージ待ちタイムアウト (秒)',type:'number',desc:'1台目受信後、残り台数を待つ最大秒数。3回タイムアウトごとに稼働台数を1台削減。0=初回待ちと同じ'},
+  {k:'patrol_move_timeout_secs',label:'初回マージ待ちタイムアウト (秒)',type:'number',desc:'1台目のマージを待つ最大秒数。0=無効'},
+  {k:'patrol_merge_timeout_secs',label:'残りマージ待ちタイムアウト (秒)',type:'number',desc:'1台目受信後、残り台数を待つ最大秒数'},
   {k:'parallel_limit',label:'並列切替台数',type:'number',desc:'0=全台同時（ディレイ無効）'},
   {k:'parallel_group_delay_secs',label:'グループ間ディレイ (秒)',type:'number',desc:'並列台数>0のとき有効'},
   {k:'adb_path',label:'ADBパス',type:'text',desc:'adb.exeのフルパスまたは「adb」'},
@@ -1813,69 +1714,33 @@ async function loadConfig(){
   cfgData=await fetch('/api/config').then(r=>r.json());
   document.getElementById('cfg-form').innerHTML=CFG_FIELDS.map(function(f){
     var val=cfgData[f.k]!==undefined?cfgData[f.k]:'';
-    if(f.type==='csv'&&Array.isArray(val)) val=val.join(',');
+    if(f.type==='csv'&&Array.isArray(val))val=val.join(',');
     var inputType=f.type==='csv'?'text':f.type;
     var noteHtml=f.desc?('<span class="cfg-note">'+escHtml(f.desc)+'</span>'):'';
-    return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label>'
-      +'<input type="'+inputType+'" id="cfg-'+f.k+'" value="'+escHtml(String(val))+'" placeholder="'+escHtml(f.desc||'')+'">'
-      +noteHtml+'</div>';
+    return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><input type="'+inputType+'" id="cfg-'+f.k+'" value="'+escHtml(String(val))+'" placeholder="'+escHtml(f.desc||'')+'">'+noteHtml+'</div>';
   }).join('');
 }
 async function saveConfig(){
   const updated={...cfgData};
-  CFG_FIELDS.forEach(f=>{
-    const el=document.getElementById('cfg-'+f.k); if(!el) return;
-    if(f.type==='number') updated[f.k]=parseFloat(el.value)||0;
-    else if(f.type==='csv') updated[f.k]=el.value.split(',').map(s=>s.trim()).filter(Boolean);
-    else updated[f.k]=el.value;
-  });
+  CFG_FIELDS.forEach(f=>{const el=document.getElementById('cfg-'+f.k);if(!el)return;
+    if(f.type==='number')updated[f.k]=parseFloat(el.value)||0;
+    else if(f.type==='csv')updated[f.k]=el.value.split(',').map(s=>s.trim()).filter(Boolean);
+    else updated[f.k]=el.value;});
   const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updated)});
-  const d=await r.json();
-  const st=document.getElementById('cfg-status');
+  const d=await r.json();const st=document.getElementById('cfg-status');
   st.textContent=d.ok?'✓ 保存・反映済':'✗ 失敗: '+(d.error||'');
-  setTimeout(()=>st.textContent='',4000);
-  cfgData=updated;
+  setTimeout(()=>st.textContent='',4000);cfgData=updated;
 }
-
+// ── Uptime counter ──
+const _startTime=Date.now();
+setInterval(()=>{
+  const s=Math.floor((Date.now()-_startTime)/1000);
+  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;
+  const el=document.getElementById('dash-uptime');
+  if(el)el.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
+},1000);
 // ── Init ──
-restoreLayout();
 buildFilterBar();
-
-// 起動時デバイス確認：ADB再起動なしで最大3回試行し、見つかれば終了
-(async function startupDeviceCheck(){
-  async function fetchDevicesOnly(){
-    const r=await fetch('/api/devices');
-    const res=await r.json();
-    const devs=Array.isArray(res)?res:(res.devices||[]);
-    const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
-    if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
-    if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
-    const el=document.getElementById('device-list');
-    if(!devs||devs.length===0){ el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>'; return; }
-    el.innerHTML=devs.map(d=>{
-      const info=mapRes[d]||{};
-      const uid=info.user_uid||'', ch=info.line_id||'', confirmed=info.confirmed||false;
-      const checked=selectedDevices.has(d)?'checked':'';
-      const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
-      const eid='ch-'+encodeURIComponent(d);
-      return '<div class="device-entry'+(confirmed?' matched':'')+'">'
-        +'<label class="check-label">'
-        +'<input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)">'
-        +'<span class="serial">'+escHtml(d)+'</span>'+uidHtml
-        +'</label>'
-        +'<div style="display:flex;gap:6px;margin-top:4px">'
-        +'<input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px">'
-        +'<button style="padding:3px 8px;font-size:0.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button>'
-        +'</div></div>';
-    }).join('');
-  }
-  for(let i=1;i<=3;i++){
-    await fetchDevicesOnly();
-    if(document.querySelectorAll('#device-list .device-entry').length>0) return;
-    if(i<3) await new Promise(r=>setTimeout(r,3000));
-  }
-})();
-
 applyReversedUI();
 applyLoopUI();
 loadPatrolChannels();
@@ -1884,6 +1749,29 @@ loadConfig();
 loadGoldHistory();
 setInterval(loadGoldHistory,30000);
 initChat();
+(async function startupDeviceCheck(){
+  async function fetchDevicesOnly(){
+    const r=await fetch('/api/devices');const res=await r.json();
+    const devs=Array.isArray(res)?res:(res.devices||[]);
+    const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
+    const deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
+    if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
+    renderDashDevices(devs,deviceMap);
+    const el=document.getElementById('device-list');
+    if(!devs||devs.length===0){if(el)el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return false;}
+    if(el)el.innerHTML=devs.map(d=>{
+      const info=deviceMap[d]||{};const uid=info.user_uid||'',ch=info.line_id||'',confirmed=info.confirmed||false;
+      const checked=selectedDevices.has(d)?'checked':'';
+      const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
+      const eid='ch-'+encodeURIComponent(d);
+      return '<div class="device-entry'+(confirmed?' matched':'')+'">'
+        +'<label class="check-label"><input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)"><span class="serial">'+escHtml(d)+'</span>'+uidHtml+'</label>'
+        +'<div style="display:flex;gap:6px;margin-top:4px"><input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px"><button style="padding:3px 8px;font-size:.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button></div></div>';
+    }).join('');
+    return true;
+  }
+  for(let i=1;i<=3;i++){const found=await fetchDevicesOnly();if(found)return;if(i<3)await new Promise(r=>setTimeout(r,3000));}
+})();
 </script>
 </body>
 </html>`
@@ -1897,17 +1785,19 @@ const spawnLogHTML = `<!DOCTYPE html>
 <title>出現ログ - LoyalBoarlet Monitor</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0a0a1a;color:#eaeaea;font-family:'Segoe UI',sans-serif;font-size:14px;display:flex;flex-direction:column;height:100vh}
-h1{font-size:1em;padding:6px 12px;background:#0d1b33;border-bottom:1px solid #1a3a6a;display:flex;align-items:center;gap:8px;flex-shrink:0}
+:root{--bg0:#0f1117;--bg1:#161b27;--bg2:#1e2535;--bg3:#252d40;--accent:#4f8ef7;--warn:#f5a623;--text1:#e8eaf0;--text2:#9aa3b8;--text3:#5c6680;--border:#2a3348;--radius:8px;}
+body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;font-size:13px;display:flex;flex-direction:column;height:100vh}
+h1{font-size:13px;padding:0 16px;height:44px;background:var(--bg1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;font-weight:500}
 #container{flex:1;overflow-y:auto;padding:8px}
 table{width:100%;border-collapse:collapse;font-size:0.85em}
-th{color:#ffd700;text-align:left;padding:4px 10px;border-bottom:1px solid #1a3a6a;position:sticky;top:0;background:#0d1b33;z-index:1}
-td{padding:4px 10px;border-bottom:1px solid #0d1530;line-height:1.4;white-space:nowrap}
-tr:hover td{background:#111e38}
-.ch{color:#7ec8e3;font-family:monospace;font-weight:bold}
-.time{color:#a0a0b0}
-.monster{color:#ffd700;font-weight:bold}
-.no-data{color:#606080;padding:12px}
+th{color:var(--warn);text-align:left;padding:4px 10px;border-bottom:1px solid rgba(245,166,35,.2);position:sticky;top:0;background:var(--bg1);z-index:1;font-weight:500}
+td{padding:4px 10px;border-bottom:1px solid var(--border);line-height:1.4;white-space:nowrap}
+tr:hover td{background:var(--bg2)}
+.ch{color:var(--accent);font-family:monospace;font-weight:bold}
+.time{color:var(--text3)}
+.monster{color:var(--warn);font-weight:bold}
+.no-data{color:var(--text3);padding:12px}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
 </style>
 </head>
 <body>
@@ -1940,20 +1830,23 @@ const chatLogHTML = `<!DOCTYPE html>
 <title>チャットログ - LoyalBoarlet Monitor</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0a0a1a;color:#eaeafa;font-family:'Segoe UI',sans-serif;font-size:13px;display:flex;flex-direction:column;height:100vh}
-h1{font-size:1em;padding:6px 12px;background:#0d1b33;border-bottom:1px solid #1a3a6a;display:flex;align-items:center;gap:8px;flex-shrink:0}
-#toolbar{padding:4px 10px;background:#0b0f20;border-bottom:1px solid #1a3a6a;display:flex;align-items:center;gap:10px;flex-shrink:0;font-size:0.85em}
-#toolbar input[type=text]{background:#0d1b33;border:1px solid #1a3a6a;color:#eaeafa;padding:2px 6px;border-radius:3px;width:180px}
+:root{--bg0:#0f1117;--bg1:#161b27;--bg2:#1e2535;--bg3:#252d40;--accent:#4f8ef7;--warn:#f5a623;--text1:#e8eaf0;--text2:#9aa3b8;--text3:#5c6680;--border:#2a3348;}
+body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;font-size:13px;display:flex;flex-direction:column;height:100vh}
+h1{font-size:13px;padding:0 16px;height:44px;background:var(--bg1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;font-weight:500}
+#toolbar{padding:5px 12px;background:var(--bg1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;font-size:0.85em}
+#toolbar input[type=text]{background:var(--bg2);border:1px solid var(--border);color:var(--text1);padding:3px 8px;border-radius:6px;width:180px;outline:none}
+#toolbar input[type=text]:focus{border-color:rgba(79,142,247,.5);box-shadow:0 0 0 2px rgba(79,142,247,.12)}
 #container{flex:1;overflow-y:auto;padding:0}
-.msg{padding:4px 10px;border-bottom:1px solid #0d1530;line-height:1.5}
-.msg:hover{background:#0e1a30}
-.time{color:#606080;margin-right:6px}
-.ip{color:#7a6030;font-size:0.85em;margin-right:4px}
-.ch{color:#7ec8e3;font-size:0.85em;margin-right:4px}
-.sender{color:#ffd700;font-weight:bold;margin-right:4px}
-.body{color:#d0d0e0}
-.no-data{color:#606080;padding:12px}
-#count{color:#a0a0b0;margin-left:auto;font-size:0.85em}
+.msg{padding:5px 12px;border-bottom:1px solid var(--border);line-height:1.5;transition:background .15s}
+.msg:hover{background:var(--bg2)}
+.time{color:var(--text3);margin-right:6px}
+.ip{color:var(--text2);font-size:0.85em;margin-right:4px}
+.ch{color:var(--accent);font-size:0.85em;margin-right:4px}
+.sender{color:var(--warn);font-weight:600;margin-right:4px}
+.body{color:var(--text1)}
+.no-data{color:var(--text3);padding:12px}
+#count{color:var(--text2);margin-left:auto;font-size:0.85em}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
 </style>
 </head>
 <body>

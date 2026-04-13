@@ -1636,7 +1636,7 @@ func (cd *CapDevice) triggerDetection(sess *session, source, name string, pos *p
 	cd.debounceMu.Unlock()
 
 	locName := ""
-	if cd.locStore != nil && pos != nil && sess.mapID != 0 {
+	if cd.locStore != nil && pos != nil {
 		vec := location.Vec3{X: pos.X, Y: pos.Y, Z: pos.Z}
 		if loc, ok := cd.locStore.Nearest(sess.mapID, vec); ok {
 			locName = loc.Name
