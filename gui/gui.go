@@ -1383,11 +1383,28 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       <div class="card">
         <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke-linecap="round"/></svg>巡回状態</div>
         <div class="patrol-status"><span id="dash-ps-state" class="stopped">■ 停止中</span><span id="dash-ps-ch" style="color:var(--accent)"></span><span id="dash-ps-prog" style="color:var(--text3)"></span></div>
+        <div style="font-size:.76em;color:var(--text3);min-height:1em;margin-bottom:2px" id="dash-ps-parallel"></div>
         <div class="patrol-progress" id="dash-patrol-progress">
           <div class="progress-line"><div class="progress-fill" id="dash-patrol-fill"></div></div>
           <div class="progress-text"><span id="dash-patrol-label">--</span><span id="dash-patrol-percent"></span></div>
         </div>
         <div id="dash-crash-warning" class="crash-warning"></div>
+        <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">
+          <div id="dash-ps-full" style="font-size:.78em;color:#fca5a5;flex:1"></div>
+          <button id="btn-dash-clear-full" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearFullChannels()">✕ クリア</button>
+        </div>
+        <div class="status-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:8px">
+          <div class="stat">
+            <div class="stat-label">1サイクル時間</div>
+            <div class="stat-value" id="dash-ps-cycle-time">--</div>
+            <div class="stat-sub" id="dash-ps-cycle-time-sub">プログレスバー1巡を計測</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">巡回速度</div>
+            <div class="stat-value ok" id="dash-ps-cycle-rate">--</div>
+            <div class="stat-sub" id="dash-ps-cycle-rate-sub">実測ベース</div>
+          </div>
+        </div>
         <div class="btn-row">
           <button class="btn success" id="dash-btn-patrol-start" onclick="patrolStart()">▶ 巡回開始</button>
           <button class="btn danger" id="dash-btn-patrol-stop" onclick="patrolStop()" style="display:none">■ 停止</button>
@@ -2169,7 +2186,7 @@ async function patrolStart(){
 }
 async function patrolStop(){await fetch('/api/patrol/stop',{method:'POST'});}
 async function clearFullChannels(){await fetch('/api/patrol/clear-full',{method:'POST'});}
-const patrolCycleStats={lastMoveStartAt:0,lastCycleMs:0};
+const patrolCycleStats={lastMoveStartAt:0,cycleMsHistory:[],avgCycleMs:0};
 function formatPatrolCycleDuration(ms){
 	if(!(ms>0))return '--';
 	const totalSeconds=Math.max(1,Math.round(ms/1000));
@@ -2185,20 +2202,27 @@ function formatPatrolCycleRate(ms){
 	return (Number.isInteger(rounded)?String(Math.round(rounded)):rounded.toFixed(1))+'ch/hour';
 }
 function renderPatrolCycleStats(running){
-	const timeEl=document.getElementById('ps-cycle-time');
-	const timeSubEl=document.getElementById('ps-cycle-time-sub');
-	const rateEl=document.getElementById('ps-cycle-rate');
-	const rateSubEl=document.getElementById('ps-cycle-rate-sub');
-	if(!timeEl||!timeSubEl||!rateEl||!rateSubEl)return;
-	timeEl.textContent=formatPatrolCycleDuration(patrolCycleStats.lastCycleMs);
-	rateEl.textContent=formatPatrolCycleRate(patrolCycleStats.lastCycleMs);
-	if(patrolCycleStats.lastCycleMs>0){
-		timeSubEl.textContent=running?'直近の1巡を実測':'停止前の直近1巡';
-		rateSubEl.textContent='3600秒 ÷ 実測サイクル時間';
-	}else{
-		timeSubEl.textContent=running?'計測中...':'プログレスバー1巡を計測';
-		rateSubEl.textContent=running?'1周完了後に表示':'実測ベース';
-	}
+	const pairs=[
+		['ps-cycle-time','ps-cycle-time-sub','ps-cycle-rate','ps-cycle-rate-sub'],
+		['dash-ps-cycle-time','dash-ps-cycle-time-sub','dash-ps-cycle-rate','dash-ps-cycle-rate-sub'],
+	];
+	const n=patrolCycleStats.cycleMsHistory.length;
+	pairs.forEach(([timeId,timeSubId,rateId,rateSubId])=>{
+		const timeEl=document.getElementById(timeId);
+		const timeSubEl=document.getElementById(timeSubId);
+		const rateEl=document.getElementById(rateId);
+		const rateSubEl=document.getElementById(rateSubId);
+		if(!timeEl)return;
+		timeEl.textContent=formatPatrolCycleDuration(patrolCycleStats.avgCycleMs);
+		if(rateEl)rateEl.textContent=formatPatrolCycleRate(patrolCycleStats.avgCycleMs);
+		if(patrolCycleStats.avgCycleMs>0){
+			if(timeSubEl)timeSubEl.textContent=running?'直近'+n+'サイクルの平均':'停止前の直近'+n+'サイクルの平均';
+			if(rateSubEl)rateSubEl.textContent='';
+		}else{
+			if(timeSubEl)timeSubEl.textContent=running?'計測中...':'プログレスバー1巡を計測';
+			if(rateSubEl)rateSubEl.textContent=running?'1周完了後に表示':'実測ベース';
+		}
+	});
 }
 function updatePatrolCycleStats(d,currentPhase){
 	if(!d.running){
@@ -2211,7 +2235,12 @@ function updatePatrolCycleStats(d,currentPhase){
 		if(startedAt>0){
 			if(patrolCycleStats.lastMoveStartAt>0 && startedAt!==patrolCycleStats.lastMoveStartAt){
 				const cycleMs=startedAt-patrolCycleStats.lastMoveStartAt;
-				if(cycleMs>0 && cycleMs<86400000)patrolCycleStats.lastCycleMs=cycleMs;
+				if(cycleMs>0 && cycleMs<86400000){
+					patrolCycleStats.cycleMsHistory.push(cycleMs);
+					if(patrolCycleStats.cycleMsHistory.length>10)patrolCycleStats.cycleMsHistory.shift();
+					const sum=patrolCycleStats.cycleMsHistory.reduce((a,b)=>a+b,0);
+					patrolCycleStats.avgCycleMs=sum/patrolCycleStats.cycleMsHistory.length;
+				}
 			}
 			patrolCycleStats.lastMoveStartAt=startedAt;
 		}
@@ -2260,10 +2289,12 @@ async function pollPatrolStatus(){
       ['dash-patrol-label','ps-patrol-label'].forEach(id=>{const e=els(id);if(e)e.textContent=phaseLabel;});
       ['dash-patrol-percent','ps-patrol-percent'].forEach(id=>{const e=els(id);if(e)e.textContent=progressText;});
 			['dash-patrol-fill','ps-progress-fill'].forEach(id=>{const e=els(id);if(e)e.style.width=Math.round(progressPct)+'%';});
-      const par=els('ps-parallel');if(par){
-        const delay=d.parallel_group_delay>0?'(+'+d.parallel_group_delay+'s)':'';
-        par.textContent=(d.parallel_limit===0?'並列:無制限':'並列:'+d.parallel_limit+'台'+delay)+(d.move_timeout_secs>0?' | timeout:'+d.move_timeout_secs+'s':'')+' | 滞在:'+Math.round(d.dwell_secs)+'s';
-      }
+      ['ps-parallel','dash-ps-parallel'].forEach(id=>{
+        const par=els(id);if(par){
+          const delay=d.parallel_group_delay>0?'(+'+d.parallel_group_delay+'s)':'';
+          par.textContent=(d.parallel_limit===0?'並列:無制限':'並列:'+d.parallel_limit+'台'+delay)+(d.move_timeout_secs>0?' | timeout:'+d.move_timeout_secs+'s':'')+' | 滞在:'+Math.round(d.dwell_secs)+'s';
+        }
+      });
       updatePatrolUI(true);
     }else{
       ['ps-state','dash-ps-state'].forEach(id=>{const e=els(id);if(e){e.className='stopped';e.textContent='■ 停止中';}});
@@ -2272,12 +2303,14 @@ async function pollPatrolStatus(){
 			['dash-patrol-percent','ps-patrol-percent'].forEach(id=>{const e=els(id);if(e)e.textContent='';});
 			['dash-patrol-fill','ps-progress-fill'].forEach(id=>{const e=els(id);if(e)e.style.width='0%';});
 			updatePatrolCycleStats(d, '');
-      const par=els('ps-parallel');if(par)par.textContent='';
+      ['ps-parallel','dash-ps-parallel'].forEach(id=>{const par=els(id);if(par)par.textContent='';});
       updatePatrolUI(false);
     }
-    const fullEl=els('ps-full'),clearBtn=els('btn-clear-full');
-    if(d.full_channels&&d.full_channels.length){if(fullEl)fullEl.textContent='🚫 満員スキップ: Ch'+d.full_channels.join(', Ch');if(clearBtn)clearBtn.style.display='';}
-    else{if(fullEl)fullEl.textContent='';if(clearBtn)clearBtn.style.display='none';}
+    [['ps-full','btn-clear-full'],['dash-ps-full','btn-dash-clear-full']].forEach(([fullId,clearId])=>{
+      const fullEl=els(fullId),clearBtn=els(clearId);
+      if(d.full_channels&&d.full_channels.length){if(fullEl)fullEl.textContent='🚫 満員スキップ: Ch'+d.full_channels.join(', Ch');if(clearBtn)clearBtn.style.display='';}
+      else{if(fullEl)fullEl.textContent='';if(clearBtn)clearBtn.style.display='none';}
+    });
     const crashed=d.crashed_instances&&d.crashed_instances.length?d.crashed_instances:null;
     const showWarn=!crashed&&d.running&&(d.consecutive_full_count||0)>=3;
     const warnMsg=crashed?'⚠ クラッシュ判定: '+crashed.join(', ')+' (3回連続未応答)':'⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。';
@@ -2352,10 +2385,8 @@ function getCustomMonsterAliasRuleLines(){
 function getChatFilterLines(key){
 	return normalizeCsvList(cfgData[key]);
 }
-function renderSimpleFilterRows(key, label){
-	const cls=label==='含む'?'filter-include':'filter-exclude';
+function renderSimpleFilterRows(key){
 	return getChatFilterLines(key).map(value=>'<tr>'
-		+'<td class="'+cls+'">'+escHtml(label)+'</td>'
 		+'<td>'+escHtml(value)+'</td>'
 		+'<td><button type="button" class="btn danger" style="padding:2px 8px" onclick="removeChatFilterValue(\''+key+'\','+escAttrJs(value)+')">削除</button></td>'
 		+'</tr>');
@@ -2438,10 +2469,12 @@ function openChatRuleWindow(){
 }
 function renderChatRuleManagers(){
 	const root=document.getElementById('cfg-chat-rule-managers');if(!root)return;
+	const scroller=document.getElementById('view-settings');
+	const savedScroll=scroller?scroller.scrollTop:0;
+	if(document.activeElement && root.contains(document.activeElement))document.activeElement.blur();
 	const locationOptions=getChatLocationRules().map(rule=>'<option value="'+escHtml(rule.name)+'">'+escHtml(rule.name)+'</option>').join('');
 	const monsterOptions=getChatMonsterAliases().map(rule=>'<option value="'+escHtml(rule.name)+'">'+escHtml(rule.name)+'</option>').join('');
-	const senderRows=renderSimpleFilterRows('chat_report_senders','含む').concat(renderSimpleFilterRows('chat_report_excluded_senders','除外'));
-	const senderRules=normalizeCsvList(cfgData.chat_report_senders).join('\n');
+	const excludeRows=renderSimpleFilterRows('chat_report_excluded_senders');
 	const senderExcludeRules=normalizeCsvList(cfgData.chat_report_excluded_senders).join('\n');
 	const locationRules=normalizeCsvList(cfgData.chat_report_location_rules).join('\n');
 	const monsterRules=normalizeCsvList(cfgData.chat_report_monster_alias_rules).join('\n');
@@ -2449,14 +2482,12 @@ function renderChatRuleManagers(){
 	const monsterRows=renderCustomMonsterAliasRuleRows(false);
 	root.innerHTML=''
 		+'<div class="cfg-rule-box">'
-		+'<div class="cfg-rule-box-title">発言者フィルター</div>'
+		+'<div class="cfg-rule-box-title" style="color:var(--danger)">検知不要プレイヤー</div>'
 		+'<div class="cfg-rule-actions">'
-		+'<input type="text" id="cfg-sender-filter-input" placeholder="発言者名を入力">'
-		+'<button type="button" class="btn" onclick="addChatFilterManagerValue(\'chat_report_senders\',\'cfg-sender-filter-input\')">含むに追加</button>'
-		+'<button type="button" class="btn danger" onclick="addChatFilterManagerValue(\'chat_report_excluded_senders\',\'cfg-sender-filter-input\')">除外に追加</button>'
+		+'<input type="text" id="cfg-sender-exclude-input" placeholder="発言者名を入力">'
+		+'<button type="button" class="btn danger" onclick="addChatFilterManagerValue(\'chat_report_excluded_senders\',\'cfg-sender-exclude-input\')">+ 除外に追加</button>'
 		+'</div>'
-		+renderChatRuleTable(['条件','発言者',''],senderRows,'追加した発言者フィルターはありません')
-		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_senders">'+escHtml(senderRules)+'</textarea>'
+		+renderChatRuleTable(['発言者',''],excludeRows,'除外発言者なし')
 		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_excluded_senders">'+escHtml(senderExcludeRules)+'</textarea>'
 		+'</div>'
 		+'<div class="cfg-rule-box">'
@@ -2481,6 +2512,7 @@ function renderChatRuleManagers(){
 		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_monster_alias_rules" rows="10" spellcheck="false" placeholder="モンスター名|別名">'+escHtml(monsterRules)+'</textarea>'
 		+'<span class="cfg-note">追加内容はセル形式で表示しています。保存はこの一覧から行われます。</span>'
 		+'</div>';
+	if(scroller)requestAnimationFrame(()=>{ scroller.scrollTop=savedScroll; });
 }
 async function removeChatFilterValue(key, value){
 	const current=Array.isArray(cfgData[key])?cfgData[key]:[];

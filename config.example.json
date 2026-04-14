@@ -4,9 +4,7 @@
   "locations": "data/locations.json",
   "discord_webhook": "",
   "debounce_seconds": 30,
-  "chat_exclude": [
-    "null"
-  ],
+  "filter_file": "filter.json",
   "chat_report_senders": [],
   "chat_report_excluded_senders": [],
   "chat_report_location_rules": [],

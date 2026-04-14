@@ -24,16 +24,22 @@ type Config struct {
 	DiscordWebhook string `json:"discord_webhook"`
 	// DebounceSeconds は同Ch+場所の重複通知を抑制する秒数。デフォルト: 30
 	DebounceSeconds int `json:"debounce_seconds"`
+
+	// FilterFile はフィルター設定ファイルのパス。デフォルト: "filter.json"
+	FilterFile string `json:"filter_file"`
+
+	// --- フィルター設定（FilterFile が設定されている場合は filter.json から読み込まれる）---
+
 	// ChatExclude はワールドチャット検知を抑制するキーワード一覧。
-	ChatExclude []string `json:"chat_exclude"`
+	ChatExclude []string `json:"chat_exclude,omitempty"`
 	// ChatReportSenders は発見報告候補として扱う発言者フィルター。
-	ChatReportSenders []string `json:"chat_report_senders"`
+	ChatReportSenders []string `json:"chat_report_senders,omitempty"`
 	// ChatReportExcludedSenders は候補から除外する発言者フィルター。
-	ChatReportExcludedSenders []string `json:"chat_report_excluded_senders"`
+	ChatReportExcludedSenders []string `json:"chat_report_excluded_senders,omitempty"`
 	// ChatReportLocationRules は地点別名と出現候補モンスターの追加ルール。
-	ChatReportLocationRules []string `json:"chat_report_location_rules"`
+	ChatReportLocationRules []string `json:"chat_report_location_rules,omitempty"`
 	// ChatReportMonsterAliasRules はモンスター別名の追加ルール。
-	ChatReportMonsterAliasRules []string `json:"chat_report_monster_alias_rules"`
+	ChatReportMonsterAliasRules []string `json:"chat_report_monster_alias_rules,omitempty"`
 
 	// --- GUI / ADB 設定 ---
 
@@ -130,6 +136,7 @@ func defaultConfig() *Config {
 		ActiveDeviceCount:        0,
 		FullThreshold:            0.0, // 0=従来通り全台
 		ConsecutiveFullThreshold: 3,   // 3連続満員でクラッシュ判定
+		FilterFile: "filter.json",
 		SceneMapIds: map[string]uint32{
 			"阿斯特里亚平原": 7, // アステリア平原
 		},
@@ -186,12 +193,59 @@ func Load(path string) (*Config, error) {
 	if cfg.ParallelGroupDelaySecs == 0 {
 		// 0は有効値（ディレイなし）なのでそのまま
 	}
+	// FilterFile が設定されていれば filter.json からフィルター設定を読み込む
+	if cfg.FilterFile == "" {
+		cfg.FilterFile = "filter.json"
+	}
+	fc, err := LoadFilter(cfg.FilterFile)
+	if err != nil {
+		return nil, err
+	}
+	// filter.json の内容で上書き（config.json 側の値より優先）
+	if len(fc.ChatExclude) > 0 {
+		cfg.ChatExclude = fc.ChatExclude
+	}
+	if len(fc.ChatReportSenders) > 0 {
+		cfg.ChatReportSenders = fc.ChatReportSenders
+	}
+	if len(fc.ChatReportExcludedSenders) > 0 {
+		cfg.ChatReportExcludedSenders = fc.ChatReportExcludedSenders
+	}
+	if len(fc.ChatReportLocationRules) > 0 {
+		cfg.ChatReportLocationRules = fc.ChatReportLocationRules
+	}
+	if len(fc.ChatReportMonsterAliasRules) > 0 {
+		cfg.ChatReportMonsterAliasRules = fc.ChatReportMonsterAliasRules
+	}
 	return cfg, nil
 }
 
-// Save writes cfg as indented JSON to path.
+// Save はフィルター設定を FilterFile（デフォルト filter.json）に書き出し、
+// config.json にはフィルターフィールドを含めずに保存する。
 func Save(path string, cfg *Config) error {
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	filterPath := cfg.FilterFile
+	if filterPath == "" {
+		filterPath = "filter.json"
+	}
+	// フィルター設定を filter.json に保存
+	fc := &FilterConfig{
+		ChatExclude:                 cfg.ChatExclude,
+		ChatReportSenders:           cfg.ChatReportSenders,
+		ChatReportExcludedSenders:   cfg.ChatReportExcludedSenders,
+		ChatReportLocationRules:     cfg.ChatReportLocationRules,
+		ChatReportMonsterAliasRules: cfg.ChatReportMonsterAliasRules,
+	}
+	if err := SaveFilter(filterPath, fc); err != nil {
+		return err
+	}
+	// config.json にはフィルターフィールドを含めずに保存（omitempty で nil なら出力されない）
+	cfgCopy := *cfg
+	cfgCopy.ChatExclude = nil
+	cfgCopy.ChatReportSenders = nil
+	cfgCopy.ChatReportExcludedSenders = nil
+	cfgCopy.ChatReportLocationRules = nil
+	cfgCopy.ChatReportMonsterAliasRules = nil
+	data, err := json.MarshalIndent(cfgCopy, "", "  ")
 	if err != nil {
 		return err
 	}
