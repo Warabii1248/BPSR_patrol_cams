@@ -64,6 +64,10 @@ type Config struct {
 	// PatrolChannelsFile はチャンネルリストファイルのパス。デフォルト: "channels.txt"
 	PatrolChannelsFile string `json:"patrol_channels_file"`
 
+	// PortMapFile はサーバーポート→ch番号の対応マップファイルのパス。デフォルト: "port_ch_map.json"
+	// 巡回モードで訪れたchを自動記録し、ポート変更時は自動更新する。
+	PortMapFile string `json:"port_map_file"`
+
 	// PatrolDwellSecs はch移動完了後〜次ch移動開始までの待機秒数。デフォルト: 10
 	PatrolDwellSecs float64 `json:"patrol_dwell_secs"`
 
@@ -130,6 +134,7 @@ func defaultConfig() *Config {
 		ParallelLimit:            0,
 		ParallelGroupDelaySecs:   0,
 		PatrolChannelsFile:       "channels.txt",
+		PortMapFile:              "port_ch_map.json",
 		PatrolDwellSecs:          10,
 		PatrolMoveTimeoutSecs:    30,
 		PatrolMergeTimeoutSecs:   15,

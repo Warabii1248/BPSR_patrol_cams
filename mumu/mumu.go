@@ -348,8 +348,8 @@ type PatrolStatus struct {
 	MoveTimeoutSecs      float64  `json:"move_timeout_secs"`      // 移動待ちタイムアウト(秒)
 	FullChannels         []uint32 `json:"full_channels"`          // 満員と判定してスキップしたch一覧
 	ConsecutiveFullCount int      `json:"consecutive_full_count"` // 連続して満員スキップしたch数（クラッシュ検知用）
-	KnownInstances       []string `json:"known_instances"`        // 認識済みインスタンス一覧
-	CrashedInstances     []string `json:"crashed_instances"`      // クラッシュ判定中のインスタンス
+	KnownInstances       []string `json:"known_instances"`        // 認識済みUID一覧
+	CrashedInstances     []string `json:"crashed_instances"`      // クラッシュ判定中のUID
 }
 
 // PatrolOptions は巡回の追加オプション
@@ -363,19 +363,23 @@ type PatrolOptions struct {
 type Patroller struct {
 	cfg              Config
 	mu               sync.RWMutex
+	wg               sync.WaitGroup     // 巡回goroutineの完了待機用
 	status           PatrolStatus
 	cancel           context.CancelFunc
 	lastChannel      uint32             // 最後に巡回したチャンネル（再開位置の計算に使用）
-	moveSignal       chan moveSignalMsg // [0x2E]パケット受信シグナル（インスタンスラベル付き）
+	moveSignal       chan moveSignalMsg // [0x2E]パケット受信シグナル（UID付き）
 	onChannelSwitch  func(uint32)       // チャンネル切替完了時コールバック
-	knownInstances   map[string]bool    // 一度でも応答したインスタンス
-	missedCounts     map[string]int     // インスタンス別連続未応答カウント
-	crashedInstances map[string]bool    // クラッシュ判定済みインスタンス（3回連続未応答）
+	knownInstances   map[string]bool    // 一度でも応答したUID
+	missedCounts     map[string]int     // UID別連続未応答カウント
+	crashedInstances map[string]bool    // クラッシュ判定済みUID（3回連続未応答）
 }
 
 // NotifyChMovePacket は ncap が [0x2E] パケットを受信したときに呼び出す。
-// label は "Instance-N" 形式のインスタンスラベル。巡回中でない場合は何もしない。
+// label は UID 文字列（固定ユーザーID）。空文字列の場合は無視する。巡回中でない場合は何もしない。
 func (p *Patroller) NotifyChMovePacket(label string) {
+	if label == "" {
+		return
+	}
 	p.mu.RLock()
 	running := p.status.Running
 	ch := p.moveSignal
@@ -497,6 +501,8 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 		return
 	}
 	p.Stop()
+	// 前の巡回goroutineが完全に終了するまで待機（二重起動・ADB競合防止）
+	p.wg.Wait()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -564,11 +570,13 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 		}
 	}
 
+	p.wg.Add(1)
 	go func() {
 		defer func() {
 			p.mu.Lock()
 			p.status.Running = false
 			p.mu.Unlock()
+			p.wg.Done()
 			log.Println("[MuMu] 巡回終了")
 		}()
 

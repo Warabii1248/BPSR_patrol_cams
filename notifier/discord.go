@@ -25,6 +25,10 @@ type Detection struct {
 	// LineID is the game channel number (Ch) of the capturing instance.
 	LineID uint32
 
+	// LineIDUnconfirmed は lineID が PortMap のみから推定された非確定値であることを示す。
+	// true の場合、Format で "(非確定)" が付与される。
+	LineIDUnconfirmed bool
+
 	// ChatLineID is the channel number extracted from the chat message text.
 	// Populated only when Source == SourceChat. Takes priority over LineID in Format.
 	ChatLineID uint32
@@ -100,7 +104,11 @@ func Format(det Detection) string {
 	}
 	ch := "不明"
 	if det.LineID > 0 {
-		ch = fmt.Sprintf("%d", det.LineID)
+		if det.LineIDUnconfirmed {
+			ch = fmt.Sprintf("%d (非確定)", det.LineID)
+		} else {
+			ch = fmt.Sprintf("%d", det.LineID)
+		}
 	}
 	loc := det.Location
 	if loc == "" {

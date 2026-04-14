@@ -168,6 +168,9 @@ type CapDevice struct {
 	currentChannel   uint32
 	currentChannelMu sync.RWMutex
 
+	// サーバーポート→ch番号のルックアップテーブル（巡回訪問時に自動更新）
+	portMap *PortMap
+
 	// シーン名→mapID マッピング（config.json の scene_map_ids から設定）
 	sceneMapIds map[string]uint32
 
@@ -184,6 +187,15 @@ type CapDevice struct {
 
 	// チャット通知コールバック（GUI へのリアルタイム配信用）
 	chatNotifyFn func(clientIP, sender, message string, channel uint32, hasCh bool)
+
+	// チャンネルデバッグモード
+	// --ch-debug で有効: 全methodIdとシーン変更パケットをログ出力する
+	chDebug bool
+	// --ch-hunt で指定したch番号を全パケットから再帰的にスキャンする (0=無効)
+	chHunt uint32
+	// --ch-watch で有効: 候補パスの値変化をリアルタイム監視する
+	chWatch     bool
+	chWatchLast sync.Map // key: "label:pathLabel" → uint64
 }
 
 // NewCapDevice は新しいCapDeviceを生成する
@@ -260,12 +272,34 @@ func (cd *CapDevice) SetMonsterScan(enabled bool) {
 	}
 }
 
+// SetPortMapFile はポートマップファイルを読み込み、自動記録を有効にする。
+func (cd *CapDevice) SetPortMapFile(path string) {
+	cd.portMap = LoadPortMap(path)
+}
+
 // SetCurrentChannel は Patroller が現在巡回中のチャンネルを通知する。
 // パケットから lineID が取得できない場合のフォールバックとして使用される。
+// 同時に、接続中のセッションのサーバーポートをポートマップに自動記録する。
 func (cd *CapDevice) SetCurrentChannel(ch uint32) {
 	cd.currentChannelMu.Lock()
 	cd.currentChannel = ch
 	cd.currentChannelMu.Unlock()
+
+	// ポートマップを自動更新し、lineIDも直接設定する
+	// lineID==0（未割当）のセッションのみ更新する。
+	// lineID!=0のセッションは前chのセッションのため、誤ったポート変更を防ぐ。
+	if cd.portMap != nil && ch > 0 {
+		cd.sessionsMu.RLock()
+		for _, sess := range cd.sessions {
+			sess.mu.Lock()
+			if sess.serverIP != "" && sess.lineID == 0 {
+				cd.portMap.Update(ch, sess.serverIP)
+				sess.lineID = ch
+			}
+			sess.mu.Unlock()
+		}
+		cd.sessionsMu.RUnlock()
+	}
 }
 
 // SetSceneMapIds はシーン名→mapID のマッピングを設定する。
@@ -274,10 +308,42 @@ func (cd *CapDevice) SetSceneMapIds(m map[string]uint32) {
 	cd.sceneMapIds = m
 }
 
+// SetChDebug はチャンネル番号デバッグモードを切り替える。
+// 有効時: 全methodIdとシーン変更パケットのhexをログ出力する。
+func (cd *CapDevice) SetChDebug(enabled bool) {
+	cd.chDebug = enabled
+	if enabled {
+		log.Println("[ChDebug] 有効: 全methodIdとシーン変更後パケットをログ出力します")
+		log.Println("[ChDebug] 操作手順: ゲームで手動ch移動 → ログで[ChDebug]行を確認")
+	}
+}
+
+// SetChHunt はch番号ハントモードを設定する。
+// n>0 のとき全パケットの protobuf フィールドを再帰的にスキャンし、
+// 値 n が見つかった場合に [ChHunt] ★ としてログに出力する。
+func (cd *CapDevice) SetChHunt(n uint32) {
+	cd.chHunt = n
+	if n > 0 {
+		log.Printf("[ChHunt] ch=%d を全パケットからスキャンします", n)
+	}
+}
+
+func (cd *CapDevice) SetChWatch(enabled bool) {
+	cd.chWatch = enabled
+	if enabled {
+		log.Println("[ChWatch] 有効: 候補パスの値をリアルタイム監視します（値が変化したときのみ出力）")
+		log.Println("[ChWatch] ゲームで手動ch変更 → [ChWatch] 行の値が正しいch番号に変わるか確認")
+		for _, wp := range defaultChWatchPaths {
+			log.Printf("[ChWatch]   監視パス: %s", wp.label)
+		}
+	}
+}
+
 // CaptureSession はGUI向けにエクスポートするセッション情報
 type CaptureSession struct {
 	Label     string
 	ClientIP  string
+	ServerIP  string // "ip:port" 形式のゲームサーバーアドレス
 	UserUID   uint64
 	MapID     uint32
 	LineID    uint32
@@ -303,6 +369,7 @@ func (cd *CapDevice) Sessions() []CaptureSession {
 			seen[s.clientIP] = CaptureSession{
 				Label:     s.label,
 				ClientIP:  s.clientIP,
+				ServerIP:  s.serverIP,
 				UserUID:   s.userUID,
 				MapID:     s.mapID,
 				LineID:    s.lineID,
@@ -731,6 +798,7 @@ func (cd *CapDevice) handleClientToServer(clientIP, srcKey, revKey string, tcp *
 		if existing.serverIP != serverAddr {
 			prev := existing.serverIP
 			existing.serverIP = serverAddr
+			cd.tryPortMapLineID(existing) // serverIP 更新時に portMap から ch を補完
 			if !existing.serverConfirmed {
 				existing.resetTCPState()
 				log.Printf("[%s] C→S: サーバー更新 [%s] → [%s]", existing.label, prev, serverAddr)
@@ -772,6 +840,7 @@ func (cd *CapDevice) handleClientToServer(clientIP, srcKey, revKey string, tcp *
 	if sess.serverIP != serverAddr {
 		sess.serverIP = serverAddr
 	}
+	cd.tryPortMapLineID(sess) // serverIP 確定時に portMap から ch を補完
 	cd.registerConn(srcKey, revKey, clientEndpoint)
 	sess.lastAnyPacketAt = now
 	cd.reassembleTcpStream(sess, serverAddr, tcp, payload, now)
@@ -1124,6 +1193,21 @@ func (cd *CapDevice) processFrameDown(sess *session, reader *ByteReader, isZstd 
 }
 
 func (cd *CapDevice) processNotifyMethod(sess *session, methodId uint32, payload []byte) {
+	if cd.chDebug {
+		switch methodId {
+		case 0x03, 0x06, 0x15, 0x16, 0x2E, 0x2D:
+			// 既知メソッドは各処理内でログ済み
+		default:
+			log.Printf("[ChDebug][%s] unknown methodId=0x%08X len=%d hex=%s",
+				sess.label, methodId, len(payload), chDebugHex(payload, 96))
+		}
+	}
+	if cd.chHunt > 0 {
+		cd.huntChannelInPayload(sess, fmt.Sprintf("methodId=0x%08X", methodId), payload)
+	}
+	if cd.chWatch {
+		cd.watchPaths(sess, methodId, payload)
+	}
 	switch methodId {
 	case 0x03:
 		cd.processSyncSceneData(sess, payload)
@@ -1182,6 +1266,15 @@ func (cd *CapDevice) processSyncContainerData(sess *session, payload []byte) {
 	}
 	log.Printf("[%s][0x15/16] mapID=%d lineID=%d (channelId=%d)", sess.label, mapID, lineID, sd.GetChannelId())
 
+	if cd.chDebug {
+		log.Printf("[ChDebug][%s][0x15/16] lineID=%d channelId=%d mapId=%d | 全hex=%s",
+			sess.label, sd.GetLineId(), sd.GetChannelId(), sd.GetMapId(), chDebugHex(payload, 256))
+		if lineID == 0 {
+			log.Printf("[ChDebug][%s][0x15/16] ★ lineID=0! SceneData が空の可能性あり → 他methodIdのパケットを確認してください",
+				sess.label)
+		}
+	}
+
 	if lineID == 0 {
 		return
 	}
@@ -1195,6 +1288,7 @@ func (cd *CapDevice) processSyncContainerData(sess *session, payload []byte) {
 	if sess.confirmedAt.IsZero() {
 		sess.confirmedAt = time.Now() // 最初の0x15確定時のみ記録（チャット紐付けの優先度用）
 	}
+	cd.tryPortMapLineID(sess) // lineID=0 のとき portMap から補完
 
 	if oldCh == 0 {
 		log.Printf("[%s][Ch確定] Ch %d に入りました (mapID=%d)", sess.label, lineID, mapID)
@@ -1360,6 +1454,10 @@ func (cd *CapDevice) processSyncSceneData(sess *session, payload []byte) {
 
 	// 固定オフセットからシーン名を取得（従来ロジック）
 	if len(payload) < 43 {
+		if cd.chDebug {
+			log.Printf("[ChDebug][%s][0x03] payload短すぎ(len=%d) hex=%s",
+				sess.label, len(payload), chDebugHex(payload, 64))
+		}
 		return
 	}
 	l := int(payload[42])
@@ -1372,6 +1470,11 @@ func (cd *CapDevice) processSyncSceneData(sess *session, payload []byte) {
 	}
 	sceneName := string(payload[st : st+l])
 	log.Printf("[%s][0x03] シーン切替: %s", sess.label, sceneName)
+
+	if cd.chDebug {
+		log.Printf("[ChDebug][%s][0x03] ======== ch移動シーン変更: %s ======== 全hex=%s",
+			sess.label, sceneName, chDebugHex(payload, 256))
+	}
 
 	// シーン名→mapID 解決
 	if sess.mapID == 0 {
@@ -1605,25 +1708,56 @@ func (cd *CapDevice) triggerDetection(sess *session, source, name string, pos *p
 		}
 	}
 
-	// lineID が未確定の場合は Patroller の現在チャンネルをフォールバックとして使用
+	// lineID 解決: 3段階優先度
+	//   最優先（確定）: 巡回指定ch と PortMap が一致
+	//   次点  （確定）: 巡回指定ch のみ（PortMap未登録 or 不一致）
+	//   非確定       : PortMap のみ（巡回中でない）
+	//   不明         : 両方なし → sess.lineID（proto由来）を使用
 	lineID := sess.lineID
-	if lineID == 0 && source != notifier.SourceChat {
+	lineIDUnconfirmed := false
+
+	if source != notifier.SourceChat {
 		cd.currentChannelMu.RLock()
-		lineID = cd.currentChannel
+		patrolCh := cd.currentChannel
 		cd.currentChannelMu.RUnlock()
-		if lineID != 0 {
-			log.Printf("[%s][検知] lineID フォールバック: Ch%d (Patroller現在値)", sess.label, lineID)
+
+		portMapCh, hasPortMap := cd.portMap.LookupByPort(sess.serverIP)
+
+		switch {
+		case patrolCh > 0 && hasPortMap && portMapCh == patrolCh:
+			// 最優先: 巡回指定 + PortMap が一致 → 最高信頼度
+			lineID = patrolCh
+			log.Printf("[%s][検知] ch確定(最優先): Ch%d (巡回指定+PortMap一致)", sess.label, lineID)
+		case patrolCh > 0:
+			// 次点: 巡回指定のみ
+			lineID = patrolCh
+			if hasPortMap && portMapCh != patrolCh {
+				log.Printf("[%s][検知] ch確定(巡回指定): Ch%d (PortMap=%d と不一致、巡回を優先)", sess.label, lineID, portMapCh)
+			} else {
+				log.Printf("[%s][検知] ch確定(巡回指定): Ch%d", sess.label, lineID)
+			}
+		case hasPortMap:
+			// 非確定: PortMap のみ（巡回中でない）
+			lineID = portMapCh
+			lineIDUnconfirmed = true
+			log.Printf("[%s][検知] ch非確定(PortMap): Ch%d (port=%s、巡回指定なし)", sess.label, lineID, sess.serverIP)
+		default:
+			// proto 由来の sess.lineID をそのまま使用（0 の場合は不明）
+			if lineID != 0 {
+				log.Printf("[%s][検知] ch確定(proto): Ch%d", sess.label, lineID)
+			}
 		}
 	}
 
 	det := notifier.Detection{
-		Source:        source,
-		LineID:        lineID,
-		ChatLineID:    chatLineID,
-		Location:      locName,
-		MonsterName:   name,
-		InstanceLabel: sess.label,
-		Time:          time.Now(),
+		Source:           source,
+		LineID:           lineID,
+		LineIDUnconfirmed: lineIDUnconfirmed,
+		ChatLineID:       chatLineID,
+		Location:         locName,
+		MonsterName:      name,
+		InstanceLabel:    sess.label,
+		Time:             time.Now(),
 	}
 	if source == notifier.SourceChat {
 		det.Message = name
@@ -1670,6 +1804,113 @@ func decompressZstd(buf []byte) []byte {
 
 func isPlayerUUID(uuid uint64) bool  { return (uuid & 0xFFFF) == 640 }
 func isMonsterUUID(uuid uint64) bool { return (uuid & 0xFFFF) == 64 }
+
+// ───── チャンネルデバッグ補助 ─────
+
+// chDebugHex はデバッグ用に先頭 max バイトを16進文字列で返す。
+func chDebugHex(b []byte, max int) string {
+	if len(b) > max {
+		b = b[:max]
+	}
+	return fmt.Sprintf("%X", b)
+}
+
+// huntChannelInPayload は payload の protobuf フィールドを再帰的にスキャンし、
+// cd.chHunt と一致する varint 値が見つかった場合にログへ出力する。
+func (cd *CapDevice) huntChannelInPayload(sess *session, tag string, payload []byte) {
+	target := uint64(cd.chHunt)
+	fields := parseProtoFields(payload)
+	for _, f := range fields {
+		switch f.wt {
+		case 0: // varint
+			if f.vi == target {
+				log.Printf("[ChHunt][%s][%s] ★ field%d==%d を検出! 先頭hex=%s",
+					sess.label, tag, f.num, target, chDebugHex(payload, 128))
+			}
+		case 2: // length-delimited → 再帰
+			if len(f.raw) > 0 {
+				cd.huntChannelInPayload(sess, fmt.Sprintf("%s.f%d", tag, f.num), f.raw)
+			}
+		}
+	}
+}
+
+// tryPortMapLineID は sess.lineID が 0 のとき、portMap からポートに対応する ch を補完する。
+// 呼び出し元は sess.mu を保持していること。
+func (cd *CapDevice) tryPortMapLineID(sess *session) {
+	if cd.portMap == nil || sess.lineID != 0 || sess.serverIP == "" {
+		return
+	}
+	if ch, ok := cd.portMap.LookupByPort(sess.serverIP); ok {
+		sess.lineID = ch
+		log.Printf("[%s] PortMap: lineID=Ch%d (port=%s)", sess.label, ch, sess.serverIP)
+	}
+}
+
+// chWatchPath は監視対象のプロトパスを定義する。
+// navPath: len-delimited フィールドを辿るフィールド番号列
+// lastField: 末尾メッセージ内で読む varint フィールド番号
+type chWatchPath struct {
+	methodId  uint32
+	navPath   []int
+	lastField int
+	label     string
+}
+
+// defaultChWatchPaths は ChHunt 解析で特定した ch 番号候補パス。
+// ch を変えながら [ChWatch] 出力を確認し、どのパスが正しいか絞る。
+var defaultChWatchPaths = []chWatchPath{
+	// 0x15 (SyncContainerData): f1→f15(LineId?)→f1→f2 の f5
+	{0x15, []int{1, 15, 1, 2}, 5, "0x15→f1→f15→f1→f2→f5"},
+	// 0x2E (SyncToMeDeltaInfo?): f1→f1→f10→f2 の f2
+	{0x2E, []int{1, 1, 10, 2}, 2, "0x2E→f1→f1→f10→f2→f2"},
+	// 0x03 (SyncSceneData): f1→f2→f7→f2 の f1
+	{0x03, []int{1, 2, 7, 2}, 1, "0x03→f1→f2→f7→f2→f1"},
+}
+
+// extractProtoPath は payload から navPath を辿り、末尾メッセージの lastField varint を返す。
+func extractProtoPath(payload []byte, navPath []int, lastField int) (uint64, bool) {
+	cur := payload
+	for _, fn := range navPath {
+		fields := parseProtoFields(cur)
+		found := false
+		for _, f := range fields {
+			if int(f.num) == fn && f.wt == 2 {
+				cur = f.raw
+				found = true
+				break
+			}
+		}
+		if !found {
+			return 0, false
+		}
+	}
+	for _, f := range parseProtoFields(cur) {
+		if int(f.num) == lastField && f.wt == 0 {
+			return f.vi, true
+		}
+	}
+	return 0, false
+}
+
+// watchPaths は候補パスの値を抽出し、前回値から変化があった場合のみログ出力する。
+func (cd *CapDevice) watchPaths(sess *session, methodId uint32, payload []byte) {
+	for _, wp := range defaultChWatchPaths {
+		if wp.methodId != methodId {
+			continue
+		}
+		val, ok := extractProtoPath(payload, wp.navPath, wp.lastField)
+		if !ok {
+			continue
+		}
+		key := sess.label + ":" + wp.label
+		if prev, loaded := cd.chWatchLast.Load(key); loaded && prev.(uint64) == val {
+			continue // 値が変わっていない
+		}
+		cd.chWatchLast.Store(key, val)
+		log.Printf("[ChWatch][%s] %s = %d ★変化★", sess.label, wp.label, val)
+	}
+}
 
 // suppress unused warnings
 var _ = isPlayerUUID

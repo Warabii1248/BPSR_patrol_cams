@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -10,6 +11,8 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,6 +32,16 @@ var (
 	networkFlag   = flag.String("network", "", "NIC description (auto = auto-detect)")
 	webhookFlag   = flag.String("webhook", "", "Discord webhook URL (overrides config)")
 	autoCheckTime = flag.Int("auto-check", 0, "seconds to sample interfaces when using auto")
+
+	// チャンネルデバッグ用フラグ
+	// --ch-debug : 全methodId・シーン変更パケットhexをログ出力する
+	chDebugFlag = flag.Bool("ch-debug", false, "debug: log all methodIds and scene-change packet hex")
+	// --ch-hunt N : 全パケットから varint N を再帰スキャンし、ヒット時に [ChHunt] ★ をログ出力する
+	chHuntFlag = flag.Uint("ch-hunt", 0, "debug: hunt for this channel number in all packets (0=disabled)")
+	// --ch-watch : 候補パスの値が変化したときのみ [ChWatch] ★変化★ をログ出力する
+	chWatchFlag = flag.Bool("ch-watch", false, "debug: monitor candidate ch paths and log on value change")
+	// --ch-map-file : ポート→ch対応を収集してJSONに保存（ターミナルでch番号を入力）
+	chMapFileFlag = flag.String("ch-map-file", "", "collect server-port→ch mapping; type ch number in terminal")
 )
 
 // Version はビルド時に -ldflags "-X main.Version=x.y.z" で注入される
@@ -190,6 +203,19 @@ func main() {
 	if cfg.MonsterScan {
 		capDevice.SetMonsterScan(true)
 	}
+	if cfg.PortMapFile != "" {
+		capDevice.SetPortMapFile(cfg.PortMapFile)
+		log.Printf("port map: %s", cfg.PortMapFile)
+	}
+	if *chDebugFlag {
+		capDevice.SetChDebug(true)
+	}
+	if *chHuntFlag > 0 {
+		capDevice.SetChHunt(uint32(*chHuntFlag))
+	}
+	if *chWatchFlag {
+		capDevice.SetChWatch(true)
+	}
 
 	// Patroller がチャンネル切替時に capDevice へ現在チャンネルを通知する
 	guiServer.SetChannelNotifyFn(func(ch uint32) {
@@ -255,6 +281,12 @@ func main() {
 		}
 	}()
 
+	if *chMapFileFlag != "" {
+		go runChMapCollector(*chMapFileFlag, func() []ncap.CaptureSession {
+			return capDevice.Sessions()
+		})
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -315,6 +347,80 @@ func runGASFetch(cfg *appconfig.Config, srv *gui.Server) {
 	}
 	log.Printf("[GASFetch] チャンネル更新: %d件 (閾値=%.1fh): %v", len(chs), cfg.GASSpawnThresholdHours, chs)
 	srv.UpdateChannelsFromGAS(chs)
+}
+
+// runChMapCollector はターミナルからch番号を受け取り、
+// 現在のセッションのサーバーポートをch番号と対応付けてJSONファイルに保存する。
+// 使い方: エミュレーターをch Xに移動後、ターミナルに "X" と入力してEnter。
+func runChMapCollector(mapFile string, getSessions func() []ncap.CaptureSession) {
+	// 既存のマッピングを読み込む
+	mapping := make(map[string]int) // "ip:port" → ch
+	if data, err := os.ReadFile(mapFile); err == nil {
+		_ = json.Unmarshal(data, &mapping)
+		log.Printf("[ChMap] 既存マッピング読み込み: %d件 (%s)", len(mapping), mapFile)
+	}
+
+	log.Printf("[ChMap] ポート→ch収集モード開始 (保存先: %s)", mapFile)
+	log.Println("[ChMap] 使い方: エミュレーターをch移動後、ch番号を入力してEnter")
+	log.Println("[ChMap]   例: 40 → ch40のポートを記録")
+	log.Println("[ChMap]   'show' → 現在のマッピング一覧")
+	log.Println("[ChMap]   'sessions' → 現在のセッション一覧")
+
+	save := func() {
+		data, _ := json.MarshalIndent(mapping, "", "  ")
+		if err := os.WriteFile(mapFile, data, 0644); err != nil {
+			log.Printf("[ChMap] 保存失敗: %v", err)
+		} else {
+			log.Printf("[ChMap] 保存完了: %d件 → %s", len(mapping), mapFile)
+		}
+	}
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if line == "show" {
+			log.Printf("[ChMap] 現在のマッピング (%d件):", len(mapping))
+			for addr, ch := range mapping {
+				log.Printf("[ChMap]   ch=%d ← %s", ch, addr)
+			}
+			continue
+		}
+		if line == "sessions" {
+			sessions := getSessions()
+			log.Printf("[ChMap] 現在のセッション (%d件):", len(sessions))
+			for _, s := range sessions {
+				log.Printf("[ChMap]   [%s] server=%s uid=%d", s.Label, s.ServerIP, s.UserUID)
+			}
+			continue
+		}
+		ch, err := strconv.Atoi(line)
+		if err != nil || ch <= 0 {
+			log.Printf("[ChMap] 無効な入力: %q (ch番号の整数、'show'、'sessions' のいずれかを入力)", line)
+			continue
+		}
+		sessions := getSessions()
+		if len(sessions) == 0 {
+			log.Printf("[ChMap] ch=%d: セッションなし（まだ接続されていない可能性）", ch)
+			continue
+		}
+		recorded := 0
+		for _, s := range sessions {
+			if s.ServerIP == "" {
+				continue
+			}
+			mapping[s.ServerIP] = ch
+			log.Printf("[ChMap] ch=%d ← %s [%s] を記録", ch, s.ServerIP, s.Label)
+			recorded++
+		}
+		if recorded > 0 {
+			save()
+		} else {
+			log.Printf("[ChMap] ch=%d: ServerIPが空のセッションのみ（接続待ち?）", ch)
+		}
+	}
 }
 
 func openByDescription(devices []pcap.Interface, desc string) (*pcap.Handle, error) {

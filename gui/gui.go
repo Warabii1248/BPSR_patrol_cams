@@ -332,25 +332,31 @@ func (w *guiWriter) Write(p []byte) (int, error) {
 			// - "[Instance-N][0x2E] lineID補完: ..." は補助情報 → 二重カウント防止
 			// - "[MuMu] 巡回: Ch%d [0x2E] ..." は自ログ → フィードバックループ防止
 			if strings.Contains(line, "[0x2E] UUID=") {
-				w.srv.patroller.NotifyChMovePacket(extractInstanceLabel(line))
+				w.srv.patroller.NotifyChMovePacket(extractUID(line))
 			}
 		}
 	}
 	return n, err
 }
 
-// extractInstanceLabel は "[Instance-7][0x2E] UUID=..." 形式のログ行から
-// インスタンスラベル（"Instance-7"）を抽出する。
-func extractInstanceLabel(line string) string {
-	end := strings.Index(line, "][0x2E]")
+// extractUID は "[Instance-7][0x2E] UUID=1234567890 (UID=9876543)" 形式のログ行から
+// UID文字列（"9876543"）を抽出する。UID が見つからない場合は空文字列を返す。
+func extractUID(line string) string {
+	const prefix = "(UID="
+	idx := strings.Index(line, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(prefix):]
+	end := strings.Index(rest, ")")
 	if end <= 0 {
 		return ""
 	}
-	start := strings.LastIndex(line[:end], "[")
-	if start < 0 {
+	uid := rest[:end]
+	if uid == "0" {
 		return ""
 	}
-	return line[start+1 : end]
+	return uid
 }
 
 // LogWriter は log.SetOutput() に渡す io.Writer を返す。
@@ -1614,6 +1620,8 @@ function initPanelDragAndCollapse(){
       title.appendChild(actions);
     }
     card.addEventListener('dragstart',e=>{
+      const titleEl=card.querySelector('.card-title');
+      if(titleEl && !titleEl.contains(e.target)){e.preventDefault();return;}
       dragSrc=card;
       card.classList.add('dragging');
       e.dataTransfer.effectAllowed='move';
