@@ -30,10 +30,6 @@ type Config struct {
 	ChatReportSenders []string `json:"chat_report_senders"`
 	// ChatReportExcludedSenders は候補から除外する発言者フィルター。
 	ChatReportExcludedSenders []string `json:"chat_report_excluded_senders"`
-	// ChatReportIncludeKeywords は候補として扱う発言内容キーワード。
-	ChatReportIncludeKeywords []string `json:"chat_report_include_keywords"`
-	// ChatReportExcludeKeywords は候補から除外する発言内容キーワード。
-	ChatReportExcludeKeywords []string `json:"chat_report_exclude_keywords"`
 	// ChatReportLocationRules は地点別名と出現候補モンスターの追加ルール。
 	ChatReportLocationRules []string `json:"chat_report_location_rules"`
 	// ChatReportMonsterAliasRules はモンスター別名の追加ルール。

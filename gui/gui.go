@@ -1246,21 +1246,31 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .cfg-stack{display:flex;flex-direction:column;gap:12px}
 .cfg-card{border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--bg1)}
 .cfg-card.chat-filter-card{min-height:0}
+.chat-filter-card #cfg-chat-form{grid-template-columns:1fr}
 .cfg-rule-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.chat-filter-card .cfg-rule-grid{grid-template-columns:1fr}
 .cfg-rule-box{border:1px solid var(--border);border-radius:var(--radius);padding:10px;background:var(--bg0)}
 .cfg-rule-box-title{font-size:.8em;color:var(--text1);font-weight:600;margin-bottom:8px}
 .cfg-rule-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
 .cfg-rule-actions select{min-width:150px;flex:1}
 .cfg-rule-actions input{flex:1;min-width:120px}
-.cfg-rule-table-wrap{border:1px solid var(--border);border-radius:var(--radius);overflow:auto;background:var(--bg1)}
+.cfg-rule-table-wrap{border:1px solid var(--border);border-radius:var(--radius);overflow:auto;background:var(--bg1);max-height:255px}
 .cfg-rule-table{width:100%;border-collapse:collapse;font-size:.8em;table-layout:fixed}
 .cfg-rule-table th,.cfg-rule-table td{border-bottom:1px solid var(--border);border-right:1px solid var(--border);padding:6px 8px;vertical-align:top;line-height:1.4;word-break:break-word}
 .cfg-rule-table th:last-child,.cfg-rule-table td:last-child{border-right:none}
 .cfg-rule-table th{background:var(--bg2);color:var(--text2);font-weight:600;position:sticky;top:0;z-index:1}
 .cfg-rule-table tr:last-child td{border-bottom:none}
 .cfg-rule-table td.cell-mono{font-family:Consolas,monospace;color:var(--accent)}
+.cfg-rule-table td.filter-include{color:var(--accent2);font-weight:600}
+.cfg-rule-table td.filter-exclude{color:var(--danger);font-weight:600}
 .cfg-rule-empty{padding:10px;color:var(--text3);font-size:.8em}
 .cfg-hidden-field{display:none}
+.cfg-rule-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.cfg-rule-header .cfg-rule-box-title{margin-bottom:0}
+.cfg-rule-window-body{margin:0;background:#0b0e15;color:#e6edf6;font-family:'Segoe UI',sans-serif;padding:16px}
+.cfg-rule-window-section{margin-bottom:18px}
+.cfg-rule-window-title{font-size:14px;font-weight:600;color:#e6edf6;margin-bottom:10px}
+.cfg-rule-window-note{font-size:12px;color:#98a3b8;margin-bottom:10px}
 .cfg-field{display:flex;flex-direction:column;gap:3px}
 .cfg-field label{color:var(--text1);font-size:.82em;font-weight:500}
 .cfg-field input{width:100%}
@@ -1488,6 +1498,18 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
           <button class="btn success" id="btn-patrol-start" onclick="patrolStart()">▶ 巡回開始</button>
           <button class="btn" id="btn-patrol-stop" onclick="patrolStop()" disabled>■ 停止</button>
         </div>
+				<div class="status-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-top:10px">
+					<div class="stat">
+						<div class="stat-label">1サイクル時間</div>
+						<div class="stat-value" id="ps-cycle-time">--</div>
+						<div class="stat-sub" id="ps-cycle-time-sub">プログレスバー1巡を計測</div>
+					</div>
+					<div class="stat">
+						<div class="stat-label">巡回速度</div>
+						<div class="stat-value ok" id="ps-cycle-rate">--</div>
+						<div class="stat-sub" id="ps-cycle-rate-sub">実測ベース</div>
+					</div>
+				</div>
       </div>
       <div class="card">
         <div class="card-title">巡回チャンネル</div>
@@ -1518,7 +1540,6 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 	<div class="cfg-stack">
 		<div class="card cfg-card chat-filter-card">
 			<div class="cfg-card-title">チャット候補フィルター</div>
-			<div id="cfg-chat-form" class="cfg-grid"></div>
 			<div id="cfg-chat-rule-managers" class="cfg-rule-grid"></div>
 		</div>
 		<div class="card cfg-card">
@@ -1545,6 +1566,16 @@ function switchView(id,navEl){
 function initPanelDragAndCollapse(){
   const cards=document.querySelectorAll('.card');
   let dragSrc=null;
+	function placeDraggedCardInContainer(container, clientY){
+		if(!dragSrc||!container)return;
+		const siblings=[...container.querySelectorAll(':scope > .card')].filter(card=>card!==dragSrc);
+		const target=siblings.find(card=>{
+			const rect=card.getBoundingClientRect();
+			return clientY < rect.top + rect.height/2;
+		});
+		if(target)container.insertBefore(dragSrc, target);
+		else container.appendChild(dragSrc);
+	}
   cards.forEach(card=>{
     card.draggable=true;
     const title=card.querySelector('.card-title');
@@ -1579,13 +1610,12 @@ function initPanelDragAndCollapse(){
     card.addEventListener('dragover',e=>{
       if(!dragSrc || dragSrc===card) return;
       e.preventDefault();
-      const rect=card.getBoundingClientRect();
-      const after=e.clientY > rect.top + rect.height/2;
-      card.parentElement.insertBefore(dragSrc, after?card.nextSibling:card);
+			placeDraggedCardInContainer(card.parentElement, e.clientY);
     });
     card.addEventListener('drop',e=>{
       if(!dragSrc||dragSrc===card) return;
       e.preventDefault();
+			placeDraggedCardInContainer(card.parentElement, e.clientY);
       dragSrc.classList.remove('dragging');
       dragSrc=null;
     });
@@ -1594,13 +1624,14 @@ function initPanelDragAndCollapse(){
     container.addEventListener('dragover',e=>{
       if(!dragSrc) return;
       e.preventDefault();
+			placeDraggedCardInContainer(container, e.clientY);
     });
     container.addEventListener('drop',e=>{
       if(!dragSrc) return;
-      const target=e.target.closest('.card');
-      if(!target || target===dragSrc){
-        container.appendChild(dragSrc);
-      }
+			e.preventDefault();
+			placeDraggedCardInContainer(container, e.clientY);
+			dragSrc.classList.remove('dragging');
+			dragSrc=null;
     });
   });
 }
@@ -1898,8 +1929,6 @@ function getChatCandidateConfig(){
 	return {
 		senders: normalizeCsvList(cfgData.chat_report_senders),
 		excludedSenders: normalizeCsvList(cfgData.chat_report_excluded_senders),
-		includeKeywords: normalizeCsvList(cfgData.chat_report_include_keywords),
-		excludeKeywords: normalizeCsvList(cfgData.chat_report_exclude_keywords),
 	};
 }
 function getChatCandidateScore(ev){
@@ -1912,8 +1941,6 @@ function getChatCandidateScore(ev){
 	const excludeKeywords=['ありがとう','ありがと','よろしく','こん','こんばんは','おつ','了解','りょ','募集','売り','買い','null'];
 	if(rules.senders.length && !rules.senders.some(v=>sender.includes(v.toLowerCase())))return 0;
 	if(rules.excludedSenders.some(v=>sender.includes(v.toLowerCase())))return 0;
-	if(rules.includeKeywords.length && !rules.includeKeywords.some(v=>message.includes(v.toLowerCase())))return 0;
-	if(rules.excludeKeywords.some(v=>message.includes(v.toLowerCase())))return 0;
 	if(excludeKeywords.some(v=>message.includes(v)))return 0;
 	if(!facts.channel && !facts.location && !facts.monster && !facts.hasCoords && !facts.hasReportVerb)return 0;
 	let score=0;
@@ -1970,8 +1997,6 @@ function chatMsgHtml(ev,opts){
 	const actionHtml=opts.withActions===false?'':'<span class="chat-msg-actions">'
 		+'<button type="button" class="chat-action-btn" data-action="sender-include" data-sender="'+escHtml(ev.sender)+'" onclick="applyChatFilterAction(this)">発言者+</button>'
 		+'<button type="button" class="chat-action-btn exclude" data-action="sender-exclude" data-sender="'+escHtml(ev.sender)+'" onclick="applyChatFilterAction(this)">発言者-</button>'
-		+'<button type="button" class="chat-action-btn" data-action="keyword-include" data-message="'+escHtml(ev.message)+'" onclick="applyChatFilterAction(this)">文言+</button>'
-		+'<button type="button" class="chat-action-btn exclude" data-action="keyword-exclude" data-message="'+escHtml(ev.message)+'" onclick="applyChatFilterAction(this)">文言-</button>'
 		+'</span>';
 	return '<div class="'+rowClass+'" onmouseover="this.style.background=\'var(--bg2)\'" onmouseout="this.style.background=\'\'">'
 		+'<div class="chat-msg-main">'
@@ -2023,8 +2048,6 @@ async function applyChatFilterAction(btn){
 	if(!action||!value)return;
 	if(action==='sender-include')await appendChatFilterValue('chat_report_senders', value);
 	else if(action==='sender-exclude')await appendChatFilterValue('chat_report_excluded_senders', value);
-	else if(action==='keyword-include')await appendChatFilterValue('chat_report_include_keywords', value);
-	else if(action==='keyword-exclude')await appendChatFilterValue('chat_report_exclude_keywords', value);
 }
 function refreshChatDeviceDropdown(){
   const sel=document.getElementById('chat-device-select');if(!sel)return;
@@ -2056,8 +2079,6 @@ function renderChatCandidatePanels(source){
 		const parts=[];
 		if(rules.senders.length)parts.push('含む発言者: '+rules.senders.join(', '));
 		if(rules.excludedSenders.length)parts.push('除外発言者: '+rules.excludedSenders.join(', '));
-		if(rules.includeKeywords.length)parts.push('含むキーワード: '+rules.includeKeywords.join(', '));
-		if(rules.excludeKeywords.length)parts.push('除外キーワード: '+rules.excludeKeywords.join(', '));
 		summary.textContent=parts.length?parts.join(' / '):'発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。';
 	}
 	if(full)full.innerHTML=picked.length?picked.slice().reverse().map(ev=>chatMsgHtml(ev,{report:true})).join(''):emptyHtml;
@@ -2148,6 +2169,55 @@ async function patrolStart(){
 }
 async function patrolStop(){await fetch('/api/patrol/stop',{method:'POST'});}
 async function clearFullChannels(){await fetch('/api/patrol/clear-full',{method:'POST'});}
+const patrolCycleStats={lastMoveStartAt:0,lastCycleMs:0};
+function formatPatrolCycleDuration(ms){
+	if(!(ms>0))return '--';
+	const totalSeconds=Math.max(1,Math.round(ms/1000));
+	const minutes=Math.floor(totalSeconds/60);
+	const seconds=totalSeconds%60;
+	if(minutes<=0)return seconds+'s';
+	return minutes+'m '+(seconds<10?'0':'')+seconds+'s';
+}
+function formatPatrolCycleRate(ms){
+	if(!(ms>0))return '--';
+	const perHour=3600000/ms;
+	const rounded=Math.round(perHour*10)/10;
+	return (Number.isInteger(rounded)?String(Math.round(rounded)):rounded.toFixed(1))+'ch/hour';
+}
+function renderPatrolCycleStats(running){
+	const timeEl=document.getElementById('ps-cycle-time');
+	const timeSubEl=document.getElementById('ps-cycle-time-sub');
+	const rateEl=document.getElementById('ps-cycle-rate');
+	const rateSubEl=document.getElementById('ps-cycle-rate-sub');
+	if(!timeEl||!timeSubEl||!rateEl||!rateSubEl)return;
+	timeEl.textContent=formatPatrolCycleDuration(patrolCycleStats.lastCycleMs);
+	rateEl.textContent=formatPatrolCycleRate(patrolCycleStats.lastCycleMs);
+	if(patrolCycleStats.lastCycleMs>0){
+		timeSubEl.textContent=running?'直近の1巡を実測':'停止前の直近1巡';
+		rateSubEl.textContent='3600秒 ÷ 実測サイクル時間';
+	}else{
+		timeSubEl.textContent=running?'計測中...':'プログレスバー1巡を計測';
+		rateSubEl.textContent=running?'1周完了後に表示':'実測ベース';
+	}
+}
+function updatePatrolCycleStats(d,currentPhase){
+	if(!d.running){
+		patrolCycleStats.lastMoveStartAt=0;
+		renderPatrolCycleStats(false);
+		return;
+	}
+	if(currentPhase==='move_start'){
+		const startedAt=Number(d.phase_started_at_unix_ms||0);
+		if(startedAt>0){
+			if(patrolCycleStats.lastMoveStartAt>0 && startedAt!==patrolCycleStats.lastMoveStartAt){
+				const cycleMs=startedAt-patrolCycleStats.lastMoveStartAt;
+				if(cycleMs>0 && cycleMs<86400000)patrolCycleStats.lastCycleMs=cycleMs;
+			}
+			patrolCycleStats.lastMoveStartAt=startedAt;
+		}
+	}
+	renderPatrolCycleStats(true);
+}
 function updatePatrolUI(running){
   const bs=document.getElementById('btn-patrol-start'),bp=document.getElementById('btn-patrol-stop');
   if(bs)bs.disabled=running;if(bp)bp.disabled=!running;
@@ -2183,6 +2253,7 @@ async function pollPatrolStatus(){
 			const remainingSecs = totalMs > 0 ? Math.max(0, Math.ceil((totalMs - elapsedMs) / 1000)) : 0;
 			const phaseLabel = phaseState.label + (remainingSecs > 0 ? ' (' + remainingSecs + 's)' : '');
 			const progressText = Math.round(progressPct) + '%';
+      updatePatrolCycleStats(d, currentPhase);
       ['ps-state','dash-ps-state'].forEach(id=>{const e=els(id);if(e){e.className='running';e.textContent='▶ '+phaseState.label+(id==='ps-state'&&d.waiting_move?' ⏳':'');}});
       ['ps-ch','dash-ps-ch'].forEach(id=>{const e=els(id);if(e)e.textContent='Ch'+d.current_channel;});
       ['ps-prog','dash-ps-prog'].forEach(id=>{const e=els(id);if(e)e.textContent=(d.current_index+1)+'/'+d.total_channels;});
@@ -2200,6 +2271,7 @@ async function pollPatrolStatus(){
 			['dash-patrol-label','ps-patrol-label'].forEach(id=>{const e=els(id);if(e)e.textContent='--';});
 			['dash-patrol-percent','ps-patrol-percent'].forEach(id=>{const e=els(id);if(e)e.textContent='';});
 			['dash-patrol-fill','ps-progress-fill'].forEach(id=>{const e=els(id);if(e)e.style.width='0%';});
+			updatePatrolCycleStats(d, '');
       const par=els('ps-parallel');if(par)par.textContent='';
       updatePatrolUI(false);
     }
@@ -2219,10 +2291,8 @@ async function pollPatrolStatus(){
 }
 // ── Config ──
 const CHAT_FILTER_FIELDS=[
-	{k:'chat_report_senders',label:'候補発言者(含む)',type:'multiline-list',desc:'1行に1件ずつ入力'},
-	{k:'chat_report_excluded_senders',label:'候補発言者(除外)',type:'multiline-list',desc:'1行に1件ずつ入力'},
-	{k:'chat_report_include_keywords',label:'候補キーワード(含む)',type:'multiline-list',desc:'1行に1件ずつ入力'},
-	{k:'chat_report_exclude_keywords',label:'候補キーワード(除外)',type:'multiline-list',desc:'1行に1件ずつ入力'},
+	{k:'chat_report_senders',label:'候補発言者(含む)',type:'multiline-list',desc:'hidden'},
+	{k:'chat_report_excluded_senders',label:'候補発言者(除外)',type:'multiline-list',desc:'hidden'},
 ];
 const CHAT_RULE_FIELDS=[
 	{k:'chat_report_location_rules',label:'地点別名ルール',type:'multiline-list',desc:'1行形式: 地点名|別名|モンスター1,モンスター2'},
@@ -2265,46 +2335,132 @@ function renderChatRuleTable(headers, rows, emptyText){
 		+rows.join('')
 		+'</tbody></table></div>';
 }
+function renderChatRuleTableMarkup(headers, rows, emptyText){
+	if(!rows.length)return '<div class="cfg-rule-empty">'+escHtml(emptyText)+'</div>';
+	return '<div class="cfg-rule-table-wrap"><table class="cfg-rule-table"><thead><tr>'
+		+headers.map(h=>'<th>'+escHtml(h)+'</th>').join('')
+		+'</tr></thead><tbody>'
+		+rows.join('')
+		+'</tbody></table></div>';
+}
 function getCustomLocationRuleLines(){
 	return normalizeCsvList(cfgData.chat_report_location_rules);
 }
 function getCustomMonsterAliasRuleLines(){
 	return normalizeCsvList(cfgData.chat_report_monster_alias_rules);
 }
-function renderCustomLocationRuleRows(){
+function getChatFilterLines(key){
+	return normalizeCsvList(cfgData[key]);
+}
+function renderSimpleFilterRows(key, label){
+	const cls=label==='含む'?'filter-include':'filter-exclude';
+	return getChatFilterLines(key).map(value=>'<tr>'
+		+'<td class="'+cls+'">'+escHtml(label)+'</td>'
+		+'<td>'+escHtml(value)+'</td>'
+		+'<td><button type="button" class="btn danger" style="padding:2px 8px" onclick="removeChatFilterValue(\''+key+'\','+escAttrJs(value)+')">削除</button></td>'
+		+'</tr>');
+}
+function renderCustomLocationRuleRows(usePopupHandler){
 	return getCustomLocationRuleLines().map(line=>{
 		const parsed=parseChatLocationRuleLine(line);
 		if(!parsed)return '';
+		const deleteCall=(usePopupHandler?'removeRule':'removeChatRuleLine')+'(\'chat_report_location_rules\','+escAttrJs(line)+')';
 		return '<tr>'
 			+'<td class="cell-mono">'+escHtml(parsed.name)+'</td>'
 			+'<td>'+escHtml(parsed.aliases.filter(v=>v!==parsed.name).join(', '))+'</td>'
 			+'<td>'+escHtml(parsed.monsters.join(', '))+'</td>'
-			+'<td><button type="button" class="btn danger" style="padding:2px 8px" onclick="removeChatRuleLine(\'chat_report_location_rules\','+escAttrJs(line)+')">削除</button></td>'
+			+'<td><button type="button" class="btn danger" style="padding:2px 8px" onclick="'+deleteCall+'">削除</button></td>'
 			+'</tr>';
 	}).filter(Boolean);
 }
-function renderCustomMonsterAliasRuleRows(){
+function renderCustomMonsterAliasRuleRows(usePopupHandler){
 	return getCustomMonsterAliasRuleLines().map(line=>{
 		const parsed=parseChatMonsterAliasRuleLine(line);
 		if(!parsed)return '';
+		const deleteCall=(usePopupHandler?'removeRule':'removeChatRuleLine')+'(\'chat_report_monster_alias_rules\','+escAttrJs(line)+')';
 		return '<tr>'
 			+'<td class="cell-mono">'+escHtml(parsed.name)+'</td>'
 			+'<td>'+escHtml(parsed.aliases.join(', '))+'</td>'
-			+'<td><button type="button" class="btn danger" style="padding:2px 8px" onclick="removeChatRuleLine(\'chat_report_monster_alias_rules\','+escAttrJs(line)+')">削除</button></td>'
+			+'<td><button type="button" class="btn danger" style="padding:2px 8px" onclick="'+deleteCall+'">削除</button></td>'
 			+'</tr>';
 	}).filter(Boolean);
+}
+let chatRuleWindowRef=null;
+function buildChatRuleWindowHtml(){
+	const locationRows=renderCustomLocationRuleRows(true);
+	const monsterRows=renderCustomMonsterAliasRuleRows(true);
+	const locationOptions=getChatLocationRules().map(rule=>'<option value="'+escHtml(rule.name)+'">'+escHtml(rule.name)+'</option>').join('');
+	const monsterOptions=getChatMonsterAliases().map(rule=>'<option value="'+escHtml(rule.name)+'">'+escHtml(rule.name)+'</option>').join('');
+	return '<!doctype html><html><head><meta charset="utf-8"><title>チャット候補ルール一覧</title><style>'
+		+'body{margin:0;background:#0b0e15;color:#e6edf6;font-family:Segoe UI,sans-serif;padding:16px}'
+		+'.cfg-rule-window-section{margin-bottom:18px}'
+		+'.cfg-rule-window-title{font-size:14px;font-weight:600;color:#e6edf6;margin-bottom:10px}'
+		+'.cfg-rule-window-note{font-size:12px;color:#98a3b8;margin-bottom:10px}'
+		+'.cfg-rule-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px}'
+		+'.cfg-rule-actions select,.cfg-rule-actions input{background:#121826;color:#e6edf6;border:1px solid #2b3448;border-radius:8px;padding:7px 10px;font-size:12px}'
+		+'.cfg-rule-actions select{min-width:180px;flex:1}.cfg-rule-actions input{flex:1;min-width:160px}'
+		+'.btn{background:#1a2233;border:1px solid #2b3448;color:#e6edf6;border-radius:8px;padding:7px 10px;font-size:12px;cursor:pointer}'
+		+'.btn:hover{background:#202b42}.btn.danger{color:#ff8a8a}'
+		+'.cfg-rule-table-wrap{border:1px solid #2b3448;border-radius:10px;overflow:auto;background:#121826;max-height:none}'
+		+'.cfg-rule-table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}'
+		+'.cfg-rule-table th,.cfg-rule-table td{border-bottom:1px solid #2b3448;border-right:1px solid #2b3448;padding:8px 10px;vertical-align:top;line-height:1.5;word-break:break-word}'
+		+'.cfg-rule-table th:last-child,.cfg-rule-table td:last-child{border-right:none}'
+		+'.cfg-rule-table th{background:#1a2233;color:#98a3b8;font-weight:600;position:sticky;top:0}'
+		+'.cfg-rule-table tr:last-child td{border-bottom:none}'
+		+'.cell-mono{font-family:Consolas,monospace;color:#6ea8ff}'
+		+'.cfg-rule-empty{padding:12px;color:#98a3b8;font-size:12px}'
+		+'</style></head><body>'
+		+'<div class="cfg-rule-window-section"><div class="cfg-rule-window-title">場所別名ルール一覧</div><div class="cfg-rule-window-note">このウィンドウから追加・削除できます。</div>'
+		+'<div class="cfg-rule-actions"><select id="popup-location-rule-target"><option value="">場所を選択</option>'+locationOptions+'</select><input type="text" id="popup-location-rule-alias" placeholder="別名を入力。例: tnt"><button type="button" class="btn" onclick="addLocationRule()">追加</button></div>'
+		+renderChatRuleTableMarkup(['場所','追加した別名','出現候補',''],locationRows,'追加した場所別名はありません')+'</div>'
+		+'<div class="cfg-rule-window-section"><div class="cfg-rule-window-title">モンスター別名ルール一覧</div>'
+		+'<div class="cfg-rule-actions"><select id="popup-monster-rule-target"><option value="">モンスターを選択</option>'+monsterOptions+'</select><input type="text" id="popup-monster-rule-alias" placeholder="別名を入力。例: 金ウリ"><button type="button" class="btn" onclick="addMonsterRule()">追加</button></div>'
+		+renderChatRuleTableMarkup(['モンスター','追加した別名',''],monsterRows,'追加したモンスター別名はありません')+'</div>'
+		+'<script>'
+		+'function addLocationRule(){var target=document.getElementById("popup-location-rule-target");var input=document.getElementById("popup-location-rule-alias");if(!window.opener||!target||!input)return;window.opener.addChatLocationRuleValue(String(target.value||""),String(input.value||""));}'
+		+'function addMonsterRule(){var target=document.getElementById("popup-monster-rule-target");var input=document.getElementById("popup-monster-rule-alias");if(!window.opener||!target||!input)return;window.opener.addChatMonsterAliasRuleValue(String(target.value||""),String(input.value||""));}'
+		+'function removeRule(key,line){if(window.opener)window.opener.removeChatRuleLine(key,line);}'
+		+'<\/script>'
+		+'</body></html>';
+}
+function refreshChatRuleWindow(){
+	if(!chatRuleWindowRef || chatRuleWindowRef.closed)return;
+	const doc=chatRuleWindowRef.document;
+	doc.open();
+	doc.write(buildChatRuleWindowHtml());
+	doc.close();
+}
+function openChatRuleWindow(){
+	chatRuleWindowRef=window.open('','chat-rule-window','width=1200,height=780');
+	if(!chatRuleWindowRef)return;
+	refreshChatRuleWindow();
+	chatRuleWindowRef.focus();
 }
 function renderChatRuleManagers(){
 	const root=document.getElementById('cfg-chat-rule-managers');if(!root)return;
 	const locationOptions=getChatLocationRules().map(rule=>'<option value="'+escHtml(rule.name)+'">'+escHtml(rule.name)+'</option>').join('');
 	const monsterOptions=getChatMonsterAliases().map(rule=>'<option value="'+escHtml(rule.name)+'">'+escHtml(rule.name)+'</option>').join('');
+	const senderRows=renderSimpleFilterRows('chat_report_senders','含む').concat(renderSimpleFilterRows('chat_report_excluded_senders','除外'));
+	const senderRules=normalizeCsvList(cfgData.chat_report_senders).join('\n');
+	const senderExcludeRules=normalizeCsvList(cfgData.chat_report_excluded_senders).join('\n');
 	const locationRules=normalizeCsvList(cfgData.chat_report_location_rules).join('\n');
 	const monsterRules=normalizeCsvList(cfgData.chat_report_monster_alias_rules).join('\n');
-	const locationRows=renderCustomLocationRuleRows();
-	const monsterRows=renderCustomMonsterAliasRuleRows();
+	const locationRows=renderCustomLocationRuleRows(false);
+	const monsterRows=renderCustomMonsterAliasRuleRows(false);
 	root.innerHTML=''
 		+'<div class="cfg-rule-box">'
-		+'<div class="cfg-rule-box-title">場所別名を追加</div>'
+		+'<div class="cfg-rule-box-title">発言者フィルター</div>'
+		+'<div class="cfg-rule-actions">'
+		+'<input type="text" id="cfg-sender-filter-input" placeholder="発言者名を入力">'
+		+'<button type="button" class="btn" onclick="addChatFilterManagerValue(\'chat_report_senders\',\'cfg-sender-filter-input\')">含むに追加</button>'
+		+'<button type="button" class="btn danger" onclick="addChatFilterManagerValue(\'chat_report_excluded_senders\',\'cfg-sender-filter-input\')">除外に追加</button>'
+		+'</div>'
+		+renderChatRuleTable(['条件','発言者',''],senderRows,'追加した発言者フィルターはありません')
+		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_senders">'+escHtml(senderRules)+'</textarea>'
+		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_excluded_senders">'+escHtml(senderExcludeRules)+'</textarea>'
+		+'</div>'
+		+'<div class="cfg-rule-box">'
+		+'<div class="cfg-rule-header"><div class="cfg-rule-box-title">場所別名を追加</div><button type="button" class="btn" style="margin-left:auto" onclick="openChatRuleWindow()">⧉ 一覧を別ウィンドウ</button></div>'
 		+'<div class="cfg-rule-actions">'
 		+'<select id="cfg-location-rule-target"><option value="">場所を選択</option>'+locationOptions+'</select>'
 		+'<input type="text" id="cfg-location-rule-alias" placeholder="別名を入力。例: tnt">'
@@ -2326,35 +2482,65 @@ function renderChatRuleManagers(){
 		+'<span class="cfg-note">追加内容はセル形式で表示しています。保存はこの一覧から行われます。</span>'
 		+'</div>';
 }
+async function removeChatFilterValue(key, value){
+	const current=Array.isArray(cfgData[key])?cfgData[key]:[];
+	updateChatFilterTextarea(key, current.filter(v=>v!==value));
+	renderChatRuleManagers();
+	refreshChatRuleWindow();
+	await saveConfig(true);
+}
+async function addChatFilterManagerValue(key, inputId){
+	const input=document.getElementById(inputId);
+	if(!input)return;
+	const value=String(input.value||'').trim();
+	if(!value)return;
+	await appendChatFilterValue(key, value);
+	input.value='';
+	renderChatRuleManagers();
+	refreshChatRuleWindow();
+}
 async function removeChatRuleLine(key, line){
 	const current=Array.isArray(cfgData[key])?cfgData[key]:[];
 	updateChatFilterTextarea(key, current.filter(v=>v!==line));
 	renderChatRuleManagers();
+	refreshChatRuleWindow();
 	await saveConfig(true);
+}
+async function addChatLocationRuleValue(nameValue, aliasValue){
+	const name=String(nameValue||'').trim();
+	const alias=String(aliasValue||'').trim();
+	if(!name||!alias)return;
+	const rule=getChatLocationRules().find(v=>v.name===name);
+	const monsters=rule&&Array.isArray(rule.monsters)?rule.monsters.join(','):'';
+	await appendChatFilterValue('chat_report_location_rules',[name,alias,monsters].join('|'));
+	const input=document.getElementById('cfg-location-rule-alias');
+	if(input)input.value='';
+	renderChatRuleManagers();
+	refreshChatRuleWindow();
 }
 async function addChatLocationRule(){
 	const target=document.getElementById('cfg-location-rule-target');
 	const input=document.getElementById('cfg-location-rule-alias');
 	if(!target||!input)return;
-	const name=String(target.value||'').trim();
-	const alias=String(input.value||'').trim();
-	if(!name||!alias)return;
-	const rule=getChatLocationRules().find(v=>v.name===name);
-	const monsters=rule&&Array.isArray(rule.monsters)?rule.monsters.join(','):'';
-	await appendChatFilterValue('chat_report_location_rules',[name,alias,monsters].join('|'));
+	await addChatLocationRuleValue(target.value,input.value);
 	input.value='';
+}
+async function addChatMonsterAliasRuleValue(nameValue, aliasValue){
+	const name=String(nameValue||'').trim();
+	const alias=String(aliasValue||'').trim();
+	if(!name||!alias)return;
+	await appendChatFilterValue('chat_report_monster_alias_rules',[name,alias].join('|'));
+	const input=document.getElementById('cfg-monster-rule-alias');
+	if(input)input.value='';
 	renderChatRuleManagers();
+	refreshChatRuleWindow();
 }
 async function addChatMonsterAliasRule(){
 	const target=document.getElementById('cfg-monster-rule-target');
 	const input=document.getElementById('cfg-monster-rule-alias');
 	if(!target||!input)return;
-	const name=String(target.value||'').trim();
-	const alias=String(input.value||'').trim();
-	if(!name||!alias)return;
-	await appendChatFilterValue('chat_report_monster_alias_rules',[name,alias].join('|'));
+	await addChatMonsterAliasRuleValue(target.value,input.value);
 	input.value='';
-	renderChatRuleManagers();
 }
 async function loadConfig(){
   cfgData=await fetch('/api/config').then(r=>r.json());

@@ -9,8 +9,6 @@
   ],
   "chat_report_senders": [],
   "chat_report_excluded_senders": [],
-  "chat_report_include_keywords": [],
-  "chat_report_exclude_keywords": [],
   "chat_report_location_rules": [],
   "chat_report_monster_alias_rules": [],
   "gui_port": 8080,
