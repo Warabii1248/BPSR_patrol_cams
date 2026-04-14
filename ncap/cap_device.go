@@ -1,4 +1,4 @@
-﻿package ncap
+package ncap
 
 import (
 	"bytes"
@@ -28,12 +28,8 @@ import (
 
 // loyalBoarletTemplateID はゴールドウリボのテンプレートID
 const loyalBoarletTemplateID = 10904
-
-// positiveKeywords はワールドチャット検知キーワード
-var positiveKeywords = []string{"金豚", "金ウリボ", "金ウリ", "ゴールドウリボ"}
-
-// negativeKeywords はこれらを含むメッセージを誤検知として除外する（固定）
-var negativeKeywords = []string{"銀", "ナッポ", "ナポ", "なぽ"}
+const goldNappoTemplateID = 10900
+const silverNappoTemplateID = 10901
 
 // locationHints はチャンネル番号の隣に現れることが多い場所ヒントワード
 var locationHints = []string{
@@ -85,9 +81,9 @@ type session struct {
 	mu    sync.Mutex
 	label string // "Instance-1" etc.
 
-	clientEndpoint  string // "ip:port"（セッションキー、TCP接続ごとにユニーク）
-	clientIP        string // エミュレータのIPアドレス（ポートなし、表示用）
-	serverIP        string // 現在のプライマリゲームサーバーアドレス
+	clientEndpoint  string    // "ip:port"（セッションキー、TCP接続ごとにユニーク）
+	clientIP        string    // エミュレータのIPアドレス（ポートなし、表示用）
+	serverIP        string    // 現在のプライマリゲームサーバーアドレス
 	serverConfirmed bool      // 0x15/IDENT-P3 でサーバー確定済み
 	confirmedAt     time.Time // serverConfirmed が true になった時刻（チャット紐付けの優先度に使用）
 
@@ -156,7 +152,7 @@ type CapDevice struct {
 	sessions         map[string]*session // key = clientEndpoint ("ip:port")
 	activeConns      map[string]string   // key = "src:port->dst:port", value = clientEndpoint
 	instanceCounter  int
-	freeInstanceNums []int               // 解放済みのインスタンス番号プール（再利用）
+	freeInstanceNums []int // 解放済みのインスタンス番号プール（再利用）
 
 	// パケットキュー
 	packetQueue *Queue[gopacket.Packet]
@@ -169,7 +165,7 @@ type CapDevice struct {
 	debounceCache map[string]time.Time
 
 	// 巡回中の現在チャンネル（Patrollerからセット、パケットで取得できない場合のフォールバック）
-	currentChannel    uint32
+	currentChannel   uint32
 	currentChannelMu sync.RWMutex
 
 	// シーン名→mapID マッピング（config.json の scene_map_ids から設定）
@@ -384,46 +380,46 @@ func (cd *CapDevice) cleanupSessions() {
 						break
 					}
 				}
-			if hasData || s.serverIP != "" {
-				log.Printf("[%s] idle timeout → 状態リセット", s.label)
-				s.resetTCPState()
-				s.serverIP = ""
+				if hasData || s.serverIP != "" {
+					log.Printf("[%s] idle timeout → 状態リセット", s.label)
+					s.resetTCPState()
+					s.serverIP = ""
 
-				if s.userUID != 0 {
-					// 認証済みセッション（UID確定済）はマップに残して再接続時に再利用
-					// インスタンスカウンターが増えないようにする
-					s.serverConfirmed = false
-					// エイリアス（チャンネル切替エンドポイント）のみ削除、primary endpointは残す
-					cd.sessionsMu.Lock()
-					for ep, sess := range cd.sessions {
-						if sess == s && ep != s.clientEndpoint {
-							delete(cd.sessions, ep)
+					if s.userUID != 0 {
+						// 認証済みセッション（UID確定済）はマップに残して再接続時に再利用
+						// インスタンスカウンターが増えないようにする
+						s.serverConfirmed = false
+						// エイリアス（チャンネル切替エンドポイント）のみ削除、primary endpointは残す
+						cd.sessionsMu.Lock()
+						for ep, sess := range cd.sessions {
+							if sess == s && ep != s.clientEndpoint {
+								delete(cd.sessions, ep)
+							}
 						}
-					}
-					for k, v := range cd.activeConns {
-						if _, ok := cd.sessions[v]; !ok {
-							delete(cd.activeConns, k)
+						for k, v := range cd.activeConns {
+							if _, ok := cd.sessions[v]; !ok {
+								delete(cd.activeConns, k)
+							}
 						}
-					}
-					cd.sessionsMu.Unlock()
-				} else {
-					// 未認証セッションはマップから完全削除してインスタンス番号を返却
-					s.serverConfirmed = false
-					cd.sessionsMu.Lock()
-					cd.releaseInstanceLabel(s.label)
-					for ep, sess := range cd.sessions {
-						if sess == s {
-							delete(cd.sessions, ep)
+						cd.sessionsMu.Unlock()
+					} else {
+						// 未認証セッションはマップから完全削除してインスタンス番号を返却
+						s.serverConfirmed = false
+						cd.sessionsMu.Lock()
+						cd.releaseInstanceLabel(s.label)
+						for ep, sess := range cd.sessions {
+							if sess == s {
+								delete(cd.sessions, ep)
+							}
 						}
-					}
-					for k, v := range cd.activeConns {
-						if _, ok := cd.sessions[v]; !ok {
-							delete(cd.activeConns, k)
+						for k, v := range cd.activeConns {
+							if _, ok := cd.sessions[v]; !ok {
+								delete(cd.activeConns, k)
+							}
 						}
+						cd.sessionsMu.Unlock()
 					}
-					cd.sessionsMu.Unlock()
 				}
-			}
 			}
 			// 長時間アイドルの sub-stream を定期クリア
 			for addr, st := range s.streams {
@@ -1253,7 +1249,7 @@ func (cd *CapDevice) processSyncNearEntities(sess *session, payload []byte) {
 			}
 		}
 
-		if tmplID == loyalBoarletTemplateID || isLoyalBoarletName(name) {
+		if tmplID == loyalBoarletTemplateID || tmplID == goldNappoTemplateID || tmplID == silverNappoTemplateID || isLoyalBoarletName(name) {
 			pos := &playerPosition{X: posX, Y: posY, Z: posZ}
 			log.Printf("[%s][検知] ゴールドウリボ: name=%s tmplID=%d pos=(%.1f,%.1f,%.1f) Ch=%d",
 				sess.label, name, tmplID, posX, posY, posZ, sess.lineID)
@@ -1275,7 +1271,7 @@ func isLoyalBoarletName(name string) bool {
 	if name == "" {
 		return false
 	}
-	for _, kw := range []string{"ゴールドウリボ", "金ウリボ", "金ウリ", "金豚", "小猪·闪闪", "金猪"} {
+	for _, kw := range []string{"ゴールドウリボ", "金ウリボ", "金ウリ", "金豚", "小猪·闪闪", "金猪", "金ナッポ", "銀ナッポ", "娜宝·闪闪", "娜宝·银辉"} {
 		if strings.Contains(name, kw) {
 			return true
 		}
@@ -1385,7 +1381,6 @@ func (cd *CapDevice) processSyncSceneData(sess *session, payload []byte) {
 		}
 	}
 }
-
 
 // ───── ワールドチャット raw スキャン ─────
 
@@ -1564,39 +1559,6 @@ func (cd *CapDevice) tryScanChatPayload(sess *session, payload []byte) {
 	if cd.chatNotifyFn != nil {
 		cd.chatNotifyFn(sess.clientIP, senderDisplay, message, channel, channelFound)
 	}
-
-	// ワールドチャット (channel==1) 以外は検知対象外
-	if !channelFound || channel != 1 {
-		return
-	}
-
-	lower := strings.ToLower(toHalfWidth(message))
-	// 固定除外キーワード
-	for _, nkw := range negativeKeywords {
-		if strings.Contains(lower, nkw) {
-			log.Printf("[チャット除外(固定:%s)] %s: %s", nkw, senderDisplay, message)
-			return
-		}
-	}
-	// config 由来の追加除外キーワード
-	for _, nkw := range cd.chatExclude {
-		if nkw != "" && strings.Contains(lower, strings.ToLower(toHalfWidth(nkw))) {
-			log.Printf("[チャット除外(設定:%s)] %s: %s", nkw, senderDisplay, message)
-			return
-		}
-	}
-	for _, kw := range positiveKeywords {
-		if strings.Contains(lower, kw) {
-			chatCh := extractChatChannel(message)
-			chStr := "不明"
-			if chatCh > 0 {
-				chStr = fmt.Sprintf("%d", chatCh)
-			}
-			log.Printf("[チャット検知!] ch=%s kw=%s  %s: %s", chStr, kw, senderDisplay, message)
-			cd.triggerDetection(sess, notifier.SourceChat, kw, sess.playerPos, chatCh)
-			return
-		}
-	}
 }
 
 // ───── 検知・通知 ─────
@@ -1672,15 +1634,18 @@ func (cd *CapDevice) triggerDetection(sess *session, source, name string, pos *p
 }
 
 // ForceDetect はテスト用。デバイス・ADB・セッション状態に関わらず「テスト通知」を発火する。
-func (cd *CapDevice) ForceDetect() {
+func (cd *CapDevice) ForceDetect(monster string) {
 	if cd.notifyFn == nil {
 		log.Println("[ForceDetect] notifyFn が未設定です")
 		return
 	}
-	log.Println("[ForceDetect] テスト通知発火")
+	if monster == "" {
+		monster = "テスト通知"
+	}
+	log.Printf("[ForceDetect] テスト通知発火: %s", monster)
 	cd.notifyFn(notifier.Detection{
 		Source:      notifier.SourceAuto,
-		MonsterName: "テスト通知",
+		MonsterName: monster,
 		Time:        time.Now(),
 	})
 }
@@ -1703,7 +1668,7 @@ func decompressZstd(buf []byte) []byte {
 	return out
 }
 
-func isPlayerUUID(uuid uint64) bool { return (uuid & 0xFFFF) == 640 }
+func isPlayerUUID(uuid uint64) bool  { return (uuid & 0xFFFF) == 640 }
 func isMonsterUUID(uuid uint64) bool { return (uuid & 0xFFFF) == 64 }
 
 // suppress unused warnings

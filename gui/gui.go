@@ -37,30 +37,31 @@ type DeviceSessionInfo struct {
 type Server struct {
 	port               int
 	patroller          *mumu.Patroller
-	patrolChannels     []uint32             // 起動時に設定から読み込んだチャンネルリスト
-	patrolChannelsFile string               // channels.txt パス（ホットリロード用）
+	patrolChannels     []uint32 // 起動時に設定から読み込んだチャンネルリスト
+	patrolChannelsFile string   // channels.txt パス（ホットリロード用）
 	getSessions        func() []DeviceSessionInfo
-	testDetectFn       func()
-	monsterScanFn      func(bool)             // モンスタースキャン有効/無効コールバック
+	testDetectFn       func(string)
+	monsterScanFn      func(bool) // モンスタースキャン有効/無効コールバック
 	saveChannelsFn     func([]uint32) error
-	channelNotifyFn    func(uint32)           // Patrollerのチャンネル切替時コールバック
+	channelNotifyFn    func(uint32) // Patrollerのチャンネル切替時コールバック
 	getConfigFn        func() ([]byte, error)
 	saveConfigFn       func([]byte) error
 
 	mu              sync.RWMutex
-	logLines        []string           // 検知ログ（最大200件）
-	clients         []chan string       // SSEクライアント
-	goldBoarHistory []GoldBoarEvent    // 金ウリボ検知履歴（最大50件）
+	logLines        []string             // 検知ログ（最大200件）
+	clients         []chan string        // SSEクライアント
+	goldBoarHistory []GoldBoarEvent      // 金ウリボ検知履歴（最大50件）
 	cooldownChs     map[uint32]time.Time // 発見済みch → 除外期限（発見から30分）
 
 	chatMu      sync.RWMutex
-	chatLog     []ChatEvent    // チャットログ（最大500件）
-	chatClients []chan string  // チャットSSEクライアント
+	chatLog     []ChatEvent   // チャットログ（最大500件）
+	chatClients []chan string // チャットSSEクライアント
 }
 
 // GoldBoarEvent は金ウリボ検知の1件分の記録
 type GoldBoarEvent struct {
 	Time        string `json:"time"`
+	Timestamp   int64  `json:"timestamp"`
 	Channel     uint32 `json:"channel"`
 	Location    string `json:"location"`
 	MonsterName string `json:"monster_name"`
@@ -103,7 +104,7 @@ func (s *Server) SetSessionProvider(fn func() []DeviceSessionInfo) {
 }
 
 // SetTestDetectFn はテスト通知ボタンから呼ばれるコールバックを設定する。
-func (s *Server) SetTestDetectFn(fn func()) {
+func (s *Server) SetTestDetectFn(fn func(string)) {
 	s.testDetectFn = fn
 }
 
@@ -210,6 +211,7 @@ func (s *Server) OnDetect(det notifier.Detection) {
 	}
 	event := GoldBoarEvent{
 		Time:        det.Time.Format("01/02 15:04:05"),
+		Timestamp:   det.Time.Unix(),
 		Channel:     detCh,
 		Location:    loc,
 		MonsterName: monName,
@@ -403,6 +405,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/monster-scan", s.handleMonsterScan)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/gold-history", s.handleGoldHistory)
+	mux.HandleFunc("/api/gold-history/delete", s.handleDeleteGoldHistory)
 	mux.HandleFunc("/api/adb/restart", s.handleADBRestart)
 	mux.HandleFunc("/api/chat-log", s.handleChatLog)
 	mux.HandleFunc("/api/chat-events", s.handleChatEvents)
@@ -747,6 +750,45 @@ func (s *Server) handleGoldHistory(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(h)
 }
 
+// handleDeleteGoldHistory は検知履歴の1件を削除する
+func (s *Server) handleDeleteGoldHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "DELETE only", 405)
+		return
+	}
+	var req struct {
+		Timestamp int64 `json:"timestamp"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if req.Timestamp == 0 {
+		http.Error(w, "timestamp is required", 400)
+		return
+	}
+
+	s.mu.Lock()
+	idx := -1
+	for i, ev := range s.goldBoarHistory {
+		if ev.Timestamp == req.Timestamp {
+			idx = i
+			break
+		}
+	}
+	if idx >= 0 {
+		s.goldBoarHistory = append(s.goldBoarHistory[:idx], s.goldBoarHistory[idx+1:]...)
+	}
+	s.mu.Unlock()
+
+	if idx < 0 {
+		http.Error(w, "not found", 404)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
 // handleConfig は config.json の読み込み（GET）または保存（POST）を行う。
 // 保存後は再起動で反映される。
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -894,9 +936,10 @@ func (s *Server) handleTestDetect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "test detect not configured", 503)
 		return
 	}
-	go s.testDetectFn()
+	monster := r.URL.Query().Get("monster")
+	go s.testDetectFn(monster)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "monster": monster})
 }
 
 // handlePatrolClearFull は満員判定リストをクリアする
@@ -1177,12 +1220,16 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 /* Gold table */
 .gold-table{width:100%;border-collapse:collapse;font-size:.82em;table-layout:fixed}
 .gold-table th{color:var(--warn);text-align:left;padding:4px 8px;border-bottom:1px solid rgba(245,166,35,.2);white-space:nowrap;position:sticky;top:0;background:var(--bg1);z-index:1;font-size:.88em;font-weight:500}
-.gold-table col.col-time{width:90px}.gold-table col.col-ch{width:46px}.gold-table col.col-name{width:110px}
+.gold-table col.col-time{width:90px}.gold-table col.col-ch{width:46px}.gold-table col.col-name{width:110px}.gold-table col.col-action{width:38px}
 .gold-table td{padding:4px 8px;border-bottom:1px solid var(--border);vertical-align:middle;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gold-table .action-cell{padding:0;white-space:normal;text-align:center}
+.gold-table .action-cell button{background:transparent;border:none;color:var(--danger);font-size:1em;cursor:pointer;padding:0 4px;line-height:1.5}
+.gold-table .action-cell button:hover{color:#ff8a8a}
 .gold-table tr:hover td{background:var(--bg2)}
 .gold-table .ch-cell{color:var(--accent);font-family:monospace;font-weight:bold}
 .gold-table .time-cell{color:var(--text3);font-size:.85em}
 .gold-table .name-cell{color:var(--warn)}
+.gold-table .name-cell.silver{color:#b8b8b8}
 .no-history{color:var(--text2);font-size:.85em;padding:8px 0}
 #gold-history-container{max-height:160px;overflow-y:auto}
 /* Config */
@@ -1261,7 +1308,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 <!-- ===== DASHBOARD ===== -->
 <div class="view active" id="view-dashboard">
   <div class="status-grid" style="grid-template-columns:repeat(2,1fr)">
-    <div class="stat"><div class="stat-label">検知イベント</div><div class="stat-value warn" id="dash-detect-count">0</div><div class="stat-sub">累計</div></div>
+    <div class="stat"><div class="stat-label">検知イベント</div><div class="stat-value warn" id="dash-detect-count">0</div><div class="stat-sub" id="dash-detect-meta">0/hour · --</div></div>
     <div class="stat"><div class="stat-label">稼働時間</div><div class="stat-value ok" id="dash-uptime">00:00:00</div><div class="stat-sub">起動から</div></div>
   </div>
   <div class="row2">
@@ -1287,7 +1334,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     </div>
     <div class="col">
       <div class="card">
-        <div class="card-title">🌟 金ウリボ検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
+        <div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
         <div id="gold-history-container"><div class="no-history">検知履歴なし</div></div>
       </div>
       <div class="card" style="flex:1;display:flex;flex-direction:column;padding:0;overflow:hidden">
@@ -1310,6 +1357,9 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <div style="display:flex;gap:6px;margin-top:8px">
       <button class="btn" onclick="document.getElementById('log-area').innerHTML=''">クリア</button>
       <button class="btn primary" onclick="testDetect()">🔔 テスト通知</button>
+      <button class="btn" onclick="testDetect('ウリボゴールド')">🔔 ウリボゴールド</button>
+      <button class="btn" onclick="testDetect('金ナッポ')">🔔 金ナッポ</button>
+      <button class="btn" onclick="testDetect('銀ナッポ')">🔔 銀ナッポ</button>
       <button class="btn toggle-btn" id="btn-monster-scan" onclick="toggleMonsterScan()" title="出現した全モンスターのtmplID・名前・座標をログに出力します">🔍 怪物スキャン</button>
       <button class="btn" style="margin-left:auto" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉ 別ウィンドウ</button>
     </div>
@@ -1384,7 +1434,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     </div>
     <div class="col">
       <div class="card">
-        <div class="card-title">🌟 金ウリボ検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
+        <div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
         <div id="gold-history-container-patrol"><div class="no-history">検知履歴なし</div></div>
       </div>
     </div>
@@ -1460,7 +1510,10 @@ function appendLog(line){
   la.appendChild(div);
   if(!window._logUserScrolling||!window._logUserScrolling()){la.scrollTop=la.scrollHeight;}
 }
-async function testDetect(){await fetch('/api/test-detect',{method:'POST'});}
+async function testDetect(monster){
+  const url = monster ? '/api/test-detect?monster=' + encodeURIComponent(monster) : '/api/test-detect';
+  await fetch(url,{method:'POST'});
+}
 let monsterScanEnabled=false;
 async function toggleMonsterScan(){
   monsterScanEnabled=!monsterScanEnabled;
@@ -1479,15 +1532,50 @@ async function toggleMonsterScan(){
   fetch('/api/logs').then(r=>r.json()).then(lines=>(lines||[]).forEach(appendLog));
 })();
 // ── Gold History ──
+function formatAgo(seconds){
+  if(seconds < 60) return 'just now';
+  const mins = Math.floor(seconds / 60);
+  if(mins < 60) return mins + 'min ago';
+  const hrs = Math.floor(mins / 60);
+  return hrs + 'h ago';
+}
+async function removeGoldHistory(timestamp){
+  try{
+    const res = await fetch('/api/gold-history/delete', {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({timestamp})
+    });
+    if(!res.ok) throw new Error('delete failed');
+    await loadGoldHistory();
+  }catch(_){ }
+}
 async function loadGoldHistory(){
   try{
     const h=await fetch('/api/gold-history').then(r=>r.json());
-    const detEl=document.getElementById('dash-detect-count');if(detEl)detEl.textContent=h?h.length:0;
-    const tbl=(!h||h.length===0)?'<div class="no-history">検知履歴なし</div>'
-      :'<table class="gold-table"><colgroup><col class="col-time"><col class="col-name"><col class="col-ch"><col></colgroup>'
-      +'<thead><tr><th>時刻</th><th>名前</th><th>Ch</th><th>場所</th></tr></thead><tbody>'
-      +h.map(e=>'<tr><td class="time-cell">'+escHtml(e.time||'')+'</td><td class="name-cell">'+escHtml(e.monster_name||'ゴールドウリボ')+'</td><td class="ch-cell">Ch'+Number(e.channel)+'</td><td>'+escHtml(e.location||'')+'</td></tr>').join('')
-      +'</tbody></table>';
+    const detEl=document.getElementById('dash-detect-count');
+    const metaEl=document.getElementById('dash-detect-meta');
+    const nowSec=Math.floor(Date.now()/1000);
+    let perHour=0;
+    let latestAgo='--';
+    if(Array.isArray(h) && h.length > 0){
+      h.forEach(e=>{
+        if(e && typeof e.timestamp === 'number' && nowSec - e.timestamp <= 3600){
+          perHour++;
+        }
+      });
+      const latest = h[0];
+      if(latest && typeof latest.timestamp === 'number'){
+        latestAgo = formatAgo(Math.max(0, nowSec - latest.timestamp));
+      }
+    }
+    if(detEl) detEl.textContent = Array.isArray(h) ? String(h.length) : '0';
+    if(metaEl) metaEl.textContent = String(perHour) + '/hour · ' + latestAgo;
+    const tbl = (!h || h.length === 0) ? '<div class="no-history">検知履歴なし</div>'
+      : '<table class="gold-table"><colgroup><col class="col-time"><col class="col-name"><col class="col-ch"><col><col class="col-action"></colgroup>'
+      + '<thead><tr><th>時刻</th><th>名前</th><th>Ch</th><th>場所</th><th></th></tr></thead><tbody>'
+      + h.map(e=>{const nm=e.monster_name||'ゴールドウリボ';const cls=nm.includes('銀ナッポ')?'name-cell silver':'name-cell';return '<tr><td class="time-cell">'+escHtml(e.time||'')+'</td><td class="'+cls+'">'+escHtml(nm)+'</td><td class="ch-cell">Ch'+Number(e.channel)+'</td><td>'+escHtml(e.location||'')+'</td><td class="action-cell"><button onclick="removeGoldHistory('+Number(e.timestamp)+')">×</button></td></tr>'}).join('')
+      + '</tbody></table>';
     const c1=document.getElementById('gold-history-container');if(c1)c1.innerHTML=tbl;
     const c2=document.getElementById('gold-history-container-patrol');if(c2)c2.innerHTML=tbl;
   }catch(_){}
@@ -1796,6 +1884,7 @@ tr:hover td{background:var(--bg2)}
 .ch{color:var(--accent);font-family:monospace;font-weight:bold}
 .time{color:var(--text3)}
 .monster{color:var(--warn);font-weight:bold}
+.monster.silver{color:#b8b8b8}
 .no-data{color:var(--text3);padding:12px}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
 </style>
@@ -1810,7 +1899,7 @@ async function load(){
   const c=document.getElementById('container');
   if(!h||h.length===0){c.innerHTML='<div class="no-data">出現履歴なし</div>';return;}
   c.innerHTML='<table><thead><tr><th>時刻</th><th>名前</th><th>Ch</th><th>場所</th></tr></thead><tbody>'
-    +h.map(e=>'<tr><td class="time">'+eH(e.time||'')+'</td><td class="monster">'+eH(e.monster_name||'ゴールドウリボ')+'</td><td class="ch">Ch'+Number(e.channel)+'</td><td>'+eH(e.location||'')+'</td></tr>').join('')
+    +h.map(e=>{const nm=e.monster_name||'ゴールドウリボ';const cls=nm.includes('銀ナッポ')?'monster silver':'monster';return '<tr><td class="time">'+eH(e.time||'')+'</td><td class="'+cls+'">'+eH(nm)+'</td><td class="ch">Ch'+Number(e.channel)+'</td><td>'+eH(e.location||'')+'</td></tr>'}).join('')
     +'</tbody></table>';
 }
 load();

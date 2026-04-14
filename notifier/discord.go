@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -78,18 +79,27 @@ func (d *DiscordWebhook) Send(det Detection) error {
 
 // Format produces the human-readable notification text matching the spec.
 //
-//	【ゴールドウリボ出現】
+//	【ウリボ・ゴールド発見】
 //	Ch: 45
 //	場所: テント裏
-//	検知方法: 自動
 //	時刻: 2026-03-01 20:00
 func Format(det Detection) string {
-	ch := "不明"
-	if det.Source == SourceChat {
-		if det.ChatLineID > 0 {
-			ch = fmt.Sprintf("%d", det.ChatLineID)
+	title := "ウリボ・ゴールド発見"
+	if det.MonsterName != "" {
+		if strings.Contains(det.MonsterName, "銀ナッポ") {
+			title = "銀ナッポ発見"
+		} else if strings.Contains(det.MonsterName, "金ナッポ") {
+			title = "金ナッポ発見"
+		} else if strings.Contains(det.MonsterName, "ウリボゴールド") {
+			title = "ウリボ・ゴールド発見"
+		} else if strings.Contains(det.MonsterName, "ウリボ") || strings.Contains(det.MonsterName, "ゴールド") {
+			title = "ウリボ・ゴールド発見"
+		} else {
+			title = det.MonsterName + "発見"
 		}
-	} else if det.LineID > 0 {
+	}
+	ch := "不明"
+	if det.LineID > 0 {
 		ch = fmt.Sprintf("%d", det.LineID)
 	}
 	loc := det.Location
@@ -97,5 +107,5 @@ func Format(det Detection) string {
 		loc = "不明"
 	}
 	ts := det.Time.Format("2006-01-02 15:04")
-	return fmt.Sprintf("【ゴールドウリボ出現】\nCh: %s\n場所: %s\n検知方法: %s\n時刻: %s", ch, loc, det.Source, ts)
+	return fmt.Sprintf("【%s】\nCh: %s\n場所: %s\n時刻: %s", title, ch, loc, ts)
 }

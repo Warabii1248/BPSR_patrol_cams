@@ -15,10 +15,10 @@ import (
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/balrogsxt/StarResonanceAPI/appconfig"
+	"github.com/balrogsxt/StarResonanceAPI/gasfetch"
 	"github.com/balrogsxt/StarResonanceAPI/gui"
 	"github.com/balrogsxt/StarResonanceAPI/location"
 	"github.com/balrogsxt/StarResonanceAPI/mumu"
-	"github.com/balrogsxt/StarResonanceAPI/gasfetch"
 	"github.com/balrogsxt/StarResonanceAPI/ncap"
 	"github.com/balrogsxt/StarResonanceAPI/notifier"
 	"github.com/google/gopacket/pcap"
@@ -171,7 +171,6 @@ func main() {
 		guiServer.OnDetect(det)
 	}
 
-
 	capDevice := ncap.NewCapDevice(handle, selectedDesc)
 	capDevice.SetNotifier(onDetect)
 	if locStore != nil {
@@ -214,9 +213,9 @@ func main() {
 		return out
 	})
 
-	// テスト通知ボタン用：プレイヤー位置をゴールドウリボ検知として発火
-	guiServer.SetTestDetectFn(func() {
-		capDevice.ForceDetect()
+	// テスト通知ボタン用：プレイヤー位置を指定モンスター検知として発火
+	guiServer.SetTestDetectFn(func(monster string) {
+		capDevice.ForceDetect(monster)
 	})
 
 	// モンスタースキャンモード切替
