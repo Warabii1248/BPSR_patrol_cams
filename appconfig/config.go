@@ -26,6 +26,18 @@ type Config struct {
 	DebounceSeconds int `json:"debounce_seconds"`
 	// ChatExclude はワールドチャット検知を抑制するキーワード一覧。
 	ChatExclude []string `json:"chat_exclude"`
+	// ChatReportSenders は発見報告候補として扱う発言者フィルター。
+	ChatReportSenders []string `json:"chat_report_senders"`
+	// ChatReportExcludedSenders は候補から除外する発言者フィルター。
+	ChatReportExcludedSenders []string `json:"chat_report_excluded_senders"`
+	// ChatReportIncludeKeywords は候補として扱う発言内容キーワード。
+	ChatReportIncludeKeywords []string `json:"chat_report_include_keywords"`
+	// ChatReportExcludeKeywords は候補から除外する発言内容キーワード。
+	ChatReportExcludeKeywords []string `json:"chat_report_exclude_keywords"`
+	// ChatReportLocationRules は地点別名と出現候補モンスターの追加ルール。
+	ChatReportLocationRules []string `json:"chat_report_location_rules"`
+	// ChatReportMonsterAliasRules はモンスター別名の追加ルール。
+	ChatReportMonsterAliasRules []string `json:"chat_report_monster_alias_rules"`
 
 	// --- GUI / ADB 設定 ---
 
@@ -103,25 +115,25 @@ type Config struct {
 
 func defaultConfig() *Config {
 	return &Config{
-		AutoCheck:              3,
-		DebounceSeconds:        30,
-		Locations:              "data/locations.json",
-		GUIPort:                8080,
-		ADBPath:                "adb",
-		MumuTapX:               975,
-		MumuTapY:               664,
-		MumuClearLength:        3,
-		MumuPreKeycode:         "KEYCODE_P",
-		MumuDelayMs:            1200,
-		ParallelLimit:             0,
-		ParallelGroupDelaySecs:    0,
-		PatrolChannelsFile:        "channels.txt",
-		PatrolDwellSecs:           10,
-		PatrolMoveTimeoutSecs:     30,
-		PatrolMergeTimeoutSecs:    15,
-		ActiveDeviceCount:         0,
-		FullThreshold:             0.0, // 0=従来通り全台
-		ConsecutiveFullThreshold:  3,   // 3連続満員でクラッシュ判定
+		AutoCheck:                3,
+		DebounceSeconds:          30,
+		Locations:                "data/locations.json",
+		GUIPort:                  8080,
+		ADBPath:                  "adb",
+		MumuTapX:                 975,
+		MumuTapY:                 664,
+		MumuClearLength:          3,
+		MumuPreKeycode:           "KEYCODE_P",
+		MumuDelayMs:              1200,
+		ParallelLimit:            0,
+		ParallelGroupDelaySecs:   0,
+		PatrolChannelsFile:       "channels.txt",
+		PatrolDwellSecs:          10,
+		PatrolMoveTimeoutSecs:    30,
+		PatrolMergeTimeoutSecs:   15,
+		ActiveDeviceCount:        0,
+		FullThreshold:            0.0, // 0=従来通り全台
+		ConsecutiveFullThreshold: 3,   // 3連続満員でクラッシュ判定
 		SceneMapIds: map[string]uint32{
 			"阿斯特里亚平原": 7, // アステリア平原
 		},

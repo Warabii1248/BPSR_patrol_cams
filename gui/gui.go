@@ -1136,6 +1136,7 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;
 .view{display:none;flex-direction:column;gap:10px;flex:1;min-height:0}
 .view.active{display:flex}
 #view-dashboard{overflow-y:auto}
+#view-settings{overflow-y:auto;padding-right:4px}
 /* Card */
 .card{background:linear-gradient(180deg, rgba(20,25,38,.98) 0%, rgba(19,22,33,.96) 100%);border:1px solid rgba(88,103,142,.25);border-radius:var(--radius-lg);padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.12)}
 .card-title{font-size:10px;font-weight:600;color:var(--text2);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:7px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.06);cursor:grab}
@@ -1242,19 +1243,59 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 #gold-history-container{max-height:160px;overflow-y:auto}
 /* Config */
 .cfg-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px}
+.cfg-stack{display:flex;flex-direction:column;gap:12px}
+.cfg-card{border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--bg1)}
+.cfg-card.chat-filter-card{min-height:0}
+.cfg-rule-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.cfg-rule-box{border:1px solid var(--border);border-radius:var(--radius);padding:10px;background:var(--bg0)}
+.cfg-rule-box-title{font-size:.8em;color:var(--text1);font-weight:600;margin-bottom:8px}
+.cfg-rule-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.cfg-rule-actions select{min-width:150px;flex:1}
+.cfg-rule-actions input{flex:1;min-width:120px}
+.cfg-rule-table-wrap{border:1px solid var(--border);border-radius:var(--radius);overflow:auto;background:var(--bg1)}
+.cfg-rule-table{width:100%;border-collapse:collapse;font-size:.8em;table-layout:fixed}
+.cfg-rule-table th,.cfg-rule-table td{border-bottom:1px solid var(--border);border-right:1px solid var(--border);padding:6px 8px;vertical-align:top;line-height:1.4;word-break:break-word}
+.cfg-rule-table th:last-child,.cfg-rule-table td:last-child{border-right:none}
+.cfg-rule-table th{background:var(--bg2);color:var(--text2);font-weight:600;position:sticky;top:0;z-index:1}
+.cfg-rule-table tr:last-child td{border-bottom:none}
+.cfg-rule-table td.cell-mono{font-family:Consolas,monospace;color:var(--accent)}
+.cfg-rule-empty{padding:10px;color:var(--text3);font-size:.8em}
+.cfg-hidden-field{display:none}
 .cfg-field{display:flex;flex-direction:column;gap:3px}
 .cfg-field label{color:var(--text1);font-size:.82em;font-weight:500}
 .cfg-field input{width:100%}
+.cfg-field textarea{width:100%;min-height:calc(1.5em * 10 + 18px);max-height:calc(1.5em * 10 + 18px);resize:vertical;overflow-y:auto;line-height:1.5}
 .cfg-save-bar{display:flex;gap:8px;align-items:center;margin-top:10px}
 .cfg-note{font-size:.75em;color:var(--text3);margin-top:3px}
 .section-title{font-size:.78em;color:var(--accent);font-weight:500;margin:10px 0 5px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:4px}
+.cfg-card-title{font-size:.86em;color:var(--text1);font-weight:600;margin-bottom:10px}
 .check-label{display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text1)}
 /* Chat */
 .chat-toolbar{padding:5px 10px;border-bottom:1px solid var(--border);background:var(--bg1);display:flex;align-items:center;gap:8px;font-size:12px;flex-shrink:0;}
 .chat-msg{padding:5px 10px;border-bottom:1px solid var(--border);line-height:1.5;transition:background .15s;font-size:.82em}
 .chat-msg:hover{background:var(--bg2)}
+.chat-msg.report{border-left:3px solid rgba(245,166,35,.5);padding-left:7px}
+.chat-msg-main{display:flex;gap:8px;align-items:flex-start}
+.chat-msg-body{flex:1;min-width:0;word-break:break-word}
+.chat-msg-text{color:var(--text1);user-select:text}
+.chat-msg-actions{display:flex;gap:4px;flex-wrap:wrap;opacity:0;transition:opacity .15s;align-items:center}
+.chat-msg:hover .chat-msg-actions{opacity:1}
+.chat-action-btn{padding:2px 6px;font-size:10px;border-radius:999px;background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.28);color:var(--accent)}
+.chat-action-btn.exclude{background:rgba(233,75,75,.08);border-color:rgba(233,75,75,.24);color:var(--danger)}
+.chat-split{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.95fr);gap:10px;align-items:start;min-height:0;flex:1}
+.chat-side-card{display:flex;flex-direction:column;min-height:0}
+.chat-report-list{display:flex;flex-direction:column;gap:0;background:var(--bg0);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;min-height:180px;max-height:calc(100vh - 220px)}
+.chat-report-list.compact{max-height:220px;min-height:140px}
+.chat-report-empty{color:var(--text3);padding:10px;font-size:.82em}
+.chat-report-summary{color:var(--text3);font-size:.76em;line-height:1.5;margin-bottom:8px}
+.chat-report-score{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.24);color:#f5a623;font-size:10px;vertical-align:middle}
+@media (max-width:1100px){.chat-split{grid-template-columns:1fr}}
 /* Crash warning */
 .crash-warning{display:none;background:rgba(233,75,75,.1);border:1px solid rgba(233,75,75,.3);border-radius:var(--radius);padding:6px 10px;font-size:.8em;color:var(--danger);margin-bottom:6px}
+.patrol-progress{margin-top:10px}
+.patrol-progress .progress-line{height:10px;border-radius:999px;background:var(--bg2);overflow:hidden}
+.patrol-progress .progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s ease}
+.patrol-progress .progress-text{display:flex;justify-content:space-between;gap:10px;font-size:.82em;color:var(--text3);margin-top:6px}
 /* Scrollbar */
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -1332,6 +1373,10 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       <div class="card">
         <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke-linecap="round"/></svg>巡回状態</div>
         <div class="patrol-status"><span id="dash-ps-state" class="stopped">■ 停止中</span><span id="dash-ps-ch" style="color:var(--accent)"></span><span id="dash-ps-prog" style="color:var(--text3)"></span></div>
+        <div class="patrol-progress" id="dash-patrol-progress">
+          <div class="progress-line"><div class="progress-fill" id="dash-patrol-fill"></div></div>
+          <div class="progress-text"><span id="dash-patrol-label">--</span><span id="dash-patrol-percent"></span></div>
+        </div>
         <div id="dash-crash-warning" class="crash-warning"></div>
         <div class="btn-row">
           <button class="btn success" id="dash-btn-patrol-start" onclick="patrolStart()">▶ 巡回開始</button>
@@ -1353,6 +1398,13 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         </div>
         <div style="flex:1;overflow-y:auto;max-height:200px" id="dash-chat-area"></div>
       </div>
+			<div class="card" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
+				<div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
+					発見報告候補
+					<span style="margin-left:auto;font-size:10px;color:var(--text3)">自動抽出</span>
+				</div>
+				<div id="dash-chat-report-area" class="chat-report-list compact"></div>
+			</div>
     </div>
   </div>
 </div>
@@ -1375,16 +1427,25 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 </div>
 <!-- ===== チャットログ ===== -->
 <div class="view" id="view-chat-log">
-  <div class="card" style="flex:1;display:flex;flex-direction:column;padding:0;overflow:hidden;min-height:0">
-    <div class="chat-toolbar">
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
-      <span style="font-weight:500;color:var(--text2);text-transform:uppercase;font-size:10px;letter-spacing:.6px">チャットログ</span>
-      <select id="chat-device-select" onchange="renderChatPanel()" style="font-size:11px;padding:2px 6px;max-width:140px"><option value="">すべて</option></select>
-      <input type="text" id="chat-search" placeholder="キーワード検索..." style="width:130px;font-size:11px" oninput="renderChatPanel()">
-      <button class="btn" style="margin-left:auto" onclick="window.open('/chat-log','chat-log','width=700,height=500')">⧉ 別ウィンドウ</button>
-      <button class="btn" onclick="clearChatPanel()">クリア</button>
-    </div>
-    <div class="log-area full" id="chat-area" style="flex:1;max-height:calc(100vh - 180px);border-radius:0;border:none;border-top:1px solid var(--border)"></div>
+	<div class="chat-split">
+		<div class="card" style="display:flex;flex-direction:column;padding:0;overflow:hidden;min-height:0">
+			<div class="chat-toolbar">
+				<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
+				<span style="font-weight:500;color:var(--text2);text-transform:uppercase;font-size:10px;letter-spacing:.6px">チャットログ</span>
+				<select id="chat-device-select" onchange="renderChatPanel()" style="font-size:11px;padding:2px 6px;max-width:140px"><option value="">すべて</option></select>
+				<input type="text" id="chat-search" placeholder="キーワード検索..." style="width:130px;font-size:11px" oninput="renderChatPanel()">
+				<button class="btn" style="margin-left:auto" onclick="window.open('/chat-log','chat-log','width=700,height=500')">⧉ 別ウィンドウ</button>
+				<button class="btn" onclick="clearChatPanel()">クリア</button>
+			</div>
+			<div class="log-area full" id="chat-area" style="flex:1;max-height:calc(100vh - 180px);border-radius:0;border:none;border-top:1px solid var(--border)"></div>
+		</div>
+		<div class="col chat-side-card">
+			<div class="card">
+				<div class="card-title">発見報告候補</div>
+				<div class="chat-report-summary" id="chat-report-summary">発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。</div>
+				<div id="chat-report-area" class="chat-report-list"></div>
+			</div>
+		</div>
   </div>
 </div>
 <!-- ===== デバイス管理 ===== -->
@@ -1408,6 +1469,10 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       <div class="card">
         <div class="card-title">巡回制御</div>
         <div class="patrol-status"><span class="stopped" id="ps-state">■ 停止中</span><span id="ps-ch"></span><span id="ps-prog"></span><span id="ps-parallel"></span></div>
+        <div class="patrol-progress" id="ps-progress">
+          <div class="progress-line"><div class="progress-fill" id="ps-progress-fill"></div></div>
+          <div class="progress-text"><span id="ps-patrol-label">--</span><span id="ps-patrol-percent"></span></div>
+        </div>
         <div id="crash-warning" class="crash-warning">⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。</div>
         <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">
           <div id="ps-full" style="font-size:.78em;color:#fca5a5;flex:1"></div>
@@ -1450,13 +1515,21 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 </div>
 <!-- ===== 設定 ===== -->
 <div class="view" id="view-settings">
-  <div class="card">
-    <div id="cfg-form" class="cfg-grid"></div>
-    <div class="cfg-save-bar">
-      <button class="btn primary" onclick="saveConfig()">💾 保存・反映</button>
-      <span id="cfg-status" style="font-size:.82em;color:var(--text2)"></span>
+	<div class="cfg-stack">
+		<div class="card cfg-card chat-filter-card">
+			<div class="cfg-card-title">チャット候補フィルター</div>
+			<div id="cfg-chat-form" class="cfg-grid"></div>
+			<div id="cfg-chat-rule-managers" class="cfg-rule-grid"></div>
+		</div>
+		<div class="card cfg-card">
+			<div class="cfg-card-title">システム設定</div>
+			<div id="cfg-form" class="cfg-grid"></div>
+			<div class="cfg-save-bar">
+				<button class="btn primary" onclick="saveConfig()">💾 保存・反映</button>
+				<span id="cfg-status" style="font-size:.82em;color:var(--text2)"></span>
+			</div>
+			<p class="cfg-note" style="margin-top:6px">* 滞在時間・タイムアウト・並列設定は保存後すぐ反映されます。その他は再起動が必要です。</p>
     </div>
-    <p class="cfg-note" style="margin-top:6px">* 滞在時間・タイムアウト・並列設定は保存後すぐ反映されます。その他は再起動が必要です。</p>
   </div>
 </div>
 </div><!-- /main -->
@@ -1578,7 +1651,8 @@ function appendLog(line){
     +'<span class="log-msg">'+escHtml(rest)+'</span>';
   if(!isVisible(line))div.style.display='none';
   la.appendChild(div);
-  if(!window._logUserScrolling||!window._logUserScrolling()){la.scrollTop=la.scrollHeight;}
+	if(la.children.length>1500)la.removeChild(la.firstChild);
+	if(!window._logUserScrolling())la.scrollTop=la.scrollHeight;
 }
 async function testDetect(monster){
   const url = monster ? '/api/test-detect?monster=' + encodeURIComponent(monster) : '/api/test-detect';
@@ -1691,14 +1765,266 @@ async function refreshDevices(){
 function toggleDevice(s,c){c?selectedDevices.add(s):selectedDevices.delete(s);}
 // ── Chat Panel ──
 let chatEvents=[],chatIPToSerial={},chatKnownSerials=[];
-function chatMsgHtml(ev){
+const DEFAULT_CHAT_LOCATION_RULES=[
+	{name:'テント裏',aliases:['テント裏','テント','てんと','tnt'],monsters:['ウリボ・ゴールド']},
+	{name:'ミンスターホルン',aliases:['ミンスターホルン','ミンホル','みんほる','ミンスター','みんすたー','みんすた','みんほるっぽ'],monsters:['ウリボ・ゴールド']},
+	{name:'休憩所',aliases:['休憩所','休憩','きゅうけい','qk'],monsters:['ウリボ・ゴールド']},
+	{name:'麦畑',aliases:['麦畑','麦','むぎ','畑','はたけ'],monsters:['ウリボ・ゴールド']},
+	{name:'カナミア',aliases:['カナミア','かなみあ'],monsters:['ウリボ・ゴールド']},
+	{name:'崖',aliases:['崖','がけ'],monsters:['ウリボ・ゴールド']},
+	{name:'偵察左上',aliases:['偵察左上','左上偵察','左偵察','左上','左'],monsters:['ウリボ・ゴールド']},
+	{name:'偵察右上',aliases:['偵察右上','右上偵察','右上'],monsters:['ウリボ・ゴールド']},
+	{name:'偵察右下',aliases:['偵察右下','右下偵察','右下','右'],monsters:['ウリボ・ゴールド']},
+	{name:'山賊野営地',aliases:['山賊野営地','山賊','野営地','野営'],monsters:['金ナッポ','銀ナッポ']},
+];
+const CHAT_MONSTER_ALIASES=[
+	{name:'ウリボ・ゴールド',aliases:['ウリボゴールド','ゴールドウリボ','金ウリボ','金うりぼ','金うり','きんうり','金豚','金猪']},
+	{name:'金ナッポ',aliases:['金ナッポ','金なっぽ','金なぽ','きんなっぽ','きんなぽ','金ナポ']},
+	{name:'銀ナッポ',aliases:['銀ナッポ','銀なっぽ','銀なぽ','ぎんなっぽ','ぎんなぽ','銀ナポ']},
+];
+function chatMessageLength(text){return Array.from(String(text||'')).length;}
+function normalizeCsvList(items){return [...new Set((Array.isArray(items)?items:[]).map(v=>String(v||'').trim()).filter(Boolean))];}
+function normalizeChatCandidateText(text){
+	return String(text||'').toLowerCase().replace(/[\s\u3000・._\-\/]/g,'').replace(/[０-９]/g, ch=>String.fromCharCode(ch.charCodeAt(0)-0xFEE0));
+}
+function cloneChatLocationRule(rule){
+	return {name:String(rule.name||''),aliases:normalizeCsvList(rule.aliases||[]),monsters:normalizeCsvList(rule.monsters||[])};
+}
+function parseChatLocationRuleLine(line){
+	const raw=String(line||'').trim();
+	if(!raw)return null;
+	const parts=raw.split('|').map(v=>v.trim());
+	const name=parts[0]||'';
+	if(!name)return null;
+	const aliases=normalizeCsvList([name].concat((parts[1]||'').split(',').map(v=>v.trim()).filter(Boolean)));
+	const monsters=normalizeCsvList((parts[2]||'').split(',').map(v=>v.trim()).filter(Boolean));
+	return {name,aliases,monsters};
+}
+function parseChatMonsterAliasRuleLine(line){
+	const raw=String(line||'').trim();
+	if(!raw)return null;
+	const parts=raw.split('|').map(v=>v.trim());
+	const name=parts[0]||'';
+	if(!name)return null;
+	const aliases=normalizeCsvList((parts[1]||'').split(',').map(v=>v.trim()).filter(Boolean));
+	return {name,aliases};
+}
+function getChatLocationRules(){
+	const merged=new Map();
+	DEFAULT_CHAT_LOCATION_RULES.forEach(rule=>{
+		const copy=cloneChatLocationRule(rule);
+		merged.set(copy.name,copy);
+	});
+	normalizeCsvList(cfgData.chat_report_location_rules).forEach(line=>{
+		const parsed=parseChatLocationRuleLine(line);
+		if(!parsed)return;
+		const existing=merged.get(parsed.name);
+		if(existing){
+			existing.aliases=normalizeCsvList(existing.aliases.concat(parsed.aliases));
+			existing.monsters=normalizeCsvList(existing.monsters.concat(parsed.monsters));
+		}else{
+			merged.set(parsed.name,parsed);
+		}
+	});
+	return [...merged.values()];
+}
+function getChatMonsterAliases(){
+	const merged=new Map();
+	CHAT_MONSTER_ALIASES.forEach(rule=>{
+		merged.set(rule.name,{name:rule.name,aliases:normalizeCsvList(rule.aliases||[])});
+	});
+	normalizeCsvList(cfgData.chat_report_monster_alias_rules).forEach(line=>{
+		const parsed=parseChatMonsterAliasRuleLine(line);
+		if(!parsed)return;
+		const existing=merged.get(parsed.name);
+		if(existing)existing.aliases=normalizeCsvList(existing.aliases.concat(parsed.aliases));
+		else merged.set(parsed.name,{name:parsed.name,aliases:parsed.aliases});
+	});
+	return [...merged.values()];
+}
+function findAliasGroup(compactText, groups){
+	for(const group of groups){
+		if(group.aliases.some(alias=>compactText.includes(normalizeChatCandidateText(alias))))return group.name;
+	}
+	return '';
+}
+function findAliasRule(compactText, groups){
+	for(const group of groups){
+		if(group.aliases.some(alias=>compactText.includes(normalizeChatCandidateText(alias))))return group;
+	}
+	return null;
+}
+function extractChatCandidateFacts(ev){
+	const rawMessage=String(ev&&ev.message||'');
+	const rawSender=String(ev&&ev.sender||'');
+	const compactMessage=normalizeChatCandidateText(rawMessage);
+	const asciiMessage=compactMessage;
+	let channel=0;
+	let match=asciiMessage.match(/(?:^|[^0-9])([0-9]{1,3})ch/);
+	if(!match)match=asciiMessage.match(/ch([0-9]{1,3})/);
+	if(!match)match=asciiMessage.match(/^([0-9]{1,3})(?=[^0-9]|$)/);
+	if(match)channel=parseInt(match[1],10)||0;
+	const locationRule=findAliasRule(compactMessage, getChatLocationRules());
+	const location=locationRule?locationRule.name:'';
+	const explicitMonster=findAliasGroup(compactMessage, getChatMonsterAliases());
+	const hasGoldWord=['金','きん','gold'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
+	const hasSilverWord=['銀','ぎん','silver'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
+	const hasBoarWord=['うり','ウリ','豚','猪','boar'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
+	const hasNappoWord=['なぽ','なっぽ','ナポ','ナッポ','nappo'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
+	const spawnMonsters=locationRule&&Array.isArray(locationRule.monsters)?locationRule.monsters:[];
+	let inferredMonster='';
+	if(!explicitMonster){
+		if(spawnMonsters.length===1){
+			inferredMonster=spawnMonsters[0];
+		}else if(spawnMonsters.includes('金ナッポ') && spawnMonsters.includes('銀ナッポ')){
+			if(hasGoldWord && !hasBoarWord)inferredMonster='金ナッポ';
+			else if(hasSilverWord && !hasBoarWord)inferredMonster='銀ナッポ';
+			else if(hasNappoWord && hasGoldWord)inferredMonster='金ナッポ';
+			else if(hasNappoWord && hasSilverWord)inferredMonster='銀ナッポ';
+		}
+		if(!inferredMonster){
+			if(hasGoldWord && !hasBoarWord && (hasNappoWord || location || channel>0))inferredMonster='金ナッポ';
+			else if(hasSilverWord && !hasBoarWord && (hasNappoWord || location || channel>0))inferredMonster='銀ナッポ';
+			else if((channel>0 && location) || (channel>0 && hasBoarWord) || (location && hasBoarWord))inferredMonster='ウリボ・ゴールド';
+		}
+	}
+	const monster=explicitMonster||inferredMonster;
+	const hasCoords=/[0-9]{2,4}[,、.．][0-9]{2,4}/.test(asciiMessage);
+	const hasReportVerb=['発見','出現','いた','居た','います','あり','あります','湧','わき','沸','出た','でた','見つけ','みつけ','確認'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
+	const sender=rawSender.toLowerCase();
+	return {rawMessage, compactMessage, sender, channel, location, locationRule, spawnMonsters, monster, explicitMonster, inferredMonster, hasGoldWord, hasSilverWord, hasBoarWord, hasNappoWord, hasCoords, hasReportVerb};
+}
+function getChatCandidateConfig(){
+	return {
+		senders: normalizeCsvList(cfgData.chat_report_senders),
+		excludedSenders: normalizeCsvList(cfgData.chat_report_excluded_senders),
+		includeKeywords: normalizeCsvList(cfgData.chat_report_include_keywords),
+		excludeKeywords: normalizeCsvList(cfgData.chat_report_exclude_keywords),
+	};
+}
+function getChatCandidateScore(ev){
+	const facts=extractChatCandidateFacts(ev);
+	const message=facts.rawMessage.toLowerCase();
+	const sender=facts.sender;
+	const length=chatMessageLength(facts.rawMessage);
+	const rules=getChatCandidateConfig();
+	if(!message||length<4||length>80)return 0;
+	const excludeKeywords=['ありがとう','ありがと','よろしく','こん','こんばんは','おつ','了解','りょ','募集','売り','買い','null'];
+	if(rules.senders.length && !rules.senders.some(v=>sender.includes(v.toLowerCase())))return 0;
+	if(rules.excludedSenders.some(v=>sender.includes(v.toLowerCase())))return 0;
+	if(rules.includeKeywords.length && !rules.includeKeywords.some(v=>message.includes(v.toLowerCase())))return 0;
+	if(rules.excludeKeywords.some(v=>message.includes(v.toLowerCase())))return 0;
+	if(excludeKeywords.some(v=>message.includes(v)))return 0;
+	if(!facts.channel && !facts.location && !facts.monster && !facts.hasCoords && !facts.hasReportVerb)return 0;
+	let score=0;
+	if(length>=6&&length<=36)score+=1;
+	if(facts.channel>0)score+=2;
+	if(facts.location)score+=2;
+	if(facts.explicitMonster)score+=3;
+	else if(facts.inferredMonster)score+=2;
+	if(facts.spawnMonsters.length===1 && facts.location)score+=2;
+	if(facts.spawnMonsters.length>1 && facts.location && facts.inferredMonster)score+=1;
+	if(facts.hasReportVerb)score+=1;
+	if(facts.hasCoords)score+=1;
+	if(facts.channel>0 && facts.location)score+=2;
+	if(facts.monster && (facts.channel>0 || facts.location))score+=2;
+	if(facts.inferredMonster==='ウリボ・ゴールド' && facts.channel>0 && facts.location)score+=2;
+	if((facts.inferredMonster==='金ナッポ' || facts.inferredMonster==='銀ナッポ') && facts.channel>0 && facts.location)score+=2;
+	if((facts.hasGoldWord || facts.hasSilverWord) && !facts.hasBoarWord)score+=1;
+	if(rules.senders.length && (facts.channel>0 || facts.location || facts.monster))score+=1;
+	return score;
+}
+function isChatCandidate(ev){
+	const facts=extractChatCandidateFacts(ev);
+	const score=getChatCandidateScore(ev);
+	if(score>=6)return true;
+	if(facts.inferredMonster==='ウリボ・ゴールド' && facts.channel>0 && facts.location && score>=5)return true;
+	if((facts.inferredMonster==='金ナッポ' || facts.inferredMonster==='銀ナッポ') && facts.channel>0 && facts.location && score>=5)return true;
+	if(score>=4 && facts.channel>0 && facts.location)return true;
+	if(score>=4 && facts.monster && (facts.channel>0 || facts.location))return true;
+	return false;
+}
+function dedupeChatEvents(source){
+	const seen=new Set();
+	return (source||[]).filter(ev=>{const k=ev.channel+'|'+ev.sender+'|'+ev.message;if(seen.has(k))return false;seen.add(k);return true;});
+}
+function getPickedChatEvents(source){
+	return dedupeChatEvents((source||[]).filter(isChatCandidate));
+}
+function chatCandidateMetaHtml(ev){
+	const facts=extractChatCandidateFacts(ev);
+	const parts=[];
+	if(facts.channel>0)parts.push('Ch'+facts.channel);
+	if(facts.location)parts.push(facts.location);
+	if(facts.monster)parts.push(facts.monster);
+	if(!parts.length)return '';
+	const label=facts.explicitMonster?'判定':'推定';
+	return '<div style="margin-top:4px;font-size:10px;color:var(--text3)">'+label+': '+escHtml(parts.join(' / '))+'</div>';
+}
+function chatMsgHtml(ev,opts){
+	opts=opts||{};
   const serial=chatIPToSerial[ev.client_ip]||ev.client_ip;
   const ch=ev.has_ch?'<span style="color:#4f8ef7;margin-right:3px;font-size:.88em">Ch'+ev.channel+'</span>':'';
-  return '<div class="chat-msg" onmouseover="this.style.background=\'var(--bg2)\'" onmouseout="this.style.background=\'\'">'
-    +'<span style="color:var(--text3);margin-right:5px">'+escHtml(ev.time)+'</span>'
-    +'<span style="color:var(--text2);font-size:.88em;margin-right:3px">['+escHtml(serial)+']</span>'
-    +ch+'<span style="color:var(--warn);font-weight:600;margin-right:3px">'+escHtml(ev.sender)+'</span>'
-    +'<span style="color:var(--text1)">'+escHtml(ev.message)+'</span></div>';
+	const scoreBadge=opts.report?'<span class="chat-report-score">score '+getChatCandidateScore(ev)+'</span>':'';
+	const rowClass='chat-msg'+(opts.report?' report':'');
+	const actionHtml=opts.withActions===false?'':'<span class="chat-msg-actions">'
+		+'<button type="button" class="chat-action-btn" data-action="sender-include" data-sender="'+escHtml(ev.sender)+'" onclick="applyChatFilterAction(this)">発言者+</button>'
+		+'<button type="button" class="chat-action-btn exclude" data-action="sender-exclude" data-sender="'+escHtml(ev.sender)+'" onclick="applyChatFilterAction(this)">発言者-</button>'
+		+'<button type="button" class="chat-action-btn" data-action="keyword-include" data-message="'+escHtml(ev.message)+'" onclick="applyChatFilterAction(this)">文言+</button>'
+		+'<button type="button" class="chat-action-btn exclude" data-action="keyword-exclude" data-message="'+escHtml(ev.message)+'" onclick="applyChatFilterAction(this)">文言-</button>'
+		+'</span>';
+	return '<div class="'+rowClass+'" onmouseover="this.style.background=\'var(--bg2)\'" onmouseout="this.style.background=\'\'">'
+		+'<div class="chat-msg-main">'
+		+'<div class="chat-msg-body">'
+		+'<span style="color:var(--text3);margin-right:5px">'+escHtml(ev.time)+'</span>'
+		+'<span style="color:var(--text2);font-size:.88em;margin-right:3px">['+escHtml(serial)+']</span>'
+		+ch+'<span style="color:var(--warn);font-weight:600;margin-right:3px">'+escHtml(ev.sender)+'</span>'
+		+'<span class="chat-msg-text">'+escHtml(ev.message)+'</span>'
+		+(opts.report?chatCandidateMetaHtml(ev):'')
+		+scoreBadge
+		+'</div>'
+		+actionHtml
+		+'</div></div>';
+}
+function getChatRowSelection(row){
+	const selection=window.getSelection?window.getSelection():null;
+	if(!selection||selection.rangeCount===0)return '';
+	const text=String(selection).trim();
+	if(!text)return '';
+	const range=selection.getRangeAt(0);
+	const startNode=range.startContainer;
+	const endNode=range.endContainer;
+	if(row && row.contains(startNode) && row.contains(endNode))return text;
+	return '';
+}
+function getChatActionValue(action,btn){
+	if(action==='sender-include' || action==='sender-exclude')return String(btn.dataset.sender||'').trim();
+	const row=btn.closest('.chat-msg');
+	const selected=getChatRowSelection(row);
+	if(selected)return selected;
+	return String(btn.dataset.message||'').trim();
+}
+function updateChatFilterTextarea(key, values){
+	const normalized=normalizeCsvList(values);
+	cfgData[key]=normalized;
+	const el=document.getElementById('cfg-'+key);
+	if(el)el.value=normalized.join('\n');
+}
+async function appendChatFilterValue(key, value){
+	if(!value)return;
+	const current=Array.isArray(cfgData[key])?cfgData[key]:[];
+	updateChatFilterTextarea(key, current.concat([value]));
+	renderChatCandidatePanels();
+	await saveConfig(true);
+}
+async function applyChatFilterAction(btn){
+	const action=btn&&btn.dataset?btn.dataset.action:'';
+	const value=getChatActionValue(action, btn);
+	if(!action||!value)return;
+	if(action==='sender-include')await appendChatFilterValue('chat_report_senders', value);
+	else if(action==='sender-exclude')await appendChatFilterValue('chat_report_excluded_senders', value);
+	else if(action==='keyword-include')await appendChatFilterValue('chat_report_include_keywords', value);
+	else if(action==='keyword-exclude')await appendChatFilterValue('chat_report_exclude_keywords', value);
 }
 function refreshChatDeviceDropdown(){
   const sel=document.getElementById('chat-device-select');if(!sel)return;
@@ -1717,30 +2043,42 @@ function chatMatchFilter(ev){
 function renderDashChat(evs){
   const el=document.getElementById('dash-chat-area');if(!el)return;
   if(!evs||!evs.length){el.innerHTML='<div style="color:var(--text3);padding:8px;font-size:.82em">チャットなし</div>';return;}
-  el.innerHTML=evs.map(chatMsgHtml).join('');el.scrollTop=el.scrollHeight;
+	el.innerHTML=evs.map(ev=>chatMsgHtml(ev,{withActions:false})).join('');el.scrollTop=el.scrollHeight;
+}
+function renderChatCandidatePanels(source){
+	const picked=getPickedChatEvents(source||chatEvents);
+	const full=document.getElementById('chat-report-area');
+	const dash=document.getElementById('dash-chat-report-area');
+	const summary=document.getElementById('chat-report-summary');
+	const rules=getChatCandidateConfig();
+	const emptyHtml='<div class="chat-report-empty">候補はまだありません</div>';
+	if(summary){
+		const parts=[];
+		if(rules.senders.length)parts.push('含む発言者: '+rules.senders.join(', '));
+		if(rules.excludedSenders.length)parts.push('除外発言者: '+rules.excludedSenders.join(', '));
+		if(rules.includeKeywords.length)parts.push('含むキーワード: '+rules.includeKeywords.join(', '));
+		if(rules.excludeKeywords.length)parts.push('除外キーワード: '+rules.excludeKeywords.join(', '));
+		summary.textContent=parts.length?parts.join(' / '):'発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。';
+	}
+	if(full)full.innerHTML=picked.length?picked.slice().reverse().map(ev=>chatMsgHtml(ev,{report:true})).join(''):emptyHtml;
+	if(dash)dash.innerHTML=picked.length?picked.slice(-6).reverse().map(ev=>chatMsgHtml(ev,{report:true,withActions:false})).join(''):emptyHtml;
 }
 function renderChatPanel(){
   const el=document.getElementById('chat-area');if(!el)return;
   const filtered=chatEvents.filter(chatMatchFilter);
-  const seen=new Set();
-  const deduped=filtered.filter(ev=>{const k=ev.channel+'|'+ev.sender+'|'+ev.message;if(seen.has(k))return false;seen.add(k);return true;});
-  if(!deduped.length){el.innerHTML='<div style="color:var(--text3);padding:8px;font-size:.82em">チャットなし</div>';return;}
+	const deduped=dedupeChatEvents(filtered);
+	if(!deduped.length){el.innerHTML='<div style="color:var(--text3);padding:8px;font-size:.82em">チャットなし</div>';renderDashChat([]);renderChatCandidatePanels([]);return;}
   el.innerHTML=deduped.map(chatMsgHtml).join('');el.scrollTop=el.scrollHeight;
   renderDashChat(deduped.slice(-8));
+	renderChatCandidatePanels(filtered);
 }
 function appendChatToPanel(ev){
   const isDup=chatEvents.slice(-50).some(e=>e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
   if(isDup)return;
   chatEvents.push(ev);if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
-  renderDashChat(chatEvents.slice(-8));
-  if(!chatMatchFilter(ev))return;
-  const el=document.getElementById('chat-area');if(!el)return;
-  if(el.children.length===1&&el.firstChild&&el.firstChild.textContent&&el.firstChild.style&&el.firstChild.style.color)el.innerHTML='';
-  const tmp=document.createElement('div');tmp.innerHTML=chatMsgHtml(ev);el.appendChild(tmp.firstChild);
-  if(el.children.length>500)el.removeChild(el.firstChild);
-  el.scrollTop=el.scrollHeight;
+	renderChatPanel();
 }
-function clearChatPanel(){chatEvents=[];const el=document.getElementById('chat-area');if(el)el.innerHTML='';renderDashChat([]);}
+function clearChatPanel(){chatEvents=[];const el=document.getElementById('chat-area');if(el)el.innerHTML='';renderDashChat([]);renderChatCandidatePanels([]);}
 async function initChat(){
   const dm=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
   if(dm.devices)dm.devices.forEach(e=>{if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
@@ -1824,9 +2162,33 @@ async function pollPatrolStatus(){
     const d=await fetch('/api/patrol/status').then(r=>r.json());
     const els=(id)=>document.getElementById(id);
     if(d.running){
-      ['ps-state','dash-ps-state'].forEach(id=>{const e=els(id);if(e){e.className='running';e.textContent='▶ 巡回中'+(id==='ps-state'&&d.waiting_move?' ⏳':'');}});
+			const phaseMap = {
+				move_start: {label:'移動開始', start:0, end:20},
+				loading: {label:'ロード中', start:20, end:68},
+				dwell_wait: {label:'滞在待機', start:68, end:100}
+			};
+      const currentPhase = d.phase && phaseMap[d.phase] ? d.phase : (d.waiting_move ? 'loading' : 'move_start');
+			const phaseState = phaseMap[currentPhase] || {label:'巡回中', start:0, end:0};
+			const now = Date.now();
+			const startedAt = Number(d.phase_started_at_unix_ms || 0);
+			const totalMs = Math.max(0, Number(d.phase_total_secs || 0) * 1000);
+			const elapsedMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;
+			let progressPct = phaseState.end;
+			if(totalMs > 0 && phaseState.end > phaseState.start){
+				const ratio = Math.min(elapsedMs / totalMs, 1);
+				progressPct = phaseState.start + ((phaseState.end - phaseState.start) * ratio);
+			}else if(phaseState.end > phaseState.start){
+				progressPct = phaseState.start + ((phaseState.end - phaseState.start) * 0.6);
+			}
+			const remainingSecs = totalMs > 0 ? Math.max(0, Math.ceil((totalMs - elapsedMs) / 1000)) : 0;
+			const phaseLabel = phaseState.label + (remainingSecs > 0 ? ' (' + remainingSecs + 's)' : '');
+			const progressText = Math.round(progressPct) + '%';
+      ['ps-state','dash-ps-state'].forEach(id=>{const e=els(id);if(e){e.className='running';e.textContent='▶ '+phaseState.label+(id==='ps-state'&&d.waiting_move?' ⏳':'');}});
       ['ps-ch','dash-ps-ch'].forEach(id=>{const e=els(id);if(e)e.textContent='Ch'+d.current_channel;});
       ['ps-prog','dash-ps-prog'].forEach(id=>{const e=els(id);if(e)e.textContent=(d.current_index+1)+'/'+d.total_channels;});
+      ['dash-patrol-label','ps-patrol-label'].forEach(id=>{const e=els(id);if(e)e.textContent=phaseLabel;});
+      ['dash-patrol-percent','ps-patrol-percent'].forEach(id=>{const e=els(id);if(e)e.textContent=progressText;});
+			['dash-patrol-fill','ps-progress-fill'].forEach(id=>{const e=els(id);if(e)e.style.width=Math.round(progressPct)+'%';});
       const par=els('ps-parallel');if(par){
         const delay=d.parallel_group_delay>0?'(+'+d.parallel_group_delay+'s)':'';
         par.textContent=(d.parallel_limit===0?'並列:無制限':'並列:'+d.parallel_limit+'台'+delay)+(d.move_timeout_secs>0?' | timeout:'+d.move_timeout_secs+'s':'')+' | 滞在:'+Math.round(d.dwell_secs)+'s';
@@ -1835,6 +2197,9 @@ async function pollPatrolStatus(){
     }else{
       ['ps-state','dash-ps-state'].forEach(id=>{const e=els(id);if(e){e.className='stopped';e.textContent='■ 停止中';}});
       ['ps-ch','dash-ps-ch','ps-prog','dash-ps-prog'].forEach(id=>{const e=els(id);if(e)e.textContent=id==='ps-ch'&&d.last_channel>0?'前回: Ch'+d.last_channel:'';});
+			['dash-patrol-label','ps-patrol-label'].forEach(id=>{const e=els(id);if(e)e.textContent='--';});
+			['dash-patrol-percent','ps-patrol-percent'].forEach(id=>{const e=els(id);if(e)e.textContent='';});
+			['dash-patrol-fill','ps-progress-fill'].forEach(id=>{const e=els(id);if(e)e.style.width='0%';});
       const par=els('ps-parallel');if(par)par.textContent='';
       updatePatrolUI(false);
     }
@@ -1853,6 +2218,16 @@ async function pollPatrolStatus(){
   finally{setTimeout(pollPatrolStatus,2000);}
 }
 // ── Config ──
+const CHAT_FILTER_FIELDS=[
+	{k:'chat_report_senders',label:'候補発言者(含む)',type:'multiline-list',desc:'1行に1件ずつ入力'},
+	{k:'chat_report_excluded_senders',label:'候補発言者(除外)',type:'multiline-list',desc:'1行に1件ずつ入力'},
+	{k:'chat_report_include_keywords',label:'候補キーワード(含む)',type:'multiline-list',desc:'1行に1件ずつ入力'},
+	{k:'chat_report_exclude_keywords',label:'候補キーワード(除外)',type:'multiline-list',desc:'1行に1件ずつ入力'},
+];
+const CHAT_RULE_FIELDS=[
+	{k:'chat_report_location_rules',label:'地点別名ルール',type:'multiline-list',desc:'1行形式: 地点名|別名|モンスター1,モンスター2'},
+	{k:'chat_report_monster_alias_rules',label:'モンスター別名ルール',type:'multiline-list',desc:'1行形式: モンスター名|別名'},
+];
 const CFG_FIELDS=[
   {k:'discord_webhook',label:'Discord Webhook URL',type:'text',desc:'空にするとDiscord通知無効'},
   {k:'chat_exclude',label:'チャット除外キーワード',type:'csv',desc:'カンマ区切り。例: いない,終わった'},
@@ -1868,26 +2243,140 @@ const CFG_FIELDS=[
   {k:'mumu_pre_keycode',label:'プリキーコード',type:'text',desc:'チャンネル入力欄を開くキーコード'},
 ];
 let cfgData={};
+function renderConfigFields(containerId, fields){
+	const root=document.getElementById(containerId);if(!root)return;
+	root.innerHTML=fields.map(function(f){
+		var val=cfgData[f.k]!==undefined?cfgData[f.k]:'';
+		var noteHtml=f.desc?('<span class="cfg-note">'+escHtml(f.desc)+'</span>'):'';
+		if(f.type==='csv'&&Array.isArray(val))val=val.join(',');
+		if(f.type==='multiline-list'&&Array.isArray(val))val=val.join('\n');
+		if(f.type==='multiline-list'){
+			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><textarea id="cfg-'+f.k+'" rows="10" spellcheck="false" placeholder="'+escHtml(f.desc||'')+'">'+escHtml(String(val))+'</textarea>'+noteHtml+'</div>';
+		}
+		var inputType=f.type==='csv'?'text':f.type;
+		return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><input type="'+inputType+'" id="cfg-'+f.k+'" value="'+escHtml(String(val))+'" placeholder="'+escHtml(f.desc||'')+'">'+noteHtml+'</div>';
+	}).join('');
+}
+function renderChatRuleTable(headers, rows, emptyText){
+	if(!rows.length)return '<div class="cfg-rule-empty">'+escHtml(emptyText)+'</div>';
+	return '<div class="cfg-rule-table-wrap"><table class="cfg-rule-table"><thead><tr>'
+		+headers.map(h=>'<th>'+escHtml(h)+'</th>').join('')
+		+'</tr></thead><tbody>'
+		+rows.join('')
+		+'</tbody></table></div>';
+}
+function getCustomLocationRuleLines(){
+	return normalizeCsvList(cfgData.chat_report_location_rules);
+}
+function getCustomMonsterAliasRuleLines(){
+	return normalizeCsvList(cfgData.chat_report_monster_alias_rules);
+}
+function renderCustomLocationRuleRows(){
+	return getCustomLocationRuleLines().map(line=>{
+		const parsed=parseChatLocationRuleLine(line);
+		if(!parsed)return '';
+		return '<tr>'
+			+'<td class="cell-mono">'+escHtml(parsed.name)+'</td>'
+			+'<td>'+escHtml(parsed.aliases.filter(v=>v!==parsed.name).join(', '))+'</td>'
+			+'<td>'+escHtml(parsed.monsters.join(', '))+'</td>'
+			+'<td><button type="button" class="btn danger" style="padding:2px 8px" onclick="removeChatRuleLine(\'chat_report_location_rules\','+escAttrJs(line)+')">削除</button></td>'
+			+'</tr>';
+	}).filter(Boolean);
+}
+function renderCustomMonsterAliasRuleRows(){
+	return getCustomMonsterAliasRuleLines().map(line=>{
+		const parsed=parseChatMonsterAliasRuleLine(line);
+		if(!parsed)return '';
+		return '<tr>'
+			+'<td class="cell-mono">'+escHtml(parsed.name)+'</td>'
+			+'<td>'+escHtml(parsed.aliases.join(', '))+'</td>'
+			+'<td><button type="button" class="btn danger" style="padding:2px 8px" onclick="removeChatRuleLine(\'chat_report_monster_alias_rules\','+escAttrJs(line)+')">削除</button></td>'
+			+'</tr>';
+	}).filter(Boolean);
+}
+function renderChatRuleManagers(){
+	const root=document.getElementById('cfg-chat-rule-managers');if(!root)return;
+	const locationOptions=getChatLocationRules().map(rule=>'<option value="'+escHtml(rule.name)+'">'+escHtml(rule.name)+'</option>').join('');
+	const monsterOptions=getChatMonsterAliases().map(rule=>'<option value="'+escHtml(rule.name)+'">'+escHtml(rule.name)+'</option>').join('');
+	const locationRules=normalizeCsvList(cfgData.chat_report_location_rules).join('\n');
+	const monsterRules=normalizeCsvList(cfgData.chat_report_monster_alias_rules).join('\n');
+	const locationRows=renderCustomLocationRuleRows();
+	const monsterRows=renderCustomMonsterAliasRuleRows();
+	root.innerHTML=''
+		+'<div class="cfg-rule-box">'
+		+'<div class="cfg-rule-box-title">場所別名を追加</div>'
+		+'<div class="cfg-rule-actions">'
+		+'<select id="cfg-location-rule-target"><option value="">場所を選択</option>'+locationOptions+'</select>'
+		+'<input type="text" id="cfg-location-rule-alias" placeholder="別名を入力。例: tnt">'
+		+'<button type="button" class="btn" onclick="addChatLocationRule()">追加</button>'
+		+'</div>'
+		+renderChatRuleTable(['場所','追加した別名','出現候補',''],locationRows,'追加した場所別名はありません')
+		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_location_rules" rows="10" spellcheck="false" placeholder="地点名|別名|モンスター1,モンスター2">'+escHtml(locationRules)+'</textarea>'
+		+'<span class="cfg-note">追加内容はセル形式で表示しています。保存はこの一覧から行われます。</span>'
+		+'</div>'
+		+'<div class="cfg-rule-box">'
+		+'<div class="cfg-rule-box-title">モンスター別名を追加</div>'
+		+'<div class="cfg-rule-actions">'
+		+'<select id="cfg-monster-rule-target"><option value="">モンスターを選択</option>'+monsterOptions+'</select>'
+		+'<input type="text" id="cfg-monster-rule-alias" placeholder="別名を入力。例: 金ウリ">'
+		+'<button type="button" class="btn" onclick="addChatMonsterAliasRule()">追加</button>'
+		+'</div>'
+		+renderChatRuleTable(['モンスター','追加した別名',''],monsterRows,'追加したモンスター別名はありません')
+		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_monster_alias_rules" rows="10" spellcheck="false" placeholder="モンスター名|別名">'+escHtml(monsterRules)+'</textarea>'
+		+'<span class="cfg-note">追加内容はセル形式で表示しています。保存はこの一覧から行われます。</span>'
+		+'</div>';
+}
+async function removeChatRuleLine(key, line){
+	const current=Array.isArray(cfgData[key])?cfgData[key]:[];
+	updateChatFilterTextarea(key, current.filter(v=>v!==line));
+	renderChatRuleManagers();
+	await saveConfig(true);
+}
+async function addChatLocationRule(){
+	const target=document.getElementById('cfg-location-rule-target');
+	const input=document.getElementById('cfg-location-rule-alias');
+	if(!target||!input)return;
+	const name=String(target.value||'').trim();
+	const alias=String(input.value||'').trim();
+	if(!name||!alias)return;
+	const rule=getChatLocationRules().find(v=>v.name===name);
+	const monsters=rule&&Array.isArray(rule.monsters)?rule.monsters.join(','):'';
+	await appendChatFilterValue('chat_report_location_rules',[name,alias,monsters].join('|'));
+	input.value='';
+	renderChatRuleManagers();
+}
+async function addChatMonsterAliasRule(){
+	const target=document.getElementById('cfg-monster-rule-target');
+	const input=document.getElementById('cfg-monster-rule-alias');
+	if(!target||!input)return;
+	const name=String(target.value||'').trim();
+	const alias=String(input.value||'').trim();
+	if(!name||!alias)return;
+	await appendChatFilterValue('chat_report_monster_alias_rules',[name,alias].join('|'));
+	input.value='';
+	renderChatRuleManagers();
+}
 async function loadConfig(){
   cfgData=await fetch('/api/config').then(r=>r.json());
-  document.getElementById('cfg-form').innerHTML=CFG_FIELDS.map(function(f){
-    var val=cfgData[f.k]!==undefined?cfgData[f.k]:'';
-    if(f.type==='csv'&&Array.isArray(val))val=val.join(',');
-    var inputType=f.type==='csv'?'text':f.type;
-    var noteHtml=f.desc?('<span class="cfg-note">'+escHtml(f.desc)+'</span>'):'';
-    return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><input type="'+inputType+'" id="cfg-'+f.k+'" value="'+escHtml(String(val))+'" placeholder="'+escHtml(f.desc||'')+'">'+noteHtml+'</div>';
-  }).join('');
+	renderConfigFields('cfg-chat-form',CHAT_FILTER_FIELDS);
+	renderChatRuleManagers();
+	renderConfigFields('cfg-form',CFG_FIELDS);
+	renderChatCandidatePanels();
 }
-async function saveConfig(){
+async function saveConfig(silent){
   const updated={...cfgData};
-  CFG_FIELDS.forEach(f=>{const el=document.getElementById('cfg-'+f.k);if(!el)return;
+	[...CHAT_FILTER_FIELDS,...CHAT_RULE_FIELDS,...CFG_FIELDS].forEach(f=>{const el=document.getElementById('cfg-'+f.k);if(!el)return;
     if(f.type==='number')updated[f.k]=parseFloat(el.value)||0;
+    else if(f.type==='multiline-list')updated[f.k]=el.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
     else if(f.type==='csv')updated[f.k]=el.value.split(',').map(s=>s.trim()).filter(Boolean);
     else updated[f.k]=el.value;});
   const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updated)});
   const d=await r.json();const st=document.getElementById('cfg-status');
-  st.textContent=d.ok?'✓ 保存・反映済':'✗ 失敗: '+(d.error||'');
-  setTimeout(()=>st.textContent='',4000);cfgData=updated;
+	if(st && !silent){
+		st.textContent=d.ok?'✓ 保存・反映済':'✗ 失敗: '+(d.error||'');
+		setTimeout(()=>st.textContent='',4000);
+	}
+	cfgData=updated;renderChatRuleManagers();renderChatCandidatePanels();
 }
 // ── Uptime counter ──
 const _startTime=Date.now();

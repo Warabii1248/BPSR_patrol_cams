@@ -7,6 +7,12 @@
   "chat_exclude": [
     "null"
   ],
+  "chat_report_senders": [],
+  "chat_report_excluded_senders": [],
+  "chat_report_include_keywords": [],
+  "chat_report_exclude_keywords": [],
+  "chat_report_location_rules": [],
+  "chat_report_monster_alias_rules": [],
   "gui_port": 8080,
   "adb_path": "adb",
   "mumu_serials": null,
@@ -18,6 +24,7 @@
   "patrol_channels_file": "channels.txt",
   "patrol_dwell_secs": 15,
   "patrol_move_timeout_secs": 30,
+  "patrol_merge_timeout_secs": 15,
   "parallel_limit": 0,
   "parallel_group_delay_secs": 20,
   "patrol_serials": null

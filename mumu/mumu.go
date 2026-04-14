@@ -336,6 +336,9 @@ type PatrolStatus struct {
 	TotalChannels        int      `json:"total_channels"`
 	Serials              []string `json:"serials"`
 	DwellSecs            float64  `json:"dwell_secs"`
+	Phase                string   `json:"phase"`
+	PhaseTotalSecs       float64  `json:"phase_total_secs"`
+	PhaseStartedAtUnixMs int64    `json:"phase_started_at_unix_ms"`
 	ParallelLimit        int      `json:"parallel_limit"`
 	ParallelGroupDelay   float64  `json:"parallel_group_delay"`
 	LastChannel          uint32   `json:"last_channel"`           // 最後に巡回したチャンネル
@@ -651,6 +654,9 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			p.status.ParallelLimit = currentCfg.ParallelLimit
 			p.status.ParallelGroupDelay = currentCfg.ParallelGroupDelay.Seconds()
 			p.status.DwellSecs = dwell.Seconds()
+			p.status.Phase = "move_start"
+			p.status.PhaseTotalSecs = 0
+			p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
 			p.lastChannel = ch
 			p.status.LastChannel = ch
 			p.mu.Unlock()
@@ -724,19 +730,19 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				got := 0
 				respondedSet := make(map[string]bool)
 
-				p.mu.Lock()
-				p.status.WaitingMove = true
-				p.mu.Unlock()
-
 				mergeTimeout := currentCfg.MergeTimeout
 				if mergeTimeout <= 0 {
 					mergeTimeout = currentCfg.MoveTimeout // 未設定なら従来動作
 				}
+				p.mu.Lock()
+				p.status.WaitingMove = true
+				p.status.Phase = "loading"
+				p.status.PhaseTotalSecs = mergeTimeout.Seconds()
+				p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
+				p.mu.Unlock()
 				log.Printf("[MuMu] 巡回: Ch%d 移動完了待ち (0/%d台, 初回待ち=%.0fs, マージ待ち=%.0fs, 切替所要=%.1fs)",
 					ch, need, currentCfg.MoveTimeout.Seconds(), mergeTimeout.Seconds(),
 					switchDoneAt.Sub(switchStartAt).Seconds())
-
-				// バッファに溜まっている切替開始以降のシグナルを先に消化
 				draining := true
 				for draining && got < need {
 					select {
@@ -861,28 +867,17 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 					if !alreadyIn {
 						p.status.FullChannels = append(p.status.FullChannels, ch)
 					}
+					p.status.Phase = "move_start"
+					p.status.PhaseTotalSecs = 0
+					p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
+				} else {
+					p.status.Phase = "dwell_wait"
+					p.status.PhaseTotalSecs = dwell.Seconds()
+					p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
 				}
 				p.mu.Unlock()
-				if !isFull {
-					log.Printf("[MuMu] 巡回: Ch%d 全台移動完了 → 滞在タイマー開始 (%.0fs)", ch, dwell.Seconds())
-				}
 			}
 
-			// 満員の場合は滞在せず次へ
-			if isFull {
-				p.mu.Lock()
-				p.status.ConsecutiveFullCount++
-				p.mu.Unlock()
-				visited++
-				idx += step
-				continue
-			}
-			// 正常移動：連続満員カウントをリセット
-			p.mu.Lock()
-			p.status.ConsecutiveFullCount = 0
-			p.mu.Unlock()
-
-			// 滞在タイマー
 			select {
 			case <-ctx.Done():
 				return
