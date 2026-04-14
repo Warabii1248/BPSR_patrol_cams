@@ -1137,8 +1137,16 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;
 .view.active{display:flex}
 #view-dashboard{overflow-y:auto}
 /* Card */
-.card{background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px}
-.card-title{font-size:10px;font-weight:600;color:var(--text2);letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:7px}
+.card{background:linear-gradient(180deg, rgba(20,25,38,.98) 0%, rgba(19,22,33,.96) 100%);border:1px solid rgba(88,103,142,.25);border-radius:var(--radius-lg);padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.12)}
+.card-title{font-size:10px;font-weight:600;color:var(--text2);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:7px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.06);cursor:grab}
+.card.collapsed > :not(.card-title){display:none}
+.card.collapsed .card-title{margin-bottom:0;border-bottom:none}
+.card.dragging{opacity:.58;transform:scale(0.98);box-shadow:0 14px 30px rgba(0,0,0,.22)}
+.card-placeholder{border-color:rgba(79,142,247,.6);background:rgba(79,142,247,.08)}
+.card-title .title-actions{display:flex;gap:6px;align-items:center;margin-left:auto}
+.card-title .collapse-btn{border:none;background:transparent;color:var(--text2);font-size:13px;cursor:pointer;padding:2px 6px;line-height:1;transition:color .15s;}
+.card-title .collapse-btn:hover{color:var(--text1)}
+.panel-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}
 /* Stats */
 .status-grid{display:grid;gap:8px}
 .stat{background:var(--bg2);border-radius:var(--radius);padding:10px 12px;border:1px solid var(--border)}
@@ -1309,7 +1317,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 <div class="view active" id="view-dashboard">
   <div class="status-grid" style="grid-template-columns:repeat(2,1fr)">
     <div class="stat"><div class="stat-label">検知イベント</div><div class="stat-value warn" id="dash-detect-count">0</div><div class="stat-sub" id="dash-detect-meta">0/hour · --</div></div>
-    <div class="stat"><div class="stat-label">稼働時間</div><div class="stat-value ok" id="dash-uptime">00:00:00</div><div class="stat-sub">起動から</div></div>
+    <div class="stat"><div class="stat-label">稼働時間</div><div class="stat-value ok" id="dash-uptime">00:00:00</div></div>
   </div>
   <div class="row2">
     <div class="col">
@@ -1460,6 +1468,68 @@ function switchView(id,navEl){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   const v=document.getElementById('view-'+id);if(v)v.classList.add('active');
   if(navEl)navEl.classList.add('active');
+}
+function initPanelDragAndCollapse(){
+  const cards=document.querySelectorAll('.card');
+  let dragSrc=null;
+  cards.forEach(card=>{
+    card.draggable=true;
+    const title=card.querySelector('.card-title');
+    if(title && !title.querySelector('.collapse-btn')){
+      const actions=document.createElement('span');
+      actions.className='title-actions';
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='collapse-btn';
+      btn.textContent='▾';
+      btn.title='パネルを折りたたむ';
+      btn.addEventListener('click',e=>{
+        e.stopPropagation();
+        card.classList.toggle('collapsed');
+        btn.textContent=card.classList.contains('collapsed')?'▸':'▾';
+        btn.title=card.classList.contains('collapsed')?'パネルを展開する':'パネルを折りたたむ';
+      });
+      actions.appendChild(btn);
+      title.appendChild(actions);
+    }
+    card.addEventListener('dragstart',e=>{
+      dragSrc=card;
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed='move';
+      e.dataTransfer.setData('text/plain','');
+    });
+    card.addEventListener('dragend',()=>{
+      card.classList.remove('dragging');
+      dragSrc=null;
+      document.querySelectorAll('.card-placeholder').forEach(el=>el.classList.remove('card-placeholder'));
+    });
+    card.addEventListener('dragover',e=>{
+      if(!dragSrc || dragSrc===card) return;
+      e.preventDefault();
+      const rect=card.getBoundingClientRect();
+      const after=e.clientY > rect.top + rect.height/2;
+      card.parentElement.insertBefore(dragSrc, after?card.nextSibling:card);
+    });
+    card.addEventListener('drop',e=>{
+      if(!dragSrc||dragSrc===card) return;
+      e.preventDefault();
+      dragSrc.classList.remove('dragging');
+      dragSrc=null;
+    });
+  });
+  document.querySelectorAll('.col, .panel-grid').forEach(container=>{
+    container.addEventListener('dragover',e=>{
+      if(!dragSrc) return;
+      e.preventDefault();
+    });
+    container.addEventListener('drop',e=>{
+      if(!dragSrc) return;
+      const target=e.target.closest('.card');
+      if(!target || target===dragSrc){
+        container.appendChild(dragSrc);
+      }
+    });
+  });
 }
 // ── Log filter chips ──
 const LOG_CATS=[
@@ -1837,6 +1907,7 @@ loadConfig();
 loadGoldHistory();
 setInterval(loadGoldHistory,30000);
 initChat();
+initPanelDragAndCollapse();
 (async function startupDeviceCheck(){
   async function fetchDevicesOnly(){
     const r=await fetch('/api/devices');const res=await r.json();
