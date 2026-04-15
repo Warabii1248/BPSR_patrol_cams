@@ -1246,7 +1246,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .gold-table .name-cell{color:var(--warn)}
 .gold-table .name-cell.silver{color:#b8b8b8}
 .no-history{color:var(--text2);font-size:.85em;padding:8px 0}
-#gold-history-container{max-height:160px;overflow-y:auto}
+#gold-history-container{flex:1;min-height:0;max-height:none;overflow-y:auto}
 /* Config */
 .cfg-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px}
 .cfg-stack{display:flex;flex-direction:column;gap:12px}
@@ -1301,7 +1301,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .chat-split{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.95fr);gap:10px;align-items:start;min-height:0;flex:1}
 .chat-side-card{display:flex;flex-direction:column;min-height:0}
 .chat-report-list{display:flex;flex-direction:column;gap:0;background:var(--bg0);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;min-height:180px;max-height:calc(100vh - 220px)}
-.chat-report-list.compact{max-height:220px;min-height:140px}
+.chat-report-list.compact{flex:1;min-height:0;max-height:none}
 .chat-report-empty{color:var(--text3);padding:10px;font-size:.82em}
 .chat-report-summary{color:var(--text3);font-size:.76em;line-height:1.5;margin-bottom:8px}
 .chat-report-score{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.24);color:#f5a623;font-size:10px;vertical-align:middle}
@@ -1320,6 +1320,38 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 input[type=text],input[type=number],textarea,select{background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;font-size:11px;font-family:inherit;outline:none;transition:border-color .15s;}
 input[type=text]:focus,input[type=number]:focus,textarea:focus,select:focus{border-color:rgba(79,142,247,.5);box-shadow:0 0 0 2px rgba(79,142,247,.12);}
 input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
+/* Dashboard grid */
+.dashboard-grid{--dash-grid-row-unit:8px;--dash-grid-gap:10px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:var(--dash-grid-row-unit);gap:var(--dash-grid-gap)}
+.dashboard-grid > .card{position:relative;min-width:0;min-height:0;overflow:auto;grid-row:span var(--panel-rows,28)}
+.panel-size-1x1,.panel-size-1x2{grid-column:span 1}
+.panel-size-2x1,.panel-size-2x2,.panel-size-2x3,.panel-size-2x4{grid-column:span 2}
+.panel-col-1.panel-size-1x1,.panel-col-1.panel-size-1x2{grid-column:1 / span 1}
+.panel-col-2.panel-size-1x1,.panel-col-2.panel-size-1x2{grid-column:2 / span 1}
+.panel-size-1x1,.panel-size-2x1{--panel-rows:28}
+.panel-size-1x2,.panel-size-2x2{--panel-rows:52}
+.panel-size-2x3{--panel-rows:76}
+.panel-size-2x4{--panel-rows:100}
+#card-dash-gold{display:flex;flex-direction:column;min-height:0}
+#dash-chat-area,#dash-chat-report-area{flex:1;min-height:0;overflow-y:auto}
+/* Edit mode */
+.dashboard-grid.edit-mode .card{outline:2px dashed rgba(245,166,35,.35);outline-offset:1px;cursor:grab}
+.dashboard-grid.edit-mode .card > :not(.panel-resize-handle-x):not(.panel-resize-handle-y){pointer-events:none}
+.dashboard-grid:not(.edit-mode) .card .card-title{cursor:default}
+.panel-resize-handle-y,.panel-resize-handle-x{display:none;position:absolute;opacity:.72;box-shadow:0 0 0 1px rgba(245,166,35,.2)}
+.panel-resize-handle-y{left:50%;bottom:4px;transform:translateX(-50%);width:52px;height:12px;border-radius:999px;cursor:ns-resize;background:repeating-linear-gradient(90deg,rgba(245,166,35,.78) 0 6px,transparent 6px 10px)}
+.panel-resize-handle-x{top:50%;width:12px;height:52px;border-radius:999px;cursor:ew-resize;background:repeating-linear-gradient(180deg,rgba(245,166,35,.78) 0 6px,transparent 6px 10px)}
+.panel-resize-handle-x.handle-right{right:4px;transform:translateY(-50%)}
+.panel-resize-handle-x.handle-left{left:4px;transform:translateY(-50%)}
+.dashboard-grid.edit-mode .panel-resize-handle-y,.dashboard-grid.edit-mode .panel-resize-handle-x{display:block}
+.dashboard-grid.edit-mode .panel-resize-handle-x.is-hidden{display:none}
+.dashboard-grid.edit-mode .card.resizing-y{user-select:none;cursor:ns-resize}
+.dashboard-grid.edit-mode .card.resizing-x{user-select:none;cursor:ew-resize}
+.dashboard-grid.edit-mode .card.dragging{cursor:grabbing}
+/* Layout edit sidebar button */
+.sidebar-bottom{margin-top:auto;border-top:1px solid var(--border);padding-top:6px}
+.nav-item.layout-edit-active{background:rgba(245,166,35,.1);color:var(--warn);border-left-color:var(--warn)}
+/* Grid drag drop indicator */
+.grid-drop-indicator{background:rgba(79,142,247,.08);border:2px dashed rgba(79,142,247,.45);border-radius:var(--radius-lg);pointer-events:none;min-height:60px}
 </style>
 </head>
 <body>
@@ -1367,6 +1399,12 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round"/></svg>
     設定
   </div>
+  <div class="sidebar-bottom">
+    <div class="nav-item" id="nav-layout-edit" onclick="toggleLayoutEdit()">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>
+      レイアウト編集
+    </div>
+  </div>
 </div>
 <!-- Main content -->
 <div class="main">
@@ -1376,68 +1414,74 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <div class="stat"><div class="stat-label">検知イベント</div><div class="stat-value warn" id="dash-detect-count">0</div><div class="stat-sub" id="dash-detect-meta">0/hour · --</div></div>
     <div class="stat"><div class="stat-label">稼働時間</div><div class="stat-value ok" id="dash-uptime">00:00:00</div></div>
   </div>
-  <div class="row2">
-    <div class="col">
-      <div class="card">
-        <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>接続デバイス</div>
-        <div id="dash-device-list"><div class="no-devices">読み込み中...</div></div>
-        <div class="btn-row">
-          <button class="btn primary" onclick="refreshDevices();switchView('devices',document.getElementById('nav-devices'))">🔄 再スキャン</button>
-          <button class="btn" onclick="switchView('devices',document.getElementById('nav-devices'))">管理 →</button>
-        </div>
+  <div class="dashboard-grid" id="dashboard-grid">
+    <!-- 接続デバイス -->
+		<div class="card panel-size-1x1" id="card-dash-devices">
+      <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>接続デバイス</div>
+      <div id="dash-device-list"><div class="no-devices">読み込み中...</div></div>
+      <div class="btn-row">
+        <button class="btn primary" onclick="refreshDevices();switchView('devices',document.getElementById('nav-devices'))">🔄 再スキャン</button>
+        <button class="btn" onclick="switchView('devices',document.getElementById('nav-devices'))">管理 →</button>
       </div>
-      <div class="card">
-        <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke-linecap="round"/></svg>巡回状態</div>
-        <div class="patrol-status"><span id="dash-ps-state" class="stopped">■ 停止中</span><span id="dash-ps-ch" style="color:var(--accent)"></span><span id="dash-ps-prog" style="color:var(--text3)"></span></div>
-        <div style="font-size:.76em;color:var(--text3);min-height:1em;margin-bottom:2px" id="dash-ps-parallel"></div>
-        <div class="patrol-progress" id="dash-patrol-progress">
-          <div class="progress-line"><div class="progress-fill" id="dash-patrol-fill"></div></div>
-          <div class="progress-text"><span id="dash-patrol-label">--</span><span id="dash-patrol-percent"></span></div>
+    </div>
+    <!-- 巡回状態 -->
+		<div class="card panel-size-1x1" id="card-dash-patrol">
+      <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke-linecap="round"/></svg>巡回状態</div>
+      <div class="patrol-status"><span id="dash-ps-state" class="stopped">■ 停止中</span><span id="dash-ps-ch" style="color:var(--accent)"></span><span id="dash-ps-prog" style="color:var(--text3)"></span><span id="dash-ps-parallel"></span></div>
+      <div class="patrol-progress" id="dash-patrol-progress">
+        <div class="progress-line"><div class="progress-fill" id="dash-patrol-fill"></div></div>
+        <div class="progress-text"><span id="dash-patrol-label">--</span><span id="dash-patrol-percent"></span></div>
+      </div>
+      <div id="dash-crash-warning" class="crash-warning"></div>
+      <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">
+        <div id="dash-ps-full" style="font-size:.78em;color:#fca5a5;flex:1"></div>
+        <button id="btn-dash-clear-full" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearFullChannels()">✕ クリア</button>
+      </div>
+      <div class="flex-row" style="margin-bottom:8px">
+        <label style="font-size:11px">開始Ch:</label>
+        <input type="number" id="dash-patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
+        <button class="btn toggle-btn" id="dash-btn-reversed" onclick="toggleReversed()">⬆ 正順</button>
+        <button class="btn toggle-btn" id="dash-btn-loop" onclick="toggleLoop()">🔁 ループ</button>
+      </div>
+      <div class="flex-row">
+        <button class="btn success" id="dash-btn-patrol-start" onclick="patrolStart()" disabled>▶ 巡回開始</button>
+        <button class="btn" id="dash-btn-patrol-stop" onclick="patrolStop()" disabled>■ 停止</button>
+        <button class="btn" onclick="switchView('patrol',document.getElementById('nav-patrol'))">詳細 →</button>
+      </div>
+      <div class="status-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-top:10px">
+        <div class="stat">
+          <div class="stat-label">1サイクル時間</div>
+          <div class="stat-value" id="dash-ps-cycle-time">--</div>
+          <div class="stat-sub" id="dash-ps-cycle-time-sub">プログレスバー1巡を計測</div>
         </div>
-        <div id="dash-crash-warning" class="crash-warning"></div>
-        <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">
-          <div id="dash-ps-full" style="font-size:.78em;color:#fca5a5;flex:1"></div>
-          <button id="btn-dash-clear-full" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearFullChannels()">✕ クリア</button>
-        </div>
-        <div class="status-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:8px">
-          <div class="stat">
-            <div class="stat-label">1サイクル時間</div>
-            <div class="stat-value" id="dash-ps-cycle-time">--</div>
-            <div class="stat-sub" id="dash-ps-cycle-time-sub">プログレスバー1巡を計測</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">巡回速度</div>
-            <div class="stat-value ok" id="dash-ps-cycle-rate">--</div>
-            <div class="stat-sub" id="dash-ps-cycle-rate-sub">実測ベース</div>
-          </div>
-        </div>
-        <div class="btn-row">
-          <button class="btn success" id="dash-btn-patrol-start" onclick="patrolStart()">▶ 巡回開始</button>
-          <button class="btn danger" id="dash-btn-patrol-stop" onclick="patrolStop()" style="display:none">■ 停止</button>
-          <button class="btn" onclick="switchView('patrol',document.getElementById('nav-patrol'))">詳細 →</button>
+        <div class="stat">
+          <div class="stat-label">巡回速度</div>
+          <div class="stat-value ok" id="dash-ps-cycle-rate">--</div>
+          <div class="stat-sub" id="dash-ps-cycle-rate-sub">実測ベース</div>
         </div>
       </div>
     </div>
-    <div class="col">
-      <div class="card">
-        <div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
-        <div id="gold-history-container"><div class="no-history">検知履歴なし</div></div>
+    <!-- レアエネミー検知履歴 -->
+		<div class="card panel-size-1x1" id="card-dash-gold">
+      <div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
+      <div id="gold-history-container"><div class="no-history">検知履歴なし</div></div>
+    </div>
+    <!-- チャットログ -->
+		<div class="card panel-size-1x1" id="card-dash-chat" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
+      <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
+        チャットログ
+        <button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="switchView('chat-log',document.getElementById('nav-chat-log'))">展開 →</button>
       </div>
-      <div class="card" style="flex:1;display:flex;flex-direction:column;padding:0;overflow:hidden">
-        <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
-          チャットログ
-          <button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="switchView('chat-log',document.getElementById('nav-chat-log'))">展開 →</button>
-        </div>
-        <div style="flex:1;overflow-y:auto;max-height:200px" id="dash-chat-area"></div>
+	<div style="flex:1;min-height:0;overflow-y:auto" id="dash-chat-area"></div>
+    </div>
+    <!-- 発見報告候補 -->
+		<div class="card panel-size-1x1" id="card-dash-report" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
+      <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
+        発見報告候補
+        <span style="margin-left:auto;font-size:10px;color:var(--text3)">自動抽出</span>
       </div>
-			<div class="card" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
-				<div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
-					発見報告候補
-					<span style="margin-left:auto;font-size:10px;color:var(--text3)">自動抽出</span>
-				</div>
-				<div id="dash-chat-report-area" class="chat-report-list compact"></div>
-			</div>
+      <div id="dash-chat-report-area" class="chat-report-list compact"></div>
     </div>
   </div>
 </div>
@@ -1513,7 +1557,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         </div>
         <div class="flex-row" style="margin-bottom:8px">
           <label style="font-size:11px">開始Ch:</label>
-          <input type="number" id="patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開">
+          <input type="number" id="patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
           <button class="btn toggle-btn" id="btn-reversed" onclick="toggleReversed()">⬆ 正順</button>
           <button class="btn toggle-btn" id="btn-loop" onclick="toggleLoop()">🔁 ループ</button>
         </div>
@@ -1619,6 +1663,8 @@ function initPanelDragAndCollapse(){
       actions.appendChild(btn);
       title.appendChild(actions);
     }
+    // dashboard-gridカードのドラッグはinitGridDragDropで個別管理
+    if(card.closest('#dashboard-grid'))return;
     card.addEventListener('dragstart',e=>{
       const titleEl=card.querySelector('.card-title');
       if(titleEl && !titleEl.contains(e.target)){e.preventDefault();return;}
@@ -1658,6 +1704,92 @@ function initPanelDragAndCollapse(){
 			dragSrc.classList.remove('dragging');
 			dragSrc=null;
     });
+  });
+}
+// ── Grid drag & drop ──
+function initGridDragDrop(){
+  const grid=document.getElementById('dashboard-grid');if(!grid)return;
+  let activeDrag=null;
+  let placeholder=null;
+  function getOrCreatePlaceholder(){
+    if(!placeholder){
+      placeholder=document.createElement('div');
+      placeholder.className='card grid-drop-indicator';
+      placeholder.dataset.placeholder='1';
+    }
+    return placeholder;
+  }
+  function syncPlaceholderSize(dragCard){
+    const ph=getOrCreatePlaceholder();
+    DASH_SIZE_CLASSES.forEach(c=>ph.classList.remove(c));
+    const sc=DASH_SIZE_CLASSES.find(c=>dragCard.classList.contains(c))||'panel-size-1x1';
+    ph.classList.add(sc);
+    return ph;
+  }
+  function removePlaceholder(){
+    if(placeholder&&placeholder.parentNode)placeholder.remove();
+  }
+  // 2D位置から挿入先兄弟カードを決定する
+  function getInsertBefore(clientX,clientY){
+    const gridRect=grid.getBoundingClientRect();
+    const siblings=[...grid.querySelectorAll(':scope > .card')].filter(c=>c!==activeDrag&&!c.dataset.placeholder);
+    for(const s of siblings){
+      const r=s.getBoundingClientRect();
+      const midY=r.top+r.height/2;
+      const midX=r.left+r.width/2;
+      // 全幅カード(2列span)はY中心のみで判定
+      if(r.width>gridRect.width*0.8){
+        if(clientY<midY)return s;
+      } else {
+        // 1列カード: Yで行を判定しつつXで左右を判定
+        if(clientY<r.top)return s; // このカードの行より上
+        if(clientY<midY&&clientX<midX)return s; // 同行左半
+      }
+    }
+    return null;
+  }
+  function updatePlaceholder(clientX,clientY){
+    const ph=syncPlaceholderSize(activeDrag);
+    const before=getInsertBefore(clientX,clientY);
+    if(before){if(ph.nextSibling!==before)grid.insertBefore(ph,before);}
+    else{if(grid.lastChild!==ph)grid.appendChild(ph);}
+  }
+  function attachCard(card){
+    card.draggable=true;
+    card.addEventListener('dragstart',e=>{
+      if(!grid.classList.contains('edit-mode')){e.preventDefault();return;}
+			if(e.target&&e.target.closest('.panel-resize-handle-x, .panel-resize-handle-y')){e.preventDefault();return;}
+      activeDrag=card;
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed='move';
+      e.dataTransfer.setData('text/plain','');
+    });
+    card.addEventListener('dragend',()=>{
+      removePlaceholder();
+      card.classList.remove('dragging');
+      activeDrag=null;
+    });
+  }
+  grid.querySelectorAll(':scope > .card').forEach(attachCard);
+  grid.addEventListener('dragover',e=>{
+    if(!activeDrag||!grid.classList.contains('edit-mode'))return;
+    e.preventDefault();
+    updatePlaceholder(e.clientX,e.clientY);
+  });
+  grid.addEventListener('drop',e=>{
+    if(!activeDrag||!grid.classList.contains('edit-mode'))return;
+    e.preventDefault();
+    if(placeholder&&placeholder.parentNode===grid){
+      grid.insertBefore(activeDrag,placeholder);
+    }
+    removePlaceholder();
+    activeDrag.classList.remove('dragging');
+    activeDrag=null;
+		updateDashboardResizeHandlePositions();
+    saveDashboardLayout();
+  });
+  grid.addEventListener('dragleave',e=>{
+    if(!grid.contains(e.relatedTarget))removePlaceholder();
   });
 }
 // ── Log filter chips ──
@@ -1829,8 +1961,8 @@ const DEFAULT_CHAT_LOCATION_RULES=[
 	{name:'カナミア',aliases:['カナミア','かなみあ','かな','kanamia','kana'],monsters:['ウリボ・ゴールド']},
 	{name:'崖',aliases:['崖','がけ','gake','崖上', 'ポニョ', 'ぽにょ', 'ponyo'],monsters:['ウリボ・ゴールド']},
 	{name:'偵察左上',aliases:['偵察左上','左上偵察','偵察左','左上','左','hidari'],monsters:['ウリボ・ゴールド']},
-	{name:'偵察右上',aliases:['偵察右上','右上偵察','偵察右','右上','migiue'],monsters:['ウリボ・ゴールド']},
-	{name:'偵察右下',aliases:['偵察右下','右下偵察','偵察右下','右下','右','migi'],monsters:['ウリボ・ゴールド']},
+	{name:'偵察右上',aliases:['偵察右上','右上偵察','右上','migiue'],monsters:['ウリボ・ゴールド']},
+	{name:'偵察右下',aliases:['偵察右下','右下偵察','偵察右','右下','右','migi'],monsters:['ウリボ・ゴールド']},
 	{name:'山賊野営地',aliases:['山賊野営地','山賊','野営地','野営','ヒグマ','ひぐまっぽ'],monsters:['金ナッポ','銀ナッポ']},
 	{name:'アンドラ',aliases:['アンドラ','アンドラ','あんどらっぽ'],monsters:['金ナッポ','銀ナッポ']},
 	{name:'浜辺',aliases:['浜辺','はまべ','はまべっぽ','浜辺っぽ','浜'],monsters:['金ナッポ']},
@@ -2161,8 +2293,8 @@ async function switchOne(serial){
 }
 // ── Patrol ──
 let patrolChannels=[],patrolReversed=localStorage.getItem('patrolReversed')==='true',patrolLoopMode=localStorage.getItem('patrolLoopMode')!=='false';
-function applyReversedUI(){const b=document.getElementById('btn-reversed');b.textContent=patrolReversed?'⬇ 逆順':'⬆ 正順';b.classList.toggle('active',patrolReversed);}
-function applyLoopUI(){const b=document.getElementById('btn-loop');b.textContent=patrolLoopMode?'🔁 ループ':'1️⃣ 一巡';b.classList.toggle('active',!patrolLoopMode);}
+function applyReversedUI(){['btn-reversed','dash-btn-reversed'].forEach(id=>{const b=document.getElementById(id);if(!b)return;b.textContent=patrolReversed?'⬇ 逆順':'⬆ 正順';b.classList.toggle('active',patrolReversed);});}
+function applyLoopUI(){['btn-loop','dash-btn-loop'].forEach(id=>{const b=document.getElementById(id);if(!b)return;b.textContent=patrolLoopMode?'🔁 ループ':'1️⃣ 一巡';b.classList.toggle('active',!patrolLoopMode);});}
 async function loadPatrolChannels(){
   const d=await fetch('/api/patrol/channels').then(r=>r.json());
   patrolChannels=d.channels||[];renderChannelEditor();
@@ -2192,9 +2324,11 @@ async function saveChannels(){
 }
 function toggleReversed(){patrolReversed=!patrolReversed;localStorage.setItem('patrolReversed',patrolReversed);applyReversedUI();}
 function toggleLoop(){patrolLoopMode=!patrolLoopMode;localStorage.setItem('patrolLoopMode',patrolLoopMode);applyLoopUI();}
+function syncPatrolStartCh(v){['patrol-start-ch','dash-patrol-start-ch'].forEach(id=>{const el=document.getElementById(id);if(el&&el.value!==String(v))el.value=v;});}
 async function patrolStart(){
   const chs=patrolChannels.length>0?patrolChannels:[];
-  const body={serials:selectedSerials(),reversed:patrolReversed,loop_mode:patrolLoopMode,start_channel:parseInt(document.getElementById('patrol-start-ch').value)||0};
+  const startChEl=document.getElementById('patrol-start-ch')||document.getElementById('dash-patrol-start-ch');
+  const body={serials:selectedSerials(),reversed:patrolReversed,loop_mode:patrolLoopMode,start_channel:parseInt(startChEl?.value)||0};
   if(chs.length>0)body.channels=chs;
   const r=await fetch('/api/patrol/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json();if(!d.ok)alert('巡回開始失敗: '+(d.error||''));
@@ -2263,10 +2397,8 @@ function updatePatrolCycleStats(d,currentPhase){
 	renderPatrolCycleStats(true);
 }
 function updatePatrolUI(running){
-  const bs=document.getElementById('btn-patrol-start'),bp=document.getElementById('btn-patrol-stop');
-  if(bs)bs.disabled=running;if(bp)bp.disabled=!running;
-  const ds=document.getElementById('dash-btn-patrol-start'),dp=document.getElementById('dash-btn-patrol-stop');
-  if(ds)ds.style.display=running?'none':'';if(dp)dp.style.display=running?'':'none';
+  ['btn-patrol-start','dash-btn-patrol-start'].forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=running;});
+  ['btn-patrol-stop','dash-btn-patrol-stop'].forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=!running;});
   const dot=document.getElementById('hdr-dot'),lbl=document.getElementById('hdr-lbl');
   if(dot){dot.className=running?'status-dot':'status-dot stopped';}
   if(lbl){lbl.textContent=running?'稼働中':'停止中';lbl.className=running?'status-lbl':'status-lbl stopped';}
@@ -2331,7 +2463,7 @@ async function pollPatrolStatus(){
     const warnMsg=crashed?'⚠ クラッシュ判定: '+crashed.join(', ')+' (3回連続未応答)':'⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。';
     ['crash-warning','dash-crash-warning'].forEach(id=>{
       const e=els(id);if(!e)return;
-      const show=crashed||(id==='crash-warning'&&showWarn);
+      const show=crashed||showWarn;
       e.style.display=show?'':'none';if(show)e.textContent=warnMsg;
     });
   }catch(e){console.warn('patrol status error:',e);}
@@ -2619,6 +2751,207 @@ setInterval(()=>{
   const el=document.getElementById('dash-uptime');
   if(el)el.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
 },1000);
+// ── Dashboard layout ──
+const DASH_PANEL_IDS=['card-dash-devices','card-dash-patrol','card-dash-gold','card-dash-chat','card-dash-report'];
+const DASH_SIZE_CLASSES=['panel-size-1x1','panel-size-1x2','panel-size-2x1','panel-size-2x2','panel-size-2x3','panel-size-2x4'];
+const DASH_GRID_ROW_UNIT=8;
+const DASH_GRID_GAP=10;
+const DASH_MIN_PANEL_ROWS=18;
+const DASH_MAX_PANEL_ROWS=220;
+let layoutEditMode=false;
+function getDefaultPanelRows(size){
+	switch(size){
+		case '1x2':
+		case '2x2': return 52;
+		case '2x3': return 76;
+		case '2x4': return 100;
+		default: return 28;
+	}
+}
+function getPanelRows(card){
+	if(!card)return DASH_MIN_PANEL_ROWS;
+	const inlineRows=parseInt(card.style.getPropertyValue('--panel-rows'),10);
+	if(inlineRows>0)return inlineRows;
+	const computedRows=parseInt(getComputedStyle(card).getPropertyValue('--panel-rows'),10);
+	if(computedRows>0)return computedRows;
+	const sc=DASH_SIZE_CLASSES.find(c=>card.classList.contains(c));
+	return getDefaultPanelRows(sc?sc.replace('panel-size-',''):'1x1');
+}
+function getPanelWidthUnits(card){
+	if(!card)return 1;
+	return DASH_SIZE_CLASSES.some(c=>c.indexOf('panel-size-2x')===0&&card.classList.contains(c))?2:1;
+}
+function clampPanelRows(rows){
+	return Math.max(DASH_MIN_PANEL_ROWS,Math.min(DASH_MAX_PANEL_ROWS,rows));
+}
+function pixelsToPanelRows(heightPx){
+	return clampPanelRows(Math.round((heightPx + DASH_GRID_GAP) / (DASH_GRID_ROW_UNIT + DASH_GRID_GAP)));
+}
+function panelRowsToPixels(rows){
+	const safeRows=clampPanelRows(rows);
+	return safeRows * DASH_GRID_ROW_UNIT + Math.max(0,safeRows - 1) * DASH_GRID_GAP;
+}
+function setPanelRows(card,rows,save){
+	if(!card)return;
+	card.style.setProperty('--panel-rows',String(clampPanelRows(rows)));
+	if(save)saveDashboardLayout();
+}
+function getPanelColumn(card){
+	if(!card)return 1;
+	if(card.classList.contains('panel-col-2'))return 2;
+	return 1;
+}
+function setPanelColumn(card,column){
+	if(!card)return;
+	card.classList.remove('panel-col-1','panel-col-2');
+	if(column===2)card.classList.add('panel-col-2');
+	else card.classList.add('panel-col-1');
+}
+function setPanelWidthUnits(card,width,save,column){
+	if(!card)return;
+	const currentRows=getPanelRows(card);
+	DASH_SIZE_CLASSES.forEach(c=>card.classList.remove(c));
+	if(width===2){
+		card.classList.remove('panel-col-1','panel-col-2');
+		card.classList.add('panel-size-2x1');
+	}else{
+		card.classList.add('panel-size-1x1');
+		setPanelColumn(card,column===2?2:1);
+	}
+	setPanelRows(card,currentRows,false);
+	updateDashboardResizeHandlePositions();
+	if(save)saveDashboardLayout();
+}
+function updateDashboardResizeHandlePositions(){
+	const grid=document.getElementById('dashboard-grid');if(!grid)return;
+	const gridRect=grid.getBoundingClientRect();
+	const gridMidX=gridRect.left + gridRect.width/2;
+	grid.querySelectorAll(':scope > .card').forEach(card=>{
+		const leftHandle=card.querySelector(':scope > .panel-resize-handle-x.handle-left');
+		const rightHandle=card.querySelector(':scope > .panel-resize-handle-x.handle-right');
+		if(!leftHandle||!rightHandle)return;
+		const rect=card.getBoundingClientRect();
+		const isWide=getPanelWidthUnits(card)===2 || rect.width >= gridRect.width*0.8;
+		const column=isWide?(rect.left < gridMidX?1:2):getPanelColumn(card);
+		leftHandle.classList.toggle('is-hidden',!isWide && column===1);
+		rightHandle.classList.toggle('is-hidden',!isWide && column===2);
+	});
+}
+function applyPanelSizeInternal(panelId,size,save){
+  const card=document.getElementById(panelId);if(!card)return;
+  DASH_SIZE_CLASSES.forEach(c=>card.classList.remove(c));
+  card.classList.add('panel-size-'+size);
+	setPanelRows(card,getDefaultPanelRows(size),false);
+  if(save)saveDashboardLayout();
+}
+function applyPanelSize(panelId,size){applyPanelSizeInternal(panelId,size,true);}
+function initDashboardResizeHandles(){
+	const grid=document.getElementById('dashboard-grid');if(!grid)return;
+	let activeResize=null;
+	function stopResize(){
+		if(!activeResize)return;
+		activeResize.card.classList.remove('resizing-x','resizing-y');
+		document.body.style.userSelect='';
+		updateDashboardResizeHandlePositions();
+		saveDashboardLayout();
+		activeResize=null;
+	}
+	function onPointerMove(e){
+		if(!activeResize)return;
+		if(activeResize.type==='height'){
+			const deltaY=e.clientY-activeResize.startY;
+			const targetHeight=Math.max(120,activeResize.startHeight+deltaY);
+			setPanelRows(activeResize.card,pixelsToPanelRows(targetHeight),false);
+			return;
+		}
+		const deltaX=e.clientX-activeResize.startX;
+		const startUnits=activeResize.startUnits;
+		if(activeResize.side==='right'){
+			if(startUnits===1)setPanelWidthUnits(activeResize.card,deltaX>activeResize.threshold?2:1,false,1);
+			else setPanelWidthUnits(activeResize.card,deltaX<-activeResize.threshold?1:2,false,1);
+			return;
+		}
+		if(startUnits===1)setPanelWidthUnits(activeResize.card,deltaX<-activeResize.threshold?2:1,false,2);
+		else setPanelWidthUnits(activeResize.card,deltaX>activeResize.threshold?1:2,false,2);
+	}
+	function onPointerUp(){
+		stopResize();
+	}
+	document.addEventListener('pointermove',onPointerMove);
+	document.addEventListener('pointerup',onPointerUp);
+	grid.querySelectorAll(':scope > .card').forEach(card=>{
+		if(card.querySelector(':scope > .panel-resize-handle-y'))return;
+		const heightHandle=document.createElement('div');
+		heightHandle.className='panel-resize-handle-y';
+		heightHandle.title='上下にドラッグして高さ変更';
+		heightHandle.addEventListener('pointerdown',e=>{
+			if(!layoutEditMode)return;
+			e.preventDefault();
+			e.stopPropagation();
+			activeResize={type:'height',card,startY:e.clientY,startHeight:panelRowsToPixels(getPanelRows(card))};
+			card.classList.add('resizing-y');
+			document.body.style.userSelect='none';
+		});
+		function createWidthHandle(side){
+			const handle=document.createElement('div');
+			handle.className='panel-resize-handle-x handle-'+side;
+			handle.title='左右にドラッグして横幅変更';
+			handle.addEventListener('pointerdown',e=>{
+				if(!layoutEditMode)return;
+				e.preventDefault();
+				e.stopPropagation();
+				const gridRect=grid.getBoundingClientRect();
+				const columnWidth=(gridRect.width-DASH_GRID_GAP)/2;
+				activeResize={type:'width',side:side,card,startX:e.clientX,startUnits:getPanelWidthUnits(card),threshold:Math.max(24,columnWidth*0.22)};
+				card.classList.add('resizing-x');
+				document.body.style.userSelect='none';
+			});
+			return handle;
+		}
+		const leftWidthHandle=createWidthHandle('left');
+		const rightWidthHandle=createWidthHandle('right');
+		card.appendChild(heightHandle);
+		card.appendChild(leftWidthHandle);
+		card.appendChild(rightWidthHandle);
+	});
+	updateDashboardResizeHandlePositions();
+	window.addEventListener('resize',updateDashboardResizeHandlePositions);
+}
+function saveDashboardLayout(){
+  const grid=document.getElementById('dashboard-grid');if(!grid)return;
+  const order=[...grid.querySelectorAll(':scope > .card')].map(c=>c.id);
+  const sizes={};
+	const heights={};
+	const columns={};
+  DASH_PANEL_IDS.forEach(id=>{
+    const card=document.getElementById(id);if(!card)return;
+    const sc=DASH_SIZE_CLASSES.find(c=>card.classList.contains(c));
+    sizes[id]=sc?sc.replace('panel-size-',''):'1x1';
+		heights[id]=getPanelRows(card);
+		columns[id]=getPanelColumn(card);
+  });
+	localStorage.setItem('dashLayout',JSON.stringify({order,sizes,heights,columns}));
+}
+function loadDashboardLayout(){
+  const grid=document.getElementById('dashboard-grid');if(!grid)return;
+  try{
+    const saved=JSON.parse(localStorage.getItem('dashLayout')||'{}');
+    if(saved.sizes){Object.entries(saved.sizes).forEach(([id,size])=>applyPanelSizeInternal(id,size,false));}
+		if(saved.columns){Object.entries(saved.columns).forEach(([id,column])=>{const card=document.getElementById(id);if(card&&getPanelWidthUnits(card)===1)setPanelColumn(card,parseInt(column,10)===2?2:1);});}
+		if(saved.heights){Object.entries(saved.heights).forEach(([id,rows])=>{const card=document.getElementById(id);if(card)setPanelRows(card,parseInt(rows,10)||getPanelRows(card),false);});}
+    if(saved.order&&saved.order.length){
+      saved.order.forEach(id=>{const el=document.getElementById(id);if(el&&el.parentNode===grid)grid.appendChild(el);});
+    }
+		updateDashboardResizeHandlePositions();
+  }catch(e){}
+}
+function toggleLayoutEdit(){
+  layoutEditMode=!layoutEditMode;
+  const grid=document.getElementById('dashboard-grid');
+  if(grid)grid.classList.toggle('edit-mode',layoutEditMode);
+  const btn=document.getElementById('nav-layout-edit');
+  if(btn)btn.classList.toggle('layout-edit-active',layoutEditMode);
+}
 // ── Init ──
 buildFilterBar();
 applyReversedUI();
@@ -2630,6 +2963,9 @@ loadGoldHistory();
 setInterval(loadGoldHistory,30000);
 initChat();
 initPanelDragAndCollapse();
+initGridDragDrop();
+initDashboardResizeHandles();
+loadDashboardLayout();
 (async function startupDeviceCheck(){
   async function fetchDevicesOnly(){
     const r=await fetch('/api/devices');const res=await r.json();
