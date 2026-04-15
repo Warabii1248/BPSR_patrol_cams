@@ -92,7 +92,19 @@ data/
 |---|---|---|
 | `discord_webhook` | `""` | Discord Webhook URL。空で無効 |
 | `debounce_seconds` | `30` | 同 Ch・同場所の重複通知を抑制する秒数 |
-| `chat_exclude` | `[]` | ワールドチャット検知を抑制するキーワード一覧 |
+| `filter_file` | `"filter.json"` | チャットフィルター設定ファイルのパス |
+
+## チャットフィルター設定 (filter.json)
+
+チャット関連のフィルター条件は `config.json` ではなく `filter.json` を正規設定として扱います。
+
+| キー | 説明 |
+|---|---|
+| `chat_exclude` | ワールドチャット検知を抑制するキーワード一覧 |
+| `chat_report_senders` | 発見報告候補として扱う発言者フィルター |
+| `chat_report_excluded_senders` | 候補から除外する発言者フィルター |
+| `chat_report_location_rules` | 地点別名と出現候補モンスターの追加ルール |
+| `chat_report_monster_alias_rules` | モンスター別名の追加ルール |
 
 ### GUI / ADB 設定
 

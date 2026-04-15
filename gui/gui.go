@@ -1823,20 +1823,27 @@ function toggleDevice(s,c){c?selectedDevices.add(s):selectedDevices.delete(s);}
 let chatEvents=[],chatIPToSerial={},chatKnownSerials=[];
 const DEFAULT_CHAT_LOCATION_RULES=[
 	{name:'テント裏',aliases:['テント裏','テント','てんと','tnt'],monsters:['ウリボ・ゴールド']},
-	{name:'ミンスターホルン',aliases:['ミンスターホルン','ミンホル','みんほる','ミンスター','みんすたー','みんすた','みんほるっぽ'],monsters:['ウリボ・ゴールド']},
+	{name:'ミンスターホルン',aliases:['ミンスターホルン','ミンホル','みんほる','ミンスター','みんすたー','みんすた','みんほるっぽ'],monsters:['金ナッポ','銀ナッポ']},
 	{name:'休憩所',aliases:['休憩所','休憩','きゅうけい','qk'],monsters:['ウリボ・ゴールド']},
-	{name:'麦畑',aliases:['麦畑','麦','むぎ','畑','はたけ'],monsters:['ウリボ・ゴールド']},
-	{name:'カナミア',aliases:['カナミア','かなみあ'],monsters:['ウリボ・ゴールド']},
-	{name:'崖',aliases:['崖','がけ'],monsters:['ウリボ・ゴールド']},
-	{name:'偵察左上',aliases:['偵察左上','左上偵察','左偵察','左上','左'],monsters:['ウリボ・ゴールド']},
-	{name:'偵察右上',aliases:['偵察右上','右上偵察','右上'],monsters:['ウリボ・ゴールド']},
-	{name:'偵察右下',aliases:['偵察右下','右下偵察','右下','右'],monsters:['ウリボ・ゴールド']},
-	{name:'山賊野営地',aliases:['山賊野営地','山賊','野営地','野営'],monsters:['金ナッポ','銀ナッポ']},
+	{name:'麦畑',aliases:['麦畑','麦','むぎ','畑','はたけ','mugi','hatake'],monsters:['ウリボ・ゴールド']},
+	{name:'カナミア',aliases:['カナミア','かなみあ','かな','kanamia','kana'],monsters:['ウリボ・ゴールド']},
+	{name:'崖',aliases:['崖','がけ','gake','崖上', 'ポニョ', 'ぽにょ', 'ponyo'],monsters:['ウリボ・ゴールド']},
+	{name:'偵察左上',aliases:['偵察左上','左上偵察','偵察左','左上','左','hidari'],monsters:['ウリボ・ゴールド']},
+	{name:'偵察右上',aliases:['偵察右上','右上偵察','偵察右','右上','migiue'],monsters:['ウリボ・ゴールド']},
+	{name:'偵察右下',aliases:['偵察右下','右下偵察','偵察右下','右下','右','migi'],monsters:['ウリボ・ゴールド']},
+	{name:'山賊野営地',aliases:['山賊野営地','山賊','野営地','野営','ヒグマ','ひぐまっぽ'],monsters:['金ナッポ','銀ナッポ']},
+	{name:'アンドラ',aliases:['アンドラ','アンドラ','あんどらっぽ'],monsters:['金ナッポ','銀ナッポ']},
+	{name:'浜辺',aliases:['浜辺','はまべ','はまべっぽ','浜辺っぽ','浜'],monsters:['金ナッポ']},
+	{name:'フレイムオーガ',aliases:['フレイムオーガ','ふれいむおーが','ふれいむ','フレイム','ふれいむっぽ'],monsters:['銀ナッポ']},
+	{name:'ムークキャンプ',aliases:['ムークキャンプ','むーくっぽ','ムーク','ムクボ'],monsters:['金ナッポ','銀ナッポ']},
+	{name:'ヴィル',aliases:['ヴィル','びる','びるっぽ'],monsters:['銀ナッポ']},
+	{name:'フロストオーガ',aliases:['フロストオーガ','ふろすとおーが','ふろすと','フロスト','ふろすとっぽ'],monsters:['金ナッポ']},
+	{name:'街道',aliases:['街道','街道っぽ'],monsters:['銀ナッポ']},
 ];
 const CHAT_MONSTER_ALIASES=[
-	{name:'ウリボ・ゴールド',aliases:['ウリボゴールド','ゴールドウリボ','金ウリボ','金うりぼ','金うり','きんうり','金豚','金猪']},
-	{name:'金ナッポ',aliases:['金ナッポ','金なっぽ','金なぽ','きんなっぽ','きんなぽ','金ナポ']},
-	{name:'銀ナッポ',aliases:['銀ナッポ','銀なっぽ','銀なぽ','ぎんなっぽ','ぎんなぽ','銀ナポ']},
+	{name:'ウリボ・ゴールド',aliases:['ウリボゴールド','ゴールドウリボ','ウリボ','うりぼ','うり','ウリ','金ウリボ','金うりぼ','金うり','きんうり','金豚']},
+	{name:'金ナッポ',aliases:['金ナッポ','金なっぽ','金なぽ','きんなっぽ','きんなぽ','金ナポ','金ポ','金']},
+	{name:'銀ナッポ',aliases:['銀ナッポ','銀なっぽ','銀なぽ','ぎんなっぽ','ぎんなぽ','銀ナポ','銀ポ','銀']},
 ];
 function chatMessageLength(text){return Array.from(String(text||'')).length;}
 function normalizeCsvList(items){return [...new Set((Array.isArray(items)?items:[]).map(v=>String(v||'').trim()).filter(Boolean))];}

@@ -25,10 +25,10 @@ type Config struct {
 	// DebounceSeconds は同Ch+場所の重複通知を抑制する秒数。デフォルト: 30
 	DebounceSeconds int `json:"debounce_seconds"`
 
-	// FilterFile はフィルター設定ファイルのパス。デフォルト: "filter.json"
+	// FilterFile はチャットフィルター設定ファイルのパス。デフォルト: "filter.json"
 	FilterFile string `json:"filter_file"`
 
-	// --- フィルター設定（FilterFile が設定されている場合は filter.json から読み込まれる）---
+	// --- フィルター設定（実行時は FilterFile から読み込まれる）---
 
 	// ChatExclude はワールドチャット検知を抑制するキーワード一覧。
 	ChatExclude []string `json:"chat_exclude,omitempty"`
@@ -198,7 +198,7 @@ func Load(path string) (*Config, error) {
 	if cfg.ParallelGroupDelaySecs == 0 {
 		// 0は有効値（ディレイなし）なのでそのまま
 	}
-	// FilterFile が設定されていれば filter.json からフィルター設定を読み込む
+	// FilterFile が設定されていれば filter.json を正規ソースとして読み込む
 	if cfg.FilterFile == "" {
 		cfg.FilterFile = "filter.json"
 	}
@@ -206,22 +206,12 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	// filter.json の内容で上書き（config.json 側の値より優先）
-	if len(fc.ChatExclude) > 0 {
-		cfg.ChatExclude = fc.ChatExclude
-	}
-	if len(fc.ChatReportSenders) > 0 {
-		cfg.ChatReportSenders = fc.ChatReportSenders
-	}
-	if len(fc.ChatReportExcludedSenders) > 0 {
-		cfg.ChatReportExcludedSenders = fc.ChatReportExcludedSenders
-	}
-	if len(fc.ChatReportLocationRules) > 0 {
-		cfg.ChatReportLocationRules = fc.ChatReportLocationRules
-	}
-	if len(fc.ChatReportMonsterAliasRules) > 0 {
-		cfg.ChatReportMonsterAliasRules = fc.ChatReportMonsterAliasRules
-	}
+	// filter.json を常に優先し、config.json 側の旧フィルター値は使わない。
+	cfg.ChatExclude = fc.ChatExclude
+	cfg.ChatReportSenders = fc.ChatReportSenders
+	cfg.ChatReportExcludedSenders = fc.ChatReportExcludedSenders
+	cfg.ChatReportLocationRules = fc.ChatReportLocationRules
+	cfg.ChatReportMonsterAliasRules = fc.ChatReportMonsterAliasRules
 	return cfg, nil
 }
 

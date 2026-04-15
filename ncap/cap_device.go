@@ -174,7 +174,7 @@ type CapDevice struct {
 	// シーン名→mapID マッピング（config.json の scene_map_ids から設定）
 	sceneMapIds map[string]uint32
 
-	// チャット除外キーワード（config.json の chat_exclude から設定）
+	// チャット除外キーワード（filter.json の chat_exclude から設定）
 	chatExclude []string
 
 	// チャット重複排除（複数インスタンスが同じメッセージを受信しても1回だけ通知）
