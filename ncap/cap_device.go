@@ -1344,8 +1344,19 @@ func (cd *CapDevice) processSyncNearEntities(sess *session, payload []byte) {
 		}
 
 		if tmplID == loyalBoarletTemplateID || tmplID == goldNappoTemplateID || tmplID == silverNappoTemplateID || isLoyalBoarletName(name) {
+			// name が空の場合、tmplID から名前を補完する
+			if name == "" {
+				switch tmplID {
+				case goldNappoTemplateID:
+					name = "金ナッポ"
+				case silverNappoTemplateID:
+					name = "銀ナッポ"
+				case loyalBoarletTemplateID:
+					name = "ゴールドウリボ"
+				}
+			}
 			pos := &playerPosition{X: posX, Y: posY, Z: posZ}
-			log.Printf("[%s][検知] ゴールドウリボ: name=%s tmplID=%d pos=(%.1f,%.1f,%.1f) Ch=%d",
+			log.Printf("[%s][検知] %s: tmplID=%d pos=(%.1f,%.1f,%.1f) Ch=%d",
 				sess.label, name, tmplID, posX, posY, posZ, sess.lineID)
 			cd.triggerDetection(sess, notifier.SourceAuto, name, pos, 0)
 		}
@@ -1750,14 +1761,14 @@ func (cd *CapDevice) triggerDetection(sess *session, source, name string, pos *p
 	}
 
 	det := notifier.Detection{
-		Source:           source,
-		LineID:           lineID,
+		Source:            source,
+		LineID:            lineID,
 		LineIDUnconfirmed: lineIDUnconfirmed,
-		ChatLineID:       chatLineID,
-		Location:         locName,
-		MonsterName:      name,
-		InstanceLabel:    sess.label,
-		Time:             time.Now(),
+		ChatLineID:        chatLineID,
+		Location:          locName,
+		MonsterName:       name,
+		InstanceLabel:     sess.label,
+		Time:              time.Now(),
 	}
 	if source == notifier.SourceChat {
 		det.Message = name

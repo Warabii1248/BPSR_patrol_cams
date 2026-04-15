@@ -191,7 +191,7 @@ func (s *Server) UpdatePatrollerCfg(cfg mumu.Config) {
 
 // OnDetect は検知イベントをGUIのログに追加するコールバック
 func (s *Server) OnDetect(det notifier.Detection) {
-	line := fmt.Sprintf("[%s] %s", det.Time.Format("15:04:05"), notifier.Format(det))
+	line := fmt.Sprintf("[%s] %s [DETECTION]", det.Time.Format("15:04:05"), notifier.Format(det))
 	detCh := det.LineID // 検知されたチャンネル番号
 
 	s.mu.Lock()
@@ -1779,11 +1779,23 @@ function initGridDragDrop(){
   grid.addEventListener('drop',e=>{
     if(!activeDrag||!grid.classList.contains('edit-mode'))return;
     e.preventDefault();
+    // プレースホルダーの描画カラム（左右）をドロップ前に読み取る
+    let targetColumn = getPanelColumn(activeDrag); // フォールバック: 元のカラム
+    if(placeholder && placeholder.parentNode === grid) {
+      const gridRect = grid.getBoundingClientRect();
+      const phRect = placeholder.getBoundingClientRect();
+      targetColumn = (phRect.left + phRect.width/2 > gridRect.left + gridRect.width/2) ? 2 : 1;
+    }
     if(placeholder&&placeholder.parentNode===grid){
       grid.insertBefore(activeDrag,placeholder);
     }
     removePlaceholder();
     activeDrag.classList.remove('dragging');
+    // ドラッグしたカードのカラムクラスのみ更新（他のカードは変更しない）
+    if(getPanelWidthUnits(activeDrag) === 1) {
+      activeDrag.classList.remove('panel-col-1','panel-col-2');
+      activeDrag.classList.add(targetColumn === 2 ? 'panel-col-2' : 'panel-col-1');
+    }
     activeDrag=null;
 		updateDashboardResizeHandlePositions();
     saveDashboardLayout();
@@ -1953,30 +1965,8 @@ async function refreshDevices(){
 function toggleDevice(s,c){c?selectedDevices.add(s):selectedDevices.delete(s);}
 // ── Chat Panel ──
 let chatEvents=[],chatIPToSerial={},chatKnownSerials=[];
-const DEFAULT_CHAT_LOCATION_RULES=[
-	{name:'テント裏',aliases:['テント裏','テント','てんと','tnt'],monsters:['ウリボ・ゴールド']},
-	{name:'ミンスターホルン',aliases:['ミンスターホルン','ミンホル','みんほる','ミンスター','みんすたー','みんすた','みんほるっぽ'],monsters:['金ナッポ','銀ナッポ']},
-	{name:'休憩所',aliases:['休憩所','休憩','きゅうけい','qk'],monsters:['ウリボ・ゴールド']},
-	{name:'麦畑',aliases:['麦畑','麦','むぎ','畑','はたけ','mugi','hatake'],monsters:['ウリボ・ゴールド']},
-	{name:'カナミア',aliases:['カナミア','かなみあ','かな','kanamia','kana'],monsters:['ウリボ・ゴールド']},
-	{name:'崖',aliases:['崖','がけ','gake','崖上', 'ポニョ', 'ぽにょ', 'ponyo'],monsters:['ウリボ・ゴールド']},
-	{name:'偵察左上',aliases:['偵察左上','左上偵察','偵察左','左上','左','hidari'],monsters:['ウリボ・ゴールド']},
-	{name:'偵察右上',aliases:['偵察右上','右上偵察','右上','migiue'],monsters:['ウリボ・ゴールド']},
-	{name:'偵察右下',aliases:['偵察右下','右下偵察','偵察右','右下','右','migi'],monsters:['ウリボ・ゴールド']},
-	{name:'山賊野営地',aliases:['山賊野営地','山賊','野営地','野営','ヒグマ','ひぐまっぽ'],monsters:['金ナッポ','銀ナッポ']},
-	{name:'アンドラ',aliases:['アンドラ','アンドラ','あんどらっぽ'],monsters:['金ナッポ','銀ナッポ']},
-	{name:'浜辺',aliases:['浜辺','はまべ','はまべっぽ','浜辺っぽ','浜'],monsters:['金ナッポ']},
-	{name:'フレイムオーガ',aliases:['フレイムオーガ','ふれいむおーが','ふれいむ','フレイム','ふれいむっぽ'],monsters:['銀ナッポ']},
-	{name:'ムークキャンプ',aliases:['ムークキャンプ','むーくっぽ','ムーク','ムクボ'],monsters:['金ナッポ','銀ナッポ']},
-	{name:'ヴィル',aliases:['ヴィル','びる','びるっぽ'],monsters:['銀ナッポ']},
-	{name:'フロストオーガ',aliases:['フロストオーガ','ふろすとおーが','ふろすと','フロスト','ふろすとっぽ'],monsters:['金ナッポ']},
-	{name:'街道',aliases:['街道','街道っぽ'],monsters:['銀ナッポ']},
-];
-const CHAT_MONSTER_ALIASES=[
-	{name:'ウリボ・ゴールド',aliases:['ウリボゴールド','ゴールドウリボ','ウリボ','うりぼ','うり','ウリ','金ウリボ','金うりぼ','金うり','きんうり','金豚']},
-	{name:'金ナッポ',aliases:['金ナッポ','金なっぽ','金なぽ','きんなっぽ','きんなぽ','金ナポ','金ポ','金']},
-	{name:'銀ナッポ',aliases:['銀ナッポ','銀なっぽ','銀なぽ','ぎんなっぽ','ぎんなぽ','銀ナポ','銀ポ','銀']},
-];
+const DEFAULT_CHAT_LOCATION_RULES=[];
+const CHAT_MONSTER_ALIASES=[];
 function chatMessageLength(text){return Array.from(String(text||'')).length;}
 function normalizeCsvList(items){return [...new Set((Array.isArray(items)?items:[]).map(v=>String(v||'').trim()).filter(Boolean))];}
 function normalizeChatCandidateText(text){
