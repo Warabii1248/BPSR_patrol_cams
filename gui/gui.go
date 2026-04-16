@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	webview "github.com/jchv/go-webview2"
 
@@ -59,6 +60,11 @@ type Server struct {
 	chatMu      sync.RWMutex
 	chatLog     []ChatEvent   // チャットログ（最大500件）
 	chatClients []chan string // チャットSSEクライアント
+
+	pendingPortMapMu  sync.Mutex
+	pendingPortMaps   []PendingPortMapChange
+	pendingPortMapSeq int
+	portMapApplyFn    func(ch uint32, serverIP string)
 }
 
 // GoldBoarEvent は金ウリボ検知の1件分の記録
@@ -68,6 +74,16 @@ type GoldBoarEvent struct {
 	Channel     uint32 `json:"channel"`
 	Location    string `json:"location"`
 	MonsterName string `json:"monster_name"`
+}
+
+// PendingPortMapChange はユーザーの確認待ちの portMap 変更1件を表す。
+type PendingPortMapChange struct {
+	ID        string    `json:"id"`
+	Ch        uint32    `json:"ch"`
+	NewIP     string    `json:"new_ip"`
+	OldIP     string    `json:"old_ip"`
+	VoteCount int       `json:"vote_count"`
+	ArrivedAt time.Time `json:"arrived_at"`
 }
 
 // ChatEvent はチャット受信の1件分の記録
@@ -84,7 +100,7 @@ const maxGoldHistoryEntries = 50
 
 // New はGUIサーバーを作成する
 func New(port int, mumuCfg mumu.Config, patrolChannels []uint32, patrolChannelsFile string) *Server {
-	historyFile := filepath.Join(".", "gold_history.json")
+	historyFile := filepath.Join("config", "gold_history.json")
 	if patrolChannelsFile != "" {
 		historyFile = filepath.Join(filepath.Dir(patrolChannelsFile), "gold_history.json")
 	}
@@ -331,6 +347,50 @@ func (s *Server) AddLog(line string) {
 	}
 }
 
+// SetPortMapApplyFn は portMap 変更の確認後に呼ぶコールバックを設定する。
+func (s *Server) SetPortMapApplyFn(fn func(ch uint32, serverIP string)) {
+	s.portMapApplyFn = fn
+}
+
+// AddPortMapPending はクォーラム成立した portMap 変更を確認待ちキューに追加し、SSE で通知する。
+// 同一 ch の既存エントリがあれば上書き（最新情報に差し替え）。
+func (s *Server) AddPortMapPending(ch uint32, newIP, oldIP string, voteCount int) {
+	s.pendingPortMapMu.Lock()
+	s.pendingPortMapSeq++
+	id := fmt.Sprintf("pm-%d", s.pendingPortMapSeq)
+	change := PendingPortMapChange{
+		ID:        id,
+		Ch:        ch,
+		NewIP:     newIP,
+		OldIP:     oldIP,
+		VoteCount: voteCount,
+		ArrivedAt: time.Now(),
+	}
+	found := false
+	for i, p := range s.pendingPortMaps {
+		if p.Ch == ch {
+			s.pendingPortMaps[i] = change
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.pendingPortMaps = append(s.pendingPortMaps, change)
+	}
+	s.mu.RLock()
+	clients := make([]chan string, len(s.clients))
+	copy(clients, s.clients)
+	s.mu.RUnlock()
+	s.pendingPortMapMu.Unlock()
+
+	for _, ch := range clients {
+		select {
+		case ch <- "[PORTMAP_PENDING]":
+		default:
+		}
+	}
+}
+
 // OnChat はチャット受信イベントをログに追加しSSEで配信する
 func (s *Server) OnChat(clientIP, sender, message string, channel uint32, hasCh bool) {
 	ev := ChatEvent{
@@ -470,6 +530,8 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/adb/restart", s.handleADBRestart)
 	mux.HandleFunc("/api/chat-log", s.handleChatLog)
 	mux.HandleFunc("/api/chat-events", s.handleChatEvents)
+	mux.HandleFunc("/api/portmap/pending", s.handlePortMapPending)
+	mux.HandleFunc("/api/portmap/confirm", s.handlePortMapConfirm)
 	mux.HandleFunc("/spawn-log", s.handleSpawnLog)
 	mux.HandleFunc("/chat-log", s.handleChatLogPage)
 	mux.HandleFunc("/events", s.handleSSE)
@@ -532,6 +594,71 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	return url, nil
 }
 
+// windowState はウィンドウの位置・サイズを保存する
+type windowState struct {
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+const windowStateFile = "config/window_state.json"
+
+func loadWindowState() *windowState {
+	data, err := os.ReadFile(windowStateFile)
+	if err != nil {
+		return nil
+	}
+	var ws windowState
+	if err := json.Unmarshal(data, &ws); err != nil {
+		return nil
+	}
+	if ws.Width < 200 || ws.Height < 200 {
+		return nil
+	}
+	return &ws
+}
+
+// win32RECT は Win32 の RECT 構造体
+type win32RECT struct {
+	Left, Top, Right, Bottom int32
+}
+
+// win32POINT は Win32 の POINT 構造体
+type win32POINT struct {
+	X, Y int32
+}
+
+var (
+	modUser32         = syscall.NewLazyDLL("user32.dll")
+	procGetWindowRect = modUser32.NewProc("GetWindowRect")
+	procSetWindowPos  = modUser32.NewProc("SetWindowPos")
+)
+
+func saveWindowState(hwnd uintptr) {
+	var r win32RECT
+	ret, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	if ret == 0 {
+		return
+	}
+	w := int(r.Right - r.Left)
+	h := int(r.Bottom - r.Top)
+	if w < 200 || h < 200 {
+		return
+	}
+	ws := windowState{
+		X: int(r.Left), Y: int(r.Top),
+		Width: w, Height: h,
+	}
+	data, err := json.MarshalIndent(ws, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(windowStateFile, data, 0644); err != nil {
+		log.Printf("[GUI] window state save failed: %v", err)
+	}
+}
+
 // RunWindow はHTTPサーバーを起動しEdge WebView2の専用ウィンドウを開く。
 func (s *Server) RunWindow(ctx context.Context) error {
 	url, err := s.startHTTP(ctx)
@@ -540,13 +667,22 @@ func (s *Server) RunWindow(ctx context.Context) error {
 	}
 	log.Printf("[GUI] opening window: %s", url)
 
+	ws := loadWindowState()
+	winWidth, winHeight := 1000, 720
+	centerWin := true
+	if ws != nil {
+		winWidth = ws.Width
+		winHeight = ws.Height
+		centerWin = false
+	}
+
 	w := webview.NewWithOptions(webview.WebViewOptions{
 		Debug: false,
 		WindowOptions: webview.WindowOptions{
 			Title:  "BPSR_patrol_cams",
-			Width:  1000,
-			Height: 720,
-			Center: true,
+			Width:  uint(winWidth),
+			Height: uint(winHeight),
+			Center: centerWin,
 		},
 	})
 	if w == nil {
@@ -555,9 +691,35 @@ func (s *Server) RunWindow(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
-	defer w.Destroy()
+	// 前回の位置を復元
+	hwnd := uintptr(w.Window())
+	if ws != nil {
+		const SWP_NOZORDER = 0x0004
+		procSetWindowPos.Call(hwnd, 0,
+			uintptr(ws.X), uintptr(ws.Y),
+			uintptr(ws.Width), uintptr(ws.Height),
+			SWP_NOZORDER)
+	}
+	// ウィンドウが生きている間、2秒ごとに位置・サイズを保存する
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				saveWindowState(hwnd)
+			}
+		}
+	}()
 	w.Navigate(url)
 	w.Run()
+	close(done)
+	// Run() 直後にも保存を試みる（まだ HWND が有効な場合がある）
+	saveWindowState(hwnd)
+	w.Destroy()
 	return nil
 }
 
@@ -584,7 +746,15 @@ func openBrowser(url string) {
 // handleIndex はメインHTMLページを返す
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, indexHTML)
+	// 強制dashboard遷移を防ぐためのガードを注入（デフォルトは無効化しない）
+	html := indexHTML
+	// 既存の2秒ごとdashboard切替やsetTimeout/setIntervalによるswitchView('dashboard')を除去
+	html = strings.ReplaceAll(html, "setTimeout(function(){switchView('dashboard'", "")
+	html = strings.ReplaceAll(html, "setInterval(function(){switchView('dashboard'", "")
+	// switchViewの自動呼び出しをガード（window.__disableAutoSwitchView==trueの時のみ無効化）
+	html = strings.ReplaceAll(html, "function switchView(id,navEl){", "function switchView(id,navEl){if(window.__disableAutoSwitchView)return;")
+	// window.__disableAutoSwitchViewはデフォルトでfalse（何も挿入しない）
+	fmt.Fprint(w, html)
 }
 
 // handleDeviceMap はADBデバイスのエミュレータIPを取得し、
@@ -1125,6 +1295,61 @@ func (s *Server) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handlePortMapPending は確認待ち portMap 変更の一覧を返す。
+func (s *Server) handlePortMapPending(w http.ResponseWriter, r *http.Request) {
+	s.pendingPortMapMu.Lock()
+	list := make([]PendingPortMapChange, len(s.pendingPortMaps))
+	copy(list, s.pendingPortMaps)
+	s.pendingPortMapMu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(list)
+}
+
+// handlePortMapConfirm は portMap 変更の適用・却下を処理する。
+// リクエスト: {"ids":["pm-1","pm-2"],"action":"apply"|"reject"}
+func (s *Server) handlePortMapConfirm(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		IDs    []string `json:"ids"`
+		Action string   `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	idSet := make(map[string]struct{}, len(req.IDs))
+	for _, id := range req.IDs {
+		idSet[id] = struct{}{}
+	}
+
+	s.pendingPortMapMu.Lock()
+	var toApply []PendingPortMapChange
+	remaining := s.pendingPortMaps[:0]
+	for _, p := range s.pendingPortMaps {
+		if _, matched := idSet[p.ID]; matched {
+			if req.Action == "apply" {
+				toApply = append(toApply, p)
+			}
+		} else {
+			remaining = append(remaining, p)
+		}
+	}
+	s.pendingPortMaps = remaining
+	applyFn := s.portMapApplyFn
+	s.pendingPortMapMu.Unlock()
+
+	if applyFn != nil {
+		for _, p := range toApply {
+			applyFn(p.Ch, p.NewIP)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprint(w, `{"ok":true}`)
+}
+
 // handleChatLogPage はチャットログ専用の分離ウィンドウ用HTMLページを返す
 func (s *Server) handleChatLogPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1198,16 +1423,11 @@ const indexHTML = `<!DOCTYPE html>
   --border:#283044;--radius:8px;--radius-lg:12px;
 }
 body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;font-size:13px;line-height:1.5;height:100vh;overflow:hidden}
-.app{display:grid;grid-template-rows:44px 1fr;grid-template-columns:210px 1fr;height:100vh}
+.app{display:grid;grid-template-rows:6px 1fr;grid-template-columns:210px 1fr;height:100vh}
 /* Titlebar */
-.titlebar{grid-column:1/-1;background:var(--bg1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;padding:0 16px;}
-.logo{width:22px;height:22px;background:var(--accent);border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.titlebar .title{font-size:13px;font-weight:500;color:var(--text1);letter-spacing:.3px}
-.titlebar .version{font-size:11px;color:var(--text3);margin-left:2px}
-.titlebar .status-dot{width:7px;height:7px;border-radius:50%;background:var(--accent2);margin-left:auto;box-shadow:0 0 6px var(--accent2);transition:background .3s,box-shadow .3s}
-.titlebar .status-dot.stopped{background:var(--text3);box-shadow:none}
-.titlebar .status-lbl{font-size:11px;font-weight:500;color:var(--accent2);margin-left:5px;transition:color .3s}
-.titlebar .status-lbl.stopped{color:var(--text3);font-weight:400}
+.titlebar{grid-column:1/-1;background:#555;transition:background .4s}
+@keyframes status-flow{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+.titlebar.running{background:linear-gradient(90deg,#1a6b35,#43c46a,#86efac,#43c46a,#1a6b35);background-size:200% 100%;animation:status-flow 2.5s linear infinite}
 /* Sidebar */
 .sidebar{background:var(--bg1);border-right:1px solid var(--border);padding:10px 0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;}
 .nav-section{padding:8px 14px 3px;font-size:10px;font-weight:500;color:var(--text3);letter-spacing:.8px;text-transform:uppercase}
@@ -1219,6 +1439,16 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;
 .nav-icon{width:14px;height:14px;flex-shrink:0;opacity:.9}
 .nav-badge{margin-left:auto;background:var(--danger);color:#fff;font-size:9px;padding:1px 5px;border-radius:9px;font-weight:600}
 .nav-badge.ok{background:var(--accent2)}
+/* PortMap 確認モーダル */
+.pm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:9999;display:flex;align-items:center;justify-content:center}
+.pm-modal{background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;min-width:340px;max-width:480px;box-shadow:0 8px 32px rgba(0,0,0,.6)}
+.pm-modal-title{font-size:13px;font-weight:600;color:var(--warn);margin-bottom:12px;display:flex;align-items:center;gap:7px}
+.pm-change-row{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin-bottom:6px;font-size:12px;line-height:1.6}
+.pm-ch{color:var(--accent);font-weight:700}
+.pm-ip{font-family:monospace;color:var(--text2);font-size:11px;word-break:break-all}
+.pm-arrow{color:var(--text3);margin:0 5px}
+.pm-votes{font-size:10px;color:var(--text3);margin-top:2px}
+.pm-btns{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
 /* Main */
 .main{background:var(--bg0);overflow:hidden;padding:12px;display:flex;flex-direction:column;min-height:0}
 .view{display:none;flex-direction:column;gap:10px;flex:1;min-height:0}
@@ -1439,19 +1669,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 <body>
 <div class="app">
 <!-- Titlebar -->
-<div class="titlebar">
-  <div class="logo">
-    <svg width="14" height="13" viewBox="0 0 14 13" fill="none">
-      <rect x="0" y="3" width="14" height="10" rx="1.5" fill="white" opacity=".9"/>
-      <path d="M5 3L6 1h2l1 2" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-      <circle cx="7" cy="8" r="2.5" fill="#4f8ef7"/>
-      <circle cx="7" cy="8" r="1.2" fill="white" opacity=".9"/>
-    </svg>
-  </div>
-  <span class="title">BPSR_patrol_cams</span>
-  <div class="status-dot stopped" id="hdr-dot"></div>
-  <span class="status-lbl stopped" id="hdr-lbl">停止中</span>
-</div>
+<div class="titlebar" id="hdr-bar"></div>
 <!-- Sidebar -->
 <div class="sidebar">
   <div class="nav-section">メイン</div>
@@ -1519,12 +1737,13 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         <div id="dash-ps-full" style="font-size:.78em;color:#fca5a5;flex:1"></div>
         <button id="btn-dash-clear-full" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearFullChannels()">✕ クリア</button>
       </div>
-      <div class="flex-row" style="margin-bottom:8px">
-        <label style="font-size:11px">開始Ch:</label>
-        <input type="number" id="dash-patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
-        <button class="btn toggle-btn" id="dash-btn-reversed" onclick="toggleReversed()">⬆ 正順</button>
-        <button class="btn toggle-btn" id="dash-btn-loop" onclick="toggleLoop()">🔁 ループ</button>
-      </div>
+			<div class="flex-row" style="margin-bottom:8px">
+				<label style="font-size:11px">開始Ch:</label>
+				<select id="dash-patrol-start-ch-select" style="width:80px"></select>
+				<input type="number" id="dash-patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
+				<button class="btn toggle-btn" id="dash-btn-reversed" onclick="toggleReversed()">⬆ 正順</button>
+				<button class="btn toggle-btn" id="dash-btn-loop" onclick="toggleLoop()">🔁 ループ</button>
+			</div>
       <div class="flex-row">
         <button class="btn success" id="dash-btn-patrol-start" onclick="patrolStart()" disabled>▶ 巡回開始</button>
         <button class="btn" id="dash-btn-patrol-stop" onclick="patrolStop()" disabled>■ 停止</button>
@@ -1561,7 +1780,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         発見報告候補
         <span style="margin-left:auto;font-size:10px;color:var(--text3)">自動抽出</span>
       </div>
-      <div id="dash-chat-report-area" class="chat-report-list compact"></div>
+      <div id="dash-chat-report-area" class="chat-report-list"></div>
     </div>
   </div>
 </div>
@@ -1686,18 +1905,49 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		<div class="card cfg-card">
 			<div class="cfg-card-title">システム設定</div>
 			<div id="cfg-form" class="cfg-grid"></div>
+			<div style="margin:12px 0 0 0">
+				<label style="font-size:13px;font-weight:500;">通知するエネミー</label>
+				<div id="cfg-enemy-checkboxes" style="margin-top:6px;display:flex;gap:18px;font-size:13px">
+					<label><input type="checkbox" class="cfg-enemy" value="ウリボ・ゴールド">ウリボ・ゴールド</label>
+					<label><input type="checkbox" class="cfg-enemy" value="金ナッポ">金ナッポ</label>
+					<label><input type="checkbox" class="cfg-enemy" value="銀ナッポ">銀ナッポ</label>
+				</div>
+			</div>
 			<div class="cfg-save-bar">
 				<button class="btn primary" onclick="saveConfig()">💾 保存・反映</button>
 				<span id="cfg-status" style="font-size:.82em;color:var(--text2)"></span>
 			</div>
-			<p class="cfg-note" style="margin-top:6px">* 滞在時間・タイムアウト・並列設定は保存後すぐ反映されます。その他は再起動が必要です。</p>
-    </div>
-  </div>
+			<p class="cfg-note" style="margin-top:6px">* 滞在時間・タイムアウト・並列設定・通知エネミー・Webhook・デバウンス・チャットフィルター・モンスタースキャンは保存後すぐ反映されます。NIC・GUIポート・ロケーションファイルは再起動が必要です。</p>
+		</div>
+	</div>
 </div>
 </div><!-- /main -->
 </div><!-- /app -->
 <script>
-// ── View switch ──
+// 巡回チャンネルリストから開始Chプルダウン生成・同期
+function updateStartChDropdown() {
+  fetch('/api/patrol/channels').then(r=>r.json()).then(data=>{
+    const sel = document.getElementById('dash-patrol-start-ch-select');
+    if (!sel) return;
+    sel.innerHTML = '<option value="0">(前回位置)</option>';
+    (data.channels||[]).forEach(function(ch){
+      sel.innerHTML += '<option value="'+ch+'">'+ch+'</option>';
+    });
+    // 入力値と同期
+    var inp = document.getElementById('dash-patrol-start-ch');
+    sel.value = inp.value;
+  });
+}
+document.addEventListener('DOMContentLoaded',function(){
+  updateStartChDropdown();
+  var sel = document.getElementById('dash-patrol-start-ch-select');
+  var inp = document.getElementById('dash-patrol-start-ch');
+  if(sel&&inp){
+    sel.addEventListener('change',function(){syncPatrolStartCh(sel.value);});
+    inp.addEventListener('input',function(){syncPatrolStartCh(inp.value);});
+  }
+});
+// ...既存コード...
 const EDITABLE_LAYOUT_VIEWS=['dashboard','patrol'];
 let currentViewId='dashboard';
 function isLayoutEditableView(id){
@@ -2043,9 +2293,44 @@ async function toggleMonsterScan(){
     appendLog(e.data);
     if(e.data.includes('[GUI] 金ウリボ')||e.data.includes('[DETECTION]')){loadGoldHistory();loadPatrolChannels();}
     if(e.data.includes('channels.txt')){loadPatrolChannels();}
+    if(e.data.includes('[PORTMAP_PENDING]')){pmCheckPending();}
   };
   fetch('/api/logs').then(r=>r.json()).then(lines=>(lines||[]).forEach(appendLog));
 })();
+// ── PortMap 変更確認モーダル ──
+let _pmChanges=[];
+async function pmCheckPending(){
+  const data=await fetch('/api/portmap/pending').then(r=>r.json()).catch(()=>[]);
+  _pmChanges=data||[];
+  const ov=document.getElementById('pm-overlay');
+  if(!ov)return;
+  if(_pmChanges.length>0){pmRender();ov.style.display='flex';}
+  // 変更が0件なら既に処理済みなので閉じたまま
+}
+function pmRender(){
+  const body=document.getElementById('pm-body');
+  if(!body)return;
+  body.innerHTML=_pmChanges.map(c=>{
+    const oldPart=c.old_ip?('<span class="pm-ip">'+c.old_ip+'</span><span class="pm-arrow">→</span>'):'<span class="pm-arrow">新規</span>';
+    return '<div class="pm-change-row">'
+      +'<div><span class="pm-ch">Ch'+c.ch+'</span></div>'
+      +'<div>'+oldPart+'<span class="pm-ip">'+c.new_ip+'</span></div>'
+      +'<div class="pm-votes">'+c.vote_count+'台が同一ポートを検知</div>'
+      +'</div>';
+  }).join('');
+}
+async function pmApplyAll(){
+  const ids=_pmChanges.map(c=>c.id);
+  await fetch('/api/portmap/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,action:'apply'})});
+  document.getElementById('pm-overlay').style.display='none';
+  _pmChanges=[];
+}
+async function pmRejectAll(){
+  const ids=_pmChanges.map(c=>c.id);
+  await fetch('/api/portmap/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,action:'reject'})});
+  document.getElementById('pm-overlay').style.display='none';
+  _pmChanges=[];
+}
 // ── Gold History ──
 function formatAgo(seconds){
   if(seconds < 60) return 'just now';
@@ -2235,7 +2520,7 @@ function extractChatCandidateFacts(ev){
 	const hasGoldWord=['金','きん','gold'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
 	const hasSilverWord=['銀','ぎん','silver'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
 	const hasBoarWord=['うり','ウリ','豚','猪','boar'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
-	const hasNappoWord=['なぽ','なっぽ','ナポ','ナッポ','nappo'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
+	const hasNappoWord=['なぽ','なっぽ','ナッポ','ナッポ','nappo'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
 	const spawnMonsters=locationRule&&Array.isArray(locationRule.monsters)?locationRule.monsters:[];
 	let inferredMonster='';
 	if(!explicitMonster){
@@ -2467,6 +2752,8 @@ function applyLoopUI(){['btn-loop','dash-btn-loop'].forEach(id=>{const b=documen
 async function loadPatrolChannels(){
   const d=await fetch('/api/patrol/channels').then(r=>r.json());
   patrolChannels=d.channels||[];renderChannelEditor();
+  const sel=document.getElementById('dash-patrol-start-ch-select');
+  if(sel){const cur=sel.value;sel.innerHTML='<option value="0">(前回位置)</option>'+patrolChannels.map(ch=>'<option value="'+ch+'">'+ch+'</option>').join('');sel.value=cur;}
 }
 function renderChannelEditor(){
   const el=document.getElementById('ch-editor');
@@ -2493,7 +2780,7 @@ async function saveChannels(){
 }
 function toggleReversed(){patrolReversed=!patrolReversed;localStorage.setItem('patrolReversed',patrolReversed);applyReversedUI();}
 function toggleLoop(){patrolLoopMode=!patrolLoopMode;localStorage.setItem('patrolLoopMode',patrolLoopMode);applyLoopUI();}
-function syncPatrolStartCh(v){['patrol-start-ch','dash-patrol-start-ch'].forEach(id=>{const el=document.getElementById(id);if(el&&el.value!==String(v))el.value=v;});}
+function syncPatrolStartCh(v){['patrol-start-ch','dash-patrol-start-ch'].forEach(id=>{const el=document.getElementById(id);if(el&&el.value!==String(v))el.value=v;});const sel=document.getElementById('dash-patrol-start-ch-select');if(sel&&sel.value!==String(v))sel.value=v;}
 async function patrolStart(){
   const chs=patrolChannels.length>0?patrolChannels:[];
   const startChEl=document.getElementById('patrol-start-ch')||document.getElementById('dash-patrol-start-ch');
@@ -2558,9 +2845,8 @@ function updatePatrolCycleStats(d,currentPhase){
 function updatePatrolUI(running){
   ['btn-patrol-start','dash-btn-patrol-start'].forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=running;});
   ['btn-patrol-stop','dash-btn-patrol-stop'].forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=!running;});
-  const dot=document.getElementById('hdr-dot'),lbl=document.getElementById('hdr-lbl');
-  if(dot){dot.className=running?'status-dot':'status-dot stopped';}
-  if(lbl){lbl.textContent=running?'稼働中':'停止中';lbl.className=running?'status-lbl':'status-lbl stopped';}
+  const bar=document.getElementById('hdr-bar');
+  if(bar){bar.className=running?'titlebar running':'titlebar';}
 }
 async function pollPatrolStatus(){
   try{
@@ -2803,7 +3089,7 @@ function renderChatRuleManagers(){
 		+'<input type="text" id="cfg-location-rule-alias" placeholder="別名を入力。例: tnt">'
 		+'<button type="button" class="btn" onclick="addChatLocationRule()">追加</button>'
 		+'</div>'
-		+renderChatRuleTable(['場所','追加した別名','出現候補',''],locationRows,'追加した場所別名はありません')
+		+renderChatRuleTableMarkup(['場所','追加した別名','出現候補',''],locationRows,'追加した場所別名はありません')
 		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_location_rules" rows="10" spellcheck="false" placeholder="地点名|別名|モンスター1,モンスター2">'+escHtml(locationRules)+'</textarea>'
 		+'<span class="cfg-note">追加内容はセル形式で表示しています。保存はこの一覧から行われます。</span>'
 		+'</div>'
@@ -2811,10 +3097,9 @@ function renderChatRuleManagers(){
 		+'<div class="cfg-rule-box-title">モンスター別名を追加</div>'
 		+'<div class="cfg-rule-actions">'
 		+'<select id="cfg-monster-rule-target"><option value="">モンスターを選択</option>'+monsterOptions+'</select>'
-		+'<input type="text" id="cfg-monster-rule-alias" placeholder="別名を入力。例: 金ウリ">'
-		+'<button type="button" class="btn" onclick="addChatMonsterAliasRule()">追加</button>'
+		+'<input type="text" id="cfg-monster-rule-alias" placeholder="別名を入力。例: 金ウリ"><button type="button" class="btn" onclick="addChatMonsterAliasRule()">追加</button>'
 		+'</div>'
-		+renderChatRuleTable(['モンスター','追加した別名',''],monsterRows,'追加したモンスター別名はありません')
+		+renderChatRuleTableMarkup(['モンスター','追加した別名',''],monsterRows,'追加したモンスター別名はありません')
 		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_monster_alias_rules" rows="10" spellcheck="false" placeholder="モンスター名|別名">'+escHtml(monsterRules)+'</textarea>'
 		+'<span class="cfg-note">追加内容はセル形式で表示しています。保存はこの一覧から行われます。</span>'
 		+'</div>';
@@ -2886,21 +3171,32 @@ async function loadConfig(){
 	renderChatRuleManagers();
 	renderConfigFields('cfg-form',CFG_FIELDS);
 	renderChatCandidatePanels();
+	renderConfigForm(cfgData);
 }
 async function saveConfig(silent){
-  const updated={...cfgData};
-	[...CHAT_FILTER_FIELDS,...CHAT_RULE_FIELDS,...CFG_FIELDS].forEach(f=>{const el=document.getElementById('cfg-'+f.k);if(!el)return;
-    if(f.type==='number')updated[f.k]=parseFloat(el.value)||0;
-    else if(f.type==='multiline-list')updated[f.k]=el.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-    else if(f.type==='csv')updated[f.k]=el.value.split(',').map(s=>s.trim()).filter(Boolean);
-    else updated[f.k]=el.value;});
-  const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updated)});
-  const d=await r.json();const st=document.getElementById('cfg-status');
-	if(st && !silent){
-		st.textContent=d.ok?'✓ 保存・反映済':'✗ 失敗: '+(d.error||'');
-		setTimeout(()=>st.textContent='',4000);
-	}
+	const updated={...cfgData};
+		[...CHAT_FILTER_FIELDS,...CHAT_RULE_FIELDS,...CFG_FIELDS].forEach(f=>{const el=document.getElementById('cfg-'+f.k);if(!el)return;
+		if(f.type==='number')updated[f.k]=parseFloat(el.value)||0;
+		else if(f.type==='multiline-list')updated[f.k]=el.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+		else if(f.type==='csv')updated[f.k]=el.value.split(',').map(s=>s.trim()).filter(Boolean);
+		else updated[f.k]=el.value;});
+	// 通知エネミー
+	updated.notify_enemies=[];
+	document.querySelectorAll('.cfg-enemy').forEach(chk=>{if(chk.checked)updated.notify_enemies.push(chk.value);});
+	const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updated)});
+	const d=await r.json();const st=document.getElementById('cfg-status');
+		if(st && !silent){
+				st.textContent=d.ok?'✓ 保存・反映済':'✗ 失敗: '+(d.error||'');
+				setTimeout(()=>st.textContent='',4000);
+		}
 	cfgData=updated;renderChatRuleManagers();renderChatCandidatePanels();
+}
+function renderConfigForm(cfg){
+	// 通知エネミー チェックボックス反映
+	const notifyEnemies=cfg.notify_enemies||["ウリボ・ゴールド","金ナッポ","銀ナッポ"];
+	document.querySelectorAll('.cfg-enemy').forEach(chk=>{
+		chk.checked=notifyEnemies.includes(chk.value);
+	});
 }
 // ── Uptime counter ──
 const _startTime=Date.now();
@@ -3062,12 +3358,12 @@ function initDashboardResizeHandles(){
 		const deltaX=e.clientX-activeResize.startX;
 		const startUnits=activeResize.startUnits;
 		if(activeResize.side==='right'){
-			if(startUnits===1)setPanelWidthUnits(activeResize.card,deltaX>activeResize.threshold?2:1,false,1);
-			else setPanelWidthUnits(activeResize.card,deltaX<-activeResize.threshold?1:2,false,1);
+			if(startUnits===1)setPatrolPanelWidthUnits(activeResize.card,deltaX>activeResize.threshold?2:1,false,1);
+			else setPatrolPanelWidthUnits(activeResize.card,deltaX<-activeResize.threshold?1:2,false,1);
 			return;
 		}
-		if(startUnits===1)setPanelWidthUnits(activeResize.card,deltaX<-activeResize.threshold?2:1,false,2);
-		else setPanelWidthUnits(activeResize.card,deltaX>activeResize.threshold?1:2,false,2);
+		if(startUnits===1)setPatrolPanelWidthUnits(activeResize.card,deltaX<-activeResize.threshold?2:1,false,2);
+		else setPatrolPanelWidthUnits(activeResize.card,deltaX>activeResize.threshold?1:2,false,2);
 	}
 	function onPointerUp(){
 		stopResize();
@@ -3285,6 +3581,18 @@ syncLayoutEditState();
   for(let i=1;i<=3;i++){const found=await fetchDevicesOnly();if(found)return;if(i<3)await new Promise(r=>setTimeout(r,3000));}
 })();
 </script>
+
+<!-- PortMap 変更確認モーダル -->
+<div id="pm-overlay" class="pm-overlay" style="display:none">
+  <div class="pm-modal">
+    <div class="pm-modal-title">⚠ PortMap 変更の確認</div>
+    <div id="pm-body"></div>
+    <div class="pm-btns">
+      <button class="btn danger" onclick="pmRejectAll()">すべて却下</button>
+      <button class="btn success" onclick="pmApplyAll()">すべて適用</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>`
 
@@ -3306,7 +3614,7 @@ th{color:var(--warn);text-align:left;padding:4px 10px;border-bottom:1px solid rg
 td{padding:4px 10px;border-bottom:1px solid var(--border);line-height:1.4;white-space:nowrap}
 tr:hover td{background:var(--bg2)}
 .ch{color:var(--accent);font-family:monospace;font-weight:bold}
-.time{color:var(--text3)}
+.time{color:var(--text3);margin-right:6px}
 .monster{color:var(--warn);font-weight:bold}
 .monster.silver{color:#b8b8b8}
 .no-data{color:var(--text3);padding:12px}
@@ -3317,7 +3625,7 @@ tr:hover td{background:var(--bg2)}
 <h1>🌟 出現ログ</h1>
 <div id="container"><div class="no-data">読み込み中...</div></div>
 <script>
-function eH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function eH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 async function load(){
   const h=await fetch('/api/gold-history').then(r=>r.json()).catch(()=>[]);
   const c=document.getElementById('container');

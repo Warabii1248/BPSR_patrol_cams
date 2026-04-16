@@ -105,18 +105,21 @@ Write-Host "[OK] Built: $exePath" -ForegroundColor Green
 # -- Copy distribution files --
 Write-Host "Copying distribution files ..." -ForegroundColor Yellow
 
-if (Test-Path "config.json") {
-    Copy-Item "config.json" "$OutDir\config.json"
-} elseif (Test-Path "config.example.json") {
-    Copy-Item "config.example.json" "$OutDir\config.json"
+New-Item -ItemType Directory -Force "$OutDir\config" | Out-Null
+New-Item -ItemType Directory -Force "$OutDir\logs"   | Out-Null
+
+if (Test-Path "config\config.json") {
+    Copy-Item "config\config.json" "$OutDir\config\config.json"
+} elseif (Test-Path "config\config.example.json") {
+    Copy-Item "config\config.example.json" "$OutDir\config\config.json"
 }
 
 if (Test-Path "data\locations.json") {
     Copy-Item "data\locations.json" "$OutDir\data\locations.json"
 }
 
-if (Test-Path "channels.txt") {
-    Copy-Item "channels.txt" "$OutDir\channels.txt"
+if (Test-Path "config\channels.txt") {
+    Copy-Item "config\channels.txt" "$OutDir\config\channels.txt"
 }
 
 $readmeLines = @(
@@ -132,12 +135,12 @@ $readmeLines = @(
     "  Double-click LoyalBoarlet.exe",
     "",
     "[Config files]",
-    "  config.json         - Discord Webhook URL and other settings",
-    "  channels.txt        - Channel numbers to patrol (one per line)",
-    "  data/locations.json - Map location name data",
+    "  config\config.json         - Discord Webhook URL and other settings",
+    "  config\channels.txt        - Channel numbers to patrol (one per line)",
+    "  data\locations.json        - Map location name data",
     "",
     "[Log]",
-    "  Saved to log.txt in the working directory."
+    "  Saved to logs\log.txt in the working directory."
 )
 $readmeLines | Out-File -FilePath "$OutDir\README.txt" -Encoding UTF8
 

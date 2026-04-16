@@ -4,7 +4,7 @@
   "locations": "data/locations.json",
   "discord_webhook": "",
   "debounce_seconds": 30,
-  "filter_file": "filter.json",
+  "filter_file": "config/filter.json",
   "gui_port": 8080,
   "adb_path": "adb",
   "mumu_serials": null,
@@ -13,11 +13,13 @@
   "mumu_clear_length": 3,
   "mumu_pre_keycode": "KEYCODE_P",
   "mumu_delay_ms": 1200,
-  "patrol_channels_file": "channels.txt",
+  "patrol_channels_file": "config/channels.txt",
   "patrol_dwell_secs": 15,
   "patrol_move_timeout_secs": 30,
   "patrol_merge_timeout_secs": 15,
   "parallel_limit": 0,
   "parallel_group_delay_secs": 20,
   "patrol_serials": null
+  ,
+  "notify_enemies": ["ウリボ・ゴールド", "金ナッポ", "銀ナッポ"]
 }

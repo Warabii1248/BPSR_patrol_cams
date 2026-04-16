@@ -104,7 +104,9 @@ func Format(det Detection) string {
 	}
 	ch := "不明"
 	if det.LineID > 0 {
-		if det.LineIDUnconfirmed {
+		if det.ChatLineID > 0 && det.LineID != det.ChatLineID {
+			ch = fmt.Sprintf("%d or %d", det.LineID, det.ChatLineID)
+		} else if det.LineIDUnconfirmed {
 			ch = fmt.Sprintf("%d (非確定)", det.LineID)
 		} else {
 			ch = fmt.Sprintf("%d", det.LineID)

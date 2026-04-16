@@ -44,6 +44,21 @@ func (pm *PortMap) LookupByPort(serverIP string) (uint32, bool) {
 	return ch, ok
 }
 
+// LookupByCh はch番号から現在登録されているサーバーアドレスを返す（逆引き）。
+func (pm *PortMap) LookupByCh(ch uint32) (string, bool) {
+	if pm == nil || ch == 0 {
+		return "", false
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	for ip, c := range pm.portToCh {
+		if c == ch {
+			return ip, true
+		}
+	}
+	return "", false
+}
+
 // Update はch番号に対応するサーバーアドレスを登録・更新する。
 // ポートが前回と異なる場合は変更を検出してログ出力し、自動保存する。
 // 変更がない場合は何もしない（高頻度呼び出しに対応）。

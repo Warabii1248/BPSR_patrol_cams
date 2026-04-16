@@ -9,6 +9,8 @@ import (
 
 // Config はアプリ全体の設定（config.json から読み書きされる）
 type Config struct {
+	// NotifyEnemies は通知対象のエネミー名リスト（例: ["ウリボ・ゴールド", "金ナッポ", "銀ナッポ"]）
+	NotifyEnemies []string `json:"notify_enemies,omitempty"`
 	// --- キャプチャ設定 ---
 
 	// Network はキャプチャするNICの説明文。"auto" で最アクティブなNICを自動選択。
@@ -133,15 +135,15 @@ func defaultConfig() *Config {
 		MumuDelayMs:              1200,
 		ParallelLimit:            0,
 		ParallelGroupDelaySecs:   0,
-		PatrolChannelsFile:       "channels.txt",
-		PortMapFile:              "port_ch_map.json",
+		PatrolChannelsFile:       "config/channels.txt",
+		PortMapFile:              "config/port_ch_map.json",
 		PatrolDwellSecs:          10,
 		PatrolMoveTimeoutSecs:    30,
 		PatrolMergeTimeoutSecs:   15,
 		ActiveDeviceCount:        0,
 		FullThreshold:            0.0, // 0=従来通り全台
 		ConsecutiveFullThreshold: 3,   // 3連続満員でクラッシュ判定
-		FilterFile:               "filter.json",
+		FilterFile:               "config/filter.json",
 		SceneMapIds: map[string]uint32{
 			"阿斯特里亚平原": 7, // アステリア平原
 		},
@@ -200,7 +202,7 @@ func Load(path string) (*Config, error) {
 	}
 	// FilterFile が設定されていれば filter.json を正規ソースとして読み込む
 	if cfg.FilterFile == "" {
-		cfg.FilterFile = "filter.json"
+		cfg.FilterFile = "config/filter.json"
 	}
 	fc, err := LoadFilter(cfg.FilterFile)
 	if err != nil {
@@ -220,7 +222,7 @@ func Load(path string) (*Config, error) {
 func Save(path string, cfg *Config) error {
 	filterPath := cfg.FilterFile
 	if filterPath == "" {
-		filterPath = "filter.json"
+		filterPath = "config/filter.json"
 	}
 	// フィルター設定を filter.json に保存
 	fc := &FilterConfig{

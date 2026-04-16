@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	configPath    = flag.String("config", "config.json", "path to config.json")
+	configPath    = flag.String("config", "config/config.json", "path to config.json")
 	networkFlag   = flag.String("network", "", "NIC description (auto = auto-detect)")
 	webhookFlag   = flag.String("webhook", "", "Discord webhook URL (overrides config)")
 	autoCheckTime = flag.Int("auto-check", 0, "seconds to sample interfaces when using auto")
@@ -55,8 +55,11 @@ func main() {
 	}()
 	flag.Parse()
 
-	// ログをコンソールと log.txt の両方に出力する（起動のたびに上書き）
-	logFile, err := os.OpenFile("log.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// ログをコンソールと logs/log.txt の両方に出力する（起動のたびに上書き）
+	if err := os.MkdirAll("logs", 0755); err != nil {
+		log.Printf("warn: cannot create logs dir: %v", err)
+	}
+	logFile, err := os.OpenFile("logs/log.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		log.Printf("warn: cannot open log.txt: %v", err)
 	} else {
@@ -177,6 +180,32 @@ func main() {
 	log.SetOutput(guiServer.LogWriter(log.Writer()))
 
 	onDetect := func(det notifier.Detection) {
+		// アステリア平原は1-100chのみ通知
+		ch := det.LineID
+		if det.ChatLineID > 0 {
+			ch = det.ChatLineID
+		}
+		if ch < 1 || ch > 100 {
+			log.Printf("[DETECTION] 通知対象外ch: %d (通知スキップ)", ch)
+			return
+		}
+		// 通知対象エネミーのみ通知
+		notifyEnemies := cfg.NotifyEnemies
+		monster := det.MonsterName
+		if monster == "" && det.Source == notifier.SourceAuto {
+			monster = "ウリボ・ゴールド"
+		}
+		found := false
+		for _, n := range notifyEnemies {
+			if n == monster {
+				found = true
+				break
+			}
+		}
+		if !found {
+			log.Printf("[DETECTION] 通知対象外エネミー: %s (通知スキップ)", monster)
+			return
+		}
 		log.Println("[DETECTION]\n" + notifier.Format(det))
 		if err3 := discord.Send(det); err3 != nil {
 			log.Printf("discord send error: %v", err3)
@@ -252,6 +281,14 @@ func main() {
 	// チャット受信をGUIへ転送
 	capDevice.SetChatNotifier(guiServer.OnChat)
 
+	// portMap 変更はGUI確認後に適用
+	capDevice.SetPortMapPendingFn(func(ch uint32, newIP, oldIP string, voteCount int) {
+		guiServer.AddPortMapPending(ch, newIP, oldIP, voteCount)
+	})
+	guiServer.SetPortMapApplyFn(func(ch uint32, serverIP string) {
+		capDevice.ApplyPortMapUpdate(ch, serverIP)
+	})
+
 	// チャンネルリストをファイルに保存するコールバック
 	guiServer.SetSaveChannelsFn(func(channels []uint32) error {
 		return mumu.SaveChannels(cfg.PatrolChannelsFile, channels)
@@ -271,7 +308,27 @@ func main() {
 			if err := json.Unmarshal(data, c); err != nil {
 				return err
 			}
-			return appconfig.Save(*configPath, c)
+			if err := appconfig.Save(*configPath, c); err != nil {
+				return err
+			}
+			// 通知エネミー
+			cfg.NotifyEnemies = c.NotifyEnemies
+			// Discord Webhook
+			discord.URL = c.DiscordWebhook
+			// デバウンス
+			capDevice.SetDebounce(time.Duration(c.DebounceSeconds) * time.Second)
+			// チャットフィルター（filter.json から保存された値）
+			capDevice.SetChatExclude(c.ChatExclude)
+			// シーンマップID
+			if len(c.SceneMapIds) > 0 {
+				capDevice.SetSceneMapIds(c.SceneMapIds)
+			}
+			// モンスタースキャン
+			capDevice.SetMonsterScan(c.MonsterScan)
+			// GAS 設定（次のtickから反映）
+			cfg.GASURL = c.GASURL
+			cfg.GASSpawnThresholdHours = c.GASSpawnThresholdHours
+			return nil
 		},
 	)
 

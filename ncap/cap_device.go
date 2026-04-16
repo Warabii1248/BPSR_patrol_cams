@@ -196,6 +196,14 @@ type CapDevice struct {
 	// --ch-watch で有効: 候補パスの値変化をリアルタイム監視する
 	chWatch     bool
 	chWatchLast sync.Map // key: "label:pathLabel" → uint64
+
+	// portMap クォーラム投票バッファ
+	// 2台以上が10秒以内に同一 serverIP を報告した場合のみ portMap を更新する
+	portVotesMu sync.Mutex
+	portVotes   map[string][]portVoteEntry // key = port番号文字列
+
+	// portMap 変更確認コールバック（設定時: 自動更新せずにコールバックで確認を要求する）
+	portMapPendingFn func(ch uint32, newServerIP, oldServerIP string, voteCount int)
 }
 
 // NewCapDevice は新しいCapDeviceを生成する
@@ -277,28 +285,126 @@ func (cd *CapDevice) SetPortMapFile(path string) {
 	cd.portMap = LoadPortMap(path)
 }
 
+// SetPortMapPendingFn はクォーラム成立時に portMap を直接更新せず確認を要求するコールバックを設定する。
+// fn が nil の場合はクォーラム成立時に自動更新する（デフォルト動作）。
+func (cd *CapDevice) SetPortMapPendingFn(fn func(ch uint32, newServerIP, oldServerIP string, voteCount int)) {
+	cd.portMapPendingFn = fn
+}
+
+// ApplyPortMapUpdate はポートマップへの変更を適用する。GUI からの確認後に呼ぶ。
+func (cd *CapDevice) ApplyPortMapUpdate(ch uint32, serverIP string) {
+	if cd.portMap != nil {
+		cd.portMap.Update(ch, serverIP)
+	}
+}
+
 // SetCurrentChannel は Patroller が現在巡回中のチャンネルを通知する。
 // パケットから lineID が取得できない場合のフォールバックとして使用される。
-// 同時に、接続中のセッションのサーバーポートをポートマップに自動記録する。
+// 同時に、接続中のセッションのサーバーポートをポートマップ投票に登録する。
+// portMap の更新は portVoteQuorum 台以上が 10 秒以内に同一ポートを報告した場合のみ行う。
 func (cd *CapDevice) SetCurrentChannel(ch uint32) {
 	cd.currentChannelMu.Lock()
 	cd.currentChannel = ch
 	cd.currentChannelMu.Unlock()
 
-	// ポートマップを自動更新し、lineIDも直接設定する
-	// lineID==0（未割当）のセッションのみ更新する。
-	// lineID!=0のセッションは前chのセッションのため、誤ったポート変更を防ぐ。
+	// lineID==0（未割当）のセッションを対象に、lineID の即時設定と portMap 投票を行う。
+	// lineID!=0 のセッションは前 ch のセッションのため対象外。
 	if cd.portMap != nil && ch > 0 {
+		now := time.Now()
 		cd.sessionsMu.RLock()
 		for _, sess := range cd.sessions {
 			sess.mu.Lock()
 			if sess.serverIP != "" && sess.lineID == 0 {
-				cd.portMap.Update(ch, sess.serverIP)
 				sess.lineID = ch
+				serverIP := sess.serverIP
+				label := sess.label
+				sess.mu.Unlock()
+				cd.submitPortVote(ch, serverIP, label, now)
+			} else {
+				sess.mu.Unlock()
 			}
-			sess.mu.Unlock()
 		}
 		cd.sessionsMu.RUnlock()
+	}
+}
+
+// submitPortVote は (ch, port) への投票を記録し、クォーラム達成時に portMap を更新する。
+// portVoteQuorum 台以上の異なるラベルが portVoteWindow 以内に同一 (ch, port) を報告すると更新する。
+// すでに同一ポートが記録済みの場合は投票自体をスキップする（通知不要）。
+func (cd *CapDevice) submitPortVote(ch uint32, serverIP, label string, now time.Time) {
+	if cd.portMap == nil || ch == 0 || serverIP == "" || label == "" {
+		return
+	}
+
+	// ポート番号のみ抽出（判定キーはポートのみ）
+	_, port, err := net.SplitHostPort(serverIP)
+	if err != nil || port == "" {
+		return
+	}
+
+	// 既に同一ポートが記録済みであれば何もしない
+	oldIP, hasOld := cd.portMap.LookupByCh(ch)
+	if hasOld {
+		_, oldPort, oldErr := net.SplitHostPort(oldIP)
+		if oldErr == nil && oldPort == port {
+			return // ポート変更なし → 通知不要
+		}
+	}
+
+	cd.portVotesMu.Lock()
+	defer cd.portVotesMu.Unlock()
+
+	if cd.portVotes == nil {
+		cd.portVotes = make(map[string][]portVoteEntry)
+	}
+
+	// 期限切れ票を除去
+	for p, votes := range cd.portVotes {
+		valid := votes[:0]
+		for _, v := range votes {
+			if now.Sub(v.t) <= portVoteWindow {
+				valid = append(valid, v)
+			}
+		}
+		if len(valid) == 0 {
+			delete(cd.portVotes, p)
+		} else {
+			cd.portVotes[p] = valid
+		}
+	}
+
+	// 既存票を確認: ch が変わった場合はリセット
+	existing := cd.portVotes[port]
+	if len(existing) > 0 && existing[0].ch != ch {
+		existing = existing[:0]
+	}
+
+	// 同じラベルの二重投票は無視
+	for _, v := range existing {
+		if v.label == label {
+			return
+		}
+	}
+
+	existing = append(existing, portVoteEntry{ch: ch, serverIP: serverIP, label: label, t: now})
+	cd.portVotes[port] = existing
+
+	log.Printf("[PortMap] 投票: ch=%d port=%s label=%s (%d/%d台)", ch, port, label, len(existing), portVoteQuorum)
+
+	if len(existing) >= portVoteQuorum {
+		voteCount := len(existing)
+		// クォーラム成立時のサーバーIPは最後に投票したエントリから取得
+		winServerIP := existing[len(existing)-1].serverIP
+		delete(cd.portVotes, port)
+
+		fn := cd.portMapPendingFn
+		if fn != nil {
+			log.Printf("[PortMap] クォーラム成立: ch=%d port=%s serverIP=%s (%d台確認) → 確認待ち", ch, port, winServerIP, voteCount)
+			go fn(ch, winServerIP, oldIP, voteCount)
+		} else {
+			log.Printf("[PortMap] クォーラム成立: ch=%d port=%s serverIP=%s (%d台確認) → 更新", ch, port, winServerIP, voteCount)
+			cd.portMap.Update(ch, winServerIP)
+		}
 	}
 }
 
@@ -803,6 +909,16 @@ func (cd *CapDevice) handleClientToServer(clientIP, srcKey, revKey string, tcp *
 				existing.resetTCPState()
 				log.Printf("[%s] C→S: サーバー更新 [%s] → [%s]", existing.label, prev, serverAddr)
 			}
+			// 巡回中かつ未割当セッションの場合、portMap クォーラム投票に参加
+			if existing.lineID == 0 {
+				cd.currentChannelMu.RLock()
+				patrolCh := cd.currentChannel
+				cd.currentChannelMu.RUnlock()
+				if patrolCh > 0 {
+					label := existing.label
+					go cd.submitPortVote(patrolCh, serverAddr, label, now)
+				}
+			}
 		}
 		cd.registerConn(srcKey, revKey, clientEndpoint)
 		existing.lastAnyPacketAt = now
@@ -841,6 +957,16 @@ func (cd *CapDevice) handleClientToServer(clientIP, srcKey, revKey string, tcp *
 		sess.serverIP = serverAddr
 	}
 	cd.tryPortMapLineID(sess) // serverIP 確定時に portMap から ch を補完
+	// 巡回中かつ未割当セッションの場合、portMap クォーラム投票に参加
+	if sess.lineID == 0 {
+		cd.currentChannelMu.RLock()
+		patrolCh := cd.currentChannel
+		cd.currentChannelMu.RUnlock()
+		if patrolCh > 0 {
+			label := sess.label
+			go cd.submitPortVote(patrolCh, serverAddr, label, now)
+		}
+	}
 	cd.registerConn(srcKey, revKey, clientEndpoint)
 	sess.lastAnyPacketAt = now
 	cd.reassembleTcpStream(sess, serverAddr, tcp, payload, now)
@@ -1638,6 +1764,12 @@ func (cd *CapDevice) tryScanChatPayload(sess *session, payload []byte) {
 	if message == "" {
 		return
 	}
+	// 除外ワードが含まれていればスキップ
+	for _, kw := range cd.chatExclude {
+		if kw != "" && strings.Contains(message, kw) {
+			return
+		}
+	}
 
 	senderDisplay := sender
 	if senderDisplay == "" {
@@ -1699,6 +1831,9 @@ func (cd *CapDevice) triggerDetection(sess *session, source, name string, pos *p
 		chKey := sess.label // lineID未確定時はラベルで代替
 		if sess.lineID != 0 {
 			chKey = fmt.Sprintf("ch%d", sess.lineID)
+			if sess.lineID != chatLineID && chatLineID != 0 {
+				chKey = fmt.Sprintf("ch%d or ch%d", sess.lineID, chatLineID)
+			}
 		}
 		key = fmt.Sprintf("%s|%s|%s", chKey, source, name)
 	}
@@ -1857,6 +1992,20 @@ func (cd *CapDevice) tryPortMapLineID(sess *session) {
 		log.Printf("[%s] PortMap: lineID=Ch%d (port=%s)", sess.label, ch, sess.serverIP)
 	}
 }
+
+// portVoteEntry は portMap クォーラム投票の1票を表す。
+type portVoteEntry struct {
+	ch       uint32
+	serverIP string // 投票元の完全アドレス (ip:port)
+	label    string
+	t        time.Time
+}
+
+// portVoteQuorum は portMap 更新に必要な最小デバイス数。
+const portVoteQuorum = 2
+
+// portVoteWindow は投票を有効とみなす時間窓。
+const portVoteWindow = 10 * time.Second
 
 // chWatchPath は監視対象のプロトパスを定義する。
 // navPath: len-delimited フィールドを辿るフィールド番号列
