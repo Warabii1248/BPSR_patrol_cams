@@ -11,7 +11,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -39,6 +41,7 @@ type Server struct {
 	patroller          *mumu.Patroller
 	patrolChannels     []uint32 // 起動時に設定から読み込んだチャンネルリスト
 	patrolChannelsFile string   // channels.txt パス（ホットリロード用）
+	goldHistoryFile    string
 	getSessions        func() []DeviceSessionInfo
 	testDetectFn       func(string)
 	monsterScanFn      func(bool) // モンスタースキャン有効/無効コールバック
@@ -77,14 +80,24 @@ type ChatEvent struct {
 	HasCh    bool   `json:"has_ch"`
 }
 
+const maxGoldHistoryEntries = 50
+
 // New はGUIサーバーを作成する
 func New(port int, mumuCfg mumu.Config, patrolChannels []uint32, patrolChannelsFile string) *Server {
+	historyFile := filepath.Join(".", "gold_history.json")
+	if patrolChannelsFile != "" {
+		historyFile = filepath.Join(filepath.Dir(patrolChannelsFile), "gold_history.json")
+	}
 	s := &Server{
 		port:               port,
 		patroller:          mumu.NewPatroller(mumuCfg),
 		patrolChannels:     patrolChannels,
 		patrolChannelsFile: patrolChannelsFile,
+		goldHistoryFile:    historyFile,
 		cooldownChs:        make(map[uint32]time.Time),
+	}
+	if err := s.loadGoldHistoryFromDisk(); err != nil {
+		log.Printf("[GUI] gold history load failed: %v", err)
 	}
 	// Patroller のチャンネル切替を channelNotifyFn に転送する
 	s.patroller.SetOnChannelSwitch(func(ch uint32) {
@@ -96,6 +109,46 @@ func New(port int, mumuCfg mumu.Config, patrolChannels []uint32, patrolChannelsF
 		}
 	})
 	return s
+}
+
+func clampGoldHistory(events []GoldBoarEvent) []GoldBoarEvent {
+	if len(events) <= maxGoldHistoryEntries {
+		return events
+	}
+	return events[len(events)-maxGoldHistoryEntries:]
+}
+
+func (s *Server) loadGoldHistoryFromDisk() error {
+	if s.goldHistoryFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(s.goldHistoryFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var history []GoldBoarEvent
+	if err := json.Unmarshal(data, &history); err != nil {
+		return err
+	}
+	history = clampGoldHistory(history)
+	s.mu.Lock()
+	s.goldBoarHistory = history
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Server) persistGoldHistoryLocked() error {
+	if s.goldHistoryFile == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(s.goldBoarHistory, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.goldHistoryFile, data, 0644)
 }
 
 // SetSessionProvider はADD ↔ UID 対応に使うセッション情報提供関数を設定する。
@@ -217,8 +270,9 @@ func (s *Server) OnDetect(det notifier.Detection) {
 		MonsterName: monName,
 	}
 	s.goldBoarHistory = append(s.goldBoarHistory, event)
-	if len(s.goldBoarHistory) > 50 {
-		s.goldBoarHistory = s.goldBoarHistory[len(s.goldBoarHistory)-50:]
+	s.goldBoarHistory = clampGoldHistory(s.goldBoarHistory)
+	if err := s.persistGoldHistoryLocked(); err != nil {
+		log.Printf("[GUI] gold history save failed: %v", err)
 	}
 	// 発見したchを30分間クールダウンに追加（GAS経由で再追加されないよう）
 	s.cooldownChs[detCh] = time.Now().Add(30 * time.Minute)
@@ -412,6 +466,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/gold-history", s.handleGoldHistory)
 	mux.HandleFunc("/api/gold-history/delete", s.handleDeleteGoldHistory)
+	mux.HandleFunc("/api/gold-history/clear", s.handleClearGoldHistory)
 	mux.HandleFunc("/api/adb/restart", s.handleADBRestart)
 	mux.HandleFunc("/api/chat-log", s.handleChatLog)
 	mux.HandleFunc("/api/chat-events", s.handleChatEvents)
@@ -784,6 +839,12 @@ func (s *Server) handleDeleteGoldHistory(w http.ResponseWriter, r *http.Request)
 	}
 	if idx >= 0 {
 		s.goldBoarHistory = append(s.goldBoarHistory[:idx], s.goldBoarHistory[idx+1:]...)
+		if err := s.persistGoldHistoryLocked(); err != nil {
+			s.mu.Unlock()
+			log.Printf("[GUI] gold history save failed: %v", err)
+			http.Error(w, "save failed", 500)
+			return
+		}
 	}
 	s.mu.Unlock()
 
@@ -791,6 +852,25 @@ func (s *Server) handleDeleteGoldHistory(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "not found", 404)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// handleClearGoldHistory は検知履歴を全件削除する
+func (s *Server) handleClearGoldHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "DELETE only", 405)
+		return
+	}
+	s.mu.Lock()
+	s.goldBoarHistory = nil
+	if err := s.persistGoldHistoryLocked(); err != nil {
+		s.mu.Unlock()
+		log.Printf("[GUI] gold history save failed: %v", err)
+		http.Error(w, "save failed", 500)
+		return
+	}
+	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 }
@@ -1134,6 +1214,8 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;
 .nav-item{display:flex;align-items:center;gap:9px;padding:7px 14px;cursor:pointer;color:var(--text1);border-left:2px solid transparent;transition:all .15s;font-size:13px;user-select:none;}
 .nav-item:hover{background:var(--bg2);color:var(--text1)}
 .nav-item.active{background:var(--bg2);color:var(--accent);border-left-color:var(--accent)}
+.nav-item.layout-edit-disabled{color:var(--text3);opacity:.5;cursor:not-allowed;pointer-events:none}
+.nav-item.layout-edit-disabled:hover{background:transparent;color:var(--text3)}
 .nav-icon{width:14px;height:14px;flex-shrink:0;opacity:.9}
 .nav-badge{margin-left:auto;background:var(--danger);color:#fff;font-size:9px;padding:1px 5px;border-radius:9px;font-weight:600}
 .nav-badge.ok{background:var(--accent2)}
@@ -1142,17 +1224,14 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;
 .view{display:none;flex-direction:column;gap:10px;flex:1;min-height:0}
 .view.active{display:flex}
 #view-dashboard{overflow-y:auto}
+#view-patrol{overflow-y:auto;padding-right:4px}
 #view-settings{overflow-y:auto;padding-right:4px}
 /* Card */
 .card{background:linear-gradient(180deg, rgba(20,25,38,.98) 0%, rgba(19,22,33,.96) 100%);border:1px solid rgba(88,103,142,.25);border-radius:var(--radius-lg);padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.12)}
-.card-title{font-size:10px;font-weight:600;color:var(--text2);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:7px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.06);cursor:grab}
-.card.collapsed > :not(.card-title){display:none}
-.card.collapsed .card-title{margin-bottom:0;border-bottom:none}
+.card-title{font-size:10px;font-weight:600;color:var(--text2);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:7px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.06);cursor:default}
 .card.dragging{opacity:.58;transform:scale(0.98);box-shadow:0 14px 30px rgba(0,0,0,.22)}
 .card-placeholder{border-color:rgba(79,142,247,.6);background:rgba(79,142,247,.08)}
 .card-title .title-actions{display:flex;gap:6px;align-items:center;margin-left:auto}
-.card-title .collapse-btn{border:none;background:transparent;color:var(--text2);font-size:13px;cursor:pointer;padding:2px 6px;line-height:1;transition:color .15s;}
-.card-title .collapse-btn:hover{color:var(--text1)}
 .panel-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}
 /* Stats */
 .status-grid{display:grid;gap:8px}
@@ -1298,14 +1377,14 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .chat-msg:hover .chat-msg-actions{opacity:1}
 .chat-action-btn{padding:2px 6px;font-size:10px;border-radius:999px;background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.28);color:var(--accent)}
 .chat-action-btn.exclude{background:rgba(233,75,75,.08);border-color:rgba(233,75,75,.24);color:var(--danger)}
-.chat-split{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.95fr);gap:10px;align-items:start;min-height:0;flex:1}
+.chat-split{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.95fr);gap:10px;align-items:start;align-content:start;min-height:0;flex:1}
 .chat-side-card{display:flex;flex-direction:column;min-height:0}
 .chat-report-list{display:flex;flex-direction:column;gap:0;background:var(--bg0);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;min-height:180px;max-height:calc(100vh - 220px)}
 .chat-report-list.compact{flex:1;min-height:0;max-height:none}
 .chat-report-empty{color:var(--text3);padding:10px;font-size:.82em}
 .chat-report-summary{color:var(--text3);font-size:.76em;line-height:1.5;margin-bottom:8px}
 .chat-report-score{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.24);color:#f5a623;font-size:10px;vertical-align:middle}
-@media (max-width:1100px){.chat-split{grid-template-columns:1fr}}
+@media (max-width:1100px){.chat-split{grid-template-columns:1fr;align-content:start}}
 /* Crash warning */
 .crash-warning{display:none;background:rgba(233,75,75,.1);border:1px solid rgba(233,75,75,.3);border-radius:var(--radius);padding:6px 10px;font-size:.8em;color:var(--danger);margin-bottom:6px}
 .patrol-progress{margin-top:10px}
@@ -1334,6 +1413,9 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 #card-dash-gold{display:flex;flex-direction:column;min-height:0}
 #dash-chat-area,#dash-chat-report-area{flex:1;min-height:0;overflow-y:auto}
 /* Edit mode */
+.layout-edit-surface.edit-mode .card{outline:2px dashed rgba(245,166,35,.35);outline-offset:1px}
+.layout-edit-surface.edit-mode .card-title{cursor:grab}
+.layout-edit-surface.edit-mode .card.dragging{cursor:grabbing}
 .dashboard-grid.edit-mode .card{outline:2px dashed rgba(245,166,35,.35);outline-offset:1px;cursor:grab}
 .dashboard-grid.edit-mode .card > :not(.panel-resize-handle-x):not(.panel-resize-handle-y){pointer-events:none}
 .dashboard-grid:not(.edit-mode) .card .card-title{cursor:default}
@@ -1424,9 +1506,9 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         <button class="btn" onclick="switchView('devices',document.getElementById('nav-devices'))">管理 →</button>
       </div>
     </div>
-    <!-- 巡回状態 -->
+		<!-- 巡回制御 -->
 		<div class="card panel-size-1x1" id="card-dash-patrol">
-      <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke-linecap="round"/></svg>巡回状態</div>
+			<div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke-linecap="round"/></svg>巡回制御</div>
       <div class="patrol-status"><span id="dash-ps-state" class="stopped">■ 停止中</span><span id="dash-ps-ch" style="color:var(--accent)"></span><span id="dash-ps-prog" style="color:var(--text3)"></span><span id="dash-ps-parallel"></span></div>
       <div class="patrol-progress" id="dash-patrol-progress">
         <div class="progress-line"><div class="progress-fill" id="dash-patrol-fill"></div></div>
@@ -1452,18 +1534,16 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         <div class="stat">
           <div class="stat-label">1サイクル時間</div>
           <div class="stat-value" id="dash-ps-cycle-time">--</div>
-          <div class="stat-sub" id="dash-ps-cycle-time-sub">プログレスバー1巡を計測</div>
         </div>
         <div class="stat">
           <div class="stat-label">巡回速度</div>
           <div class="stat-value ok" id="dash-ps-cycle-rate">--</div>
-          <div class="stat-sub" id="dash-ps-cycle-rate-sub">実測ベース</div>
         </div>
       </div>
     </div>
     <!-- レアエネミー検知履歴 -->
 		<div class="card panel-size-1x1" id="card-dash-gold">
-      <div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
+		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
       <div id="gold-history-container"><div class="no-history">検知履歴なし</div></div>
     </div>
     <!-- チャットログ -->
@@ -1541,9 +1621,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 </div>
 <!-- ===== チャンネル巡回 ===== -->
 <div class="view" id="view-patrol">
-  <div class="row2" style="align-items:start">
-    <div class="col">
-      <div class="card">
+	<div class="dashboard-grid layout-edit-surface" id="patrol-layout-root">
+		<div class="card panel-size-1x2 panel-col-1" id="card-patrol-control">
         <div class="card-title">巡回制御</div>
         <div class="patrol-status"><span class="stopped" id="ps-state">■ 停止中</span><span id="ps-ch"></span><span id="ps-prog"></span><span id="ps-parallel"></span></div>
         <div class="patrol-progress" id="ps-progress">
@@ -1569,16 +1648,14 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 					<div class="stat">
 						<div class="stat-label">1サイクル時間</div>
 						<div class="stat-value" id="ps-cycle-time">--</div>
-						<div class="stat-sub" id="ps-cycle-time-sub">プログレスバー1巡を計測</div>
 					</div>
 					<div class="stat">
 						<div class="stat-label">巡回速度</div>
 						<div class="stat-value ok" id="ps-cycle-rate">--</div>
-						<div class="stat-sub" id="ps-cycle-rate-sub">実測ベース</div>
 					</div>
 				</div>
-      </div>
-      <div class="card">
+				</div>
+			<div class="card panel-size-1x2 panel-col-1" id="card-patrol-channels">
         <div class="card-title">巡回チャンネル</div>
         <div class="flex-row" style="margin-bottom:6px">
           <button class="btn" style="padding:3px 8px;font-size:.8em" onclick="addChannel()">＋ 追加</button>
@@ -1593,13 +1670,10 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
           <button class="btn" style="padding:3px 10px;font-size:.8em" onclick="bulkImportChannels()">上書き</button>
         </div>
       </div>
-    </div>
-    <div class="col">
-      <div class="card">
-        <div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
+		<div class="card panel-size-1x2 panel-col-2" id="card-patrol-gold">
+		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
         <div id="gold-history-container-patrol"><div class="no-history">検知履歴なし</div></div>
       </div>
-    </div>
   </div>
 </div>
 <!-- ===== 設定 ===== -->
@@ -1624,11 +1698,32 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 </div><!-- /app -->
 <script>
 // ── View switch ──
+const EDITABLE_LAYOUT_VIEWS=['dashboard','patrol'];
+let currentViewId='dashboard';
+function isLayoutEditableView(id){
+	return EDITABLE_LAYOUT_VIEWS.includes(id);
+}
+function syncLayoutEditState(){
+	const dashGrid=document.getElementById('dashboard-grid');
+	const patrolRoot=document.getElementById('patrol-layout-root');
+	if(dashGrid)dashGrid.classList.toggle('edit-mode',layoutEditMode&&currentViewId==='dashboard');
+	if(patrolRoot)patrolRoot.classList.toggle('edit-mode',layoutEditMode&&currentViewId==='patrol');
+	const btn=document.getElementById('nav-layout-edit');
+	if(btn){
+		const editable=isLayoutEditableView(currentViewId);
+		btn.classList.toggle('layout-edit-active',editable&&layoutEditMode);
+		btn.classList.toggle('layout-edit-disabled',!editable);
+		btn.setAttribute('aria-disabled',editable?'false':'true');
+		btn.title=editable?'レイアウト編集':'このページではレイアウト編集できません';
+	}
+}
 function switchView(id,navEl){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   const v=document.getElementById('view-'+id);if(v)v.classList.add('active');
   if(navEl)navEl.classList.add('active');
+	currentViewId=id;
+	syncLayoutEditState();
 }
 function initPanelDragAndCollapse(){
   const cards=document.querySelectorAll('.card');
@@ -1645,27 +1740,11 @@ function initPanelDragAndCollapse(){
 	}
   cards.forEach(card=>{
     card.draggable=true;
-    const title=card.querySelector('.card-title');
-    if(title && !title.querySelector('.collapse-btn')){
-      const actions=document.createElement('span');
-      actions.className='title-actions';
-      const btn=document.createElement('button');
-      btn.type='button';
-      btn.className='collapse-btn';
-      btn.textContent='▾';
-      btn.title='パネルを折りたたむ';
-      btn.addEventListener('click',e=>{
-        e.stopPropagation();
-        card.classList.toggle('collapsed');
-        btn.textContent=card.classList.contains('collapsed')?'▸':'▾';
-        btn.title=card.classList.contains('collapsed')?'パネルを展開する':'パネルを折りたたむ';
-      });
-      actions.appendChild(btn);
-      title.appendChild(actions);
-    }
-    // dashboard-gridカードのドラッグはinitGridDragDropで個別管理
-    if(card.closest('#dashboard-grid'))return;
+	// dashboard-grid系カードのドラッグは専用処理で個別管理
+	if(card.closest('.dashboard-grid'))return;
     card.addEventListener('dragstart',e=>{
+			const patrolRoot=card.closest('#patrol-layout-root');
+			if(!patrolRoot||!patrolRoot.classList.contains('edit-mode')){e.preventDefault();return;}
       const titleEl=card.querySelector('.card-title');
       if(titleEl && !titleEl.contains(e.target)){e.preventDefault();return;}
       dragSrc=card;
@@ -1687,6 +1766,7 @@ function initPanelDragAndCollapse(){
       if(!dragSrc||dragSrc===card) return;
       e.preventDefault();
 			placeDraggedCardInContainer(card.parentElement, e.clientY);
+			if(dragSrc.closest('#patrol-layout-root'))savePatrolLayout();
       dragSrc.classList.remove('dragging');
       dragSrc=null;
     });
@@ -1701,6 +1781,7 @@ function initPanelDragAndCollapse(){
       if(!dragSrc) return;
 			e.preventDefault();
 			placeDraggedCardInContainer(container, e.clientY);
+			if(dragSrc.closest('#patrol-layout-root'))savePatrolLayout();
 			dragSrc.classList.remove('dragging');
 			dragSrc=null;
     });
@@ -1804,6 +1885,96 @@ function initGridDragDrop(){
     if(!grid.contains(e.relatedTarget))removePlaceholder();
   });
 }
+function initPatrolGridDragDrop(){
+	const grid=document.getElementById('patrol-layout-root');if(!grid)return;
+	let activeDrag=null;
+	let placeholder=null;
+	function getOrCreatePlaceholder(){
+		if(!placeholder){
+			placeholder=document.createElement('div');
+			placeholder.className='card grid-drop-indicator';
+			placeholder.dataset.placeholder='1';
+		}
+		return placeholder;
+	}
+	function syncPlaceholderSize(dragCard){
+		const ph=getOrCreatePlaceholder();
+		DASH_SIZE_CLASSES.forEach(c=>ph.classList.remove(c));
+		const sc=DASH_SIZE_CLASSES.find(c=>dragCard.classList.contains(c))||'panel-size-1x1';
+		ph.classList.add(sc);
+		return ph;
+	}
+	function removePlaceholder(){
+		if(placeholder&&placeholder.parentNode)placeholder.remove();
+	}
+	function getInsertBefore(clientX,clientY){
+		const gridRect=grid.getBoundingClientRect();
+		const siblings=[...grid.querySelectorAll(':scope > .card')].filter(c=>c!==activeDrag&&!c.dataset.placeholder);
+		for(const s of siblings){
+			const r=s.getBoundingClientRect();
+			const midY=r.top+r.height/2;
+			const midX=r.left+r.width/2;
+			if(r.width>gridRect.width*0.8){
+				if(clientY<midY)return s;
+			}else{
+				if(clientY<r.top)return s;
+				if(clientY<midY&&clientX<midX)return s;
+			}
+		}
+		return null;
+	}
+	function updatePlaceholder(clientX,clientY){
+		const ph=syncPlaceholderSize(activeDrag);
+		const before=getInsertBefore(clientX,clientY);
+		if(before){if(ph.nextSibling!==before)grid.insertBefore(ph,before);}
+		else{if(grid.lastChild!==ph)grid.appendChild(ph);}
+	}
+	function attachCard(card){
+		card.draggable=true;
+		card.addEventListener('dragstart',e=>{
+			if(!grid.classList.contains('edit-mode')){e.preventDefault();return;}
+			if(e.target&&e.target.closest('.panel-resize-handle-x, .panel-resize-handle-y')){e.preventDefault();return;}
+			activeDrag=card;
+			card.classList.add('dragging');
+			e.dataTransfer.effectAllowed='move';
+			e.dataTransfer.setData('text/plain','');
+		});
+		card.addEventListener('dragend',()=>{
+			removePlaceholder();
+			card.classList.remove('dragging');
+			activeDrag=null;
+		});
+	}
+	grid.querySelectorAll(':scope > .card').forEach(attachCard);
+	grid.addEventListener('dragover',e=>{
+		if(!activeDrag||!grid.classList.contains('edit-mode'))return;
+		e.preventDefault();
+		updatePlaceholder(e.clientX,e.clientY);
+	});
+	grid.addEventListener('drop',e=>{
+		if(!activeDrag||!grid.classList.contains('edit-mode'))return;
+		e.preventDefault();
+		let targetColumn=getPanelColumn(activeDrag);
+		if(placeholder&&placeholder.parentNode===grid){
+			const gridRect=grid.getBoundingClientRect();
+			const phRect=placeholder.getBoundingClientRect();
+			targetColumn=(phRect.left + phRect.width/2 > gridRect.left + gridRect.width/2) ? 2 : 1;
+		}
+		if(placeholder&&placeholder.parentNode===grid)grid.insertBefore(activeDrag,placeholder);
+		removePlaceholder();
+		activeDrag.classList.remove('dragging');
+		if(getPanelWidthUnits(activeDrag)===1){
+			activeDrag.classList.remove('panel-col-1','panel-col-2');
+			activeDrag.classList.add(targetColumn===2?'panel-col-2':'panel-col-1');
+		}
+		activeDrag=null;
+		updatePatrolResizeHandlePositions();
+		savePatrolLayout();
+	});
+	grid.addEventListener('dragleave',e=>{
+		if(!grid.contains(e.relatedTarget))removePlaceholder();
+	});
+}
 // ── Log filter chips ──
 const LOG_CATS=[
   {id:'mumu',  label:'[MuMu]', test:l=>l.includes('[MuMu]')},
@@ -1893,6 +2064,15 @@ async function removeGoldHistory(timestamp){
     if(!res.ok) throw new Error('delete failed');
     await loadGoldHistory();
   }catch(_){ }
+}
+async function clearAllGoldHistory(){
+	try{
+		const res = await fetch('/api/gold-history/clear', {
+			method: 'DELETE'
+		});
+		if(!res.ok) throw new Error('clear failed');
+		await loadGoldHistory();
+	}catch(_){ }
 }
 async function loadGoldHistory(){
   try{
@@ -2232,7 +2412,6 @@ function renderChatCandidatePanels(source){
 	if(summary){
 		const parts=[];
 		if(rules.senders.length)parts.push('含む発言者: '+rules.senders.join(', '));
-		if(rules.excludedSenders.length)parts.push('除外発言者: '+rules.excludedSenders.join(', '));
 		summary.textContent=parts.length?parts.join(' / '):'発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。';
 	}
 	if(full)full.innerHTML=picked.length?picked.slice().reverse().map(ev=>chatMsgHtml(ev,{report:true})).join(''):emptyHtml;
@@ -2342,25 +2521,15 @@ function formatPatrolCycleRate(ms){
 }
 function renderPatrolCycleStats(running){
 	const pairs=[
-		['ps-cycle-time','ps-cycle-time-sub','ps-cycle-rate','ps-cycle-rate-sub'],
-		['dash-ps-cycle-time','dash-ps-cycle-time-sub','dash-ps-cycle-rate','dash-ps-cycle-rate-sub'],
+		['ps-cycle-time','ps-cycle-rate'],
+		['dash-ps-cycle-time','dash-ps-cycle-rate'],
 	];
-	const n=patrolCycleStats.cycleMsHistory.length;
-	pairs.forEach(([timeId,timeSubId,rateId,rateSubId])=>{
+	pairs.forEach(([timeId,rateId])=>{
 		const timeEl=document.getElementById(timeId);
-		const timeSubEl=document.getElementById(timeSubId);
 		const rateEl=document.getElementById(rateId);
-		const rateSubEl=document.getElementById(rateSubId);
 		if(!timeEl)return;
 		timeEl.textContent=formatPatrolCycleDuration(patrolCycleStats.avgCycleMs);
 		if(rateEl)rateEl.textContent=formatPatrolCycleRate(patrolCycleStats.avgCycleMs);
-		if(patrolCycleStats.avgCycleMs>0){
-			if(timeSubEl)timeSubEl.textContent=running?'直近'+n+'サイクルの平均':'停止前の直近'+n+'サイクルの平均';
-			if(rateSubEl)rateSubEl.textContent='';
-		}else{
-			if(timeSubEl)timeSubEl.textContent=running?'計測中...':'プログレスバー1巡を計測';
-			if(rateSubEl)rateSubEl.textContent=running?'1周完了後に表示':'実測ベース';
-		}
 	});
 }
 function updatePatrolCycleStats(d,currentPhase){
@@ -2744,6 +2913,12 @@ setInterval(()=>{
 // ── Dashboard layout ──
 const DASH_PANEL_IDS=['card-dash-devices','card-dash-patrol','card-dash-gold','card-dash-chat','card-dash-report'];
 const DASH_SIZE_CLASSES=['panel-size-1x1','panel-size-1x2','panel-size-2x1','panel-size-2x2','panel-size-2x3','panel-size-2x4'];
+const PATROL_LAYOUT_CARD_IDS=['card-patrol-control','card-patrol-channels','card-patrol-gold'];
+const PATROL_LAYOUT_DEFAULT_COLUMNS={
+	'card-patrol-control':'left',
+	'card-patrol-channels':'left',
+	'card-patrol-gold':'right',
+};
 const DASH_GRID_ROW_UNIT=8;
 const DASH_GRID_GAP=10;
 const DASH_MIN_PANEL_ROWS=18;
@@ -2814,6 +2989,36 @@ function setPanelWidthUnits(card,width,save,column){
 }
 function updateDashboardResizeHandlePositions(){
 	const grid=document.getElementById('dashboard-grid');if(!grid)return;
+	const gridRect=grid.getBoundingClientRect();
+	const gridMidX=gridRect.left + gridRect.width/2;
+	grid.querySelectorAll(':scope > .card').forEach(card=>{
+		const leftHandle=card.querySelector(':scope > .panel-resize-handle-x.handle-left');
+		const rightHandle=card.querySelector(':scope > .panel-resize-handle-x.handle-right');
+		if(!leftHandle||!rightHandle)return;
+		const rect=card.getBoundingClientRect();
+		const isWide=getPanelWidthUnits(card)===2 || rect.width >= gridRect.width*0.8;
+		const column=isWide?(rect.left < gridMidX?1:2):getPanelColumn(card);
+		leftHandle.classList.toggle('is-hidden',!isWide && column===1);
+		rightHandle.classList.toggle('is-hidden',!isWide && column===2);
+	});
+}
+function setPatrolPanelWidthUnits(card,width,save,column){
+	if(!card)return;
+	const currentRows=getPanelRows(card);
+	DASH_SIZE_CLASSES.forEach(c=>card.classList.remove(c));
+	if(width===2){
+		card.classList.remove('panel-col-1','panel-col-2');
+		card.classList.add('panel-size-2x1');
+	}else{
+		card.classList.add('panel-size-1x1');
+		setPanelColumn(card,column===2?2:1);
+	}
+	setPanelRows(card,currentRows,false);
+	updatePatrolResizeHandlePositions();
+	if(save)savePatrolLayout();
+}
+function updatePatrolResizeHandlePositions(){
+	const grid=document.getElementById('patrol-layout-root');if(!grid)return;
 	const gridRect=grid.getBoundingClientRect();
 	const gridMidX=gridRect.left + gridRect.width/2;
 	grid.querySelectorAll(':scope > .card').forEach(card=>{
@@ -2907,6 +3112,76 @@ function initDashboardResizeHandles(){
 	updateDashboardResizeHandlePositions();
 	window.addEventListener('resize',updateDashboardResizeHandlePositions);
 }
+function initPatrolResizeHandles(){
+	const grid=document.getElementById('patrol-layout-root');if(!grid)return;
+	let activeResize=null;
+	function stopResize(){
+		if(!activeResize)return;
+		activeResize.card.classList.remove('resizing-x','resizing-y');
+		document.body.style.userSelect='';
+		updatePatrolResizeHandlePositions();
+		savePatrolLayout();
+		activeResize=null;
+	}
+	function onPointerMove(e){
+		if(!activeResize)return;
+		if(activeResize.type==='height'){
+			const deltaY=e.clientY-activeResize.startY;
+			const targetHeight=Math.max(120,activeResize.startHeight+deltaY);
+			setPanelRows(activeResize.card,pixelsToPanelRows(targetHeight),false);
+			return;
+		}
+		const deltaX=e.clientX-activeResize.startX;
+		const startUnits=activeResize.startUnits;
+		if(activeResize.side==='right'){
+			if(startUnits===1)setPatrolPanelWidthUnits(activeResize.card,deltaX>activeResize.threshold?2:1,false,1);
+			else setPatrolPanelWidthUnits(activeResize.card,deltaX<-activeResize.threshold?1:2,false,1);
+			return;
+		}
+		if(startUnits===1)setPatrolPanelWidthUnits(activeResize.card,deltaX<-activeResize.threshold?2:1,false,2);
+		else setPatrolPanelWidthUnits(activeResize.card,deltaX>activeResize.threshold?1:2,false,2);
+	}
+	function onPointerUp(){
+		stopResize();
+	}
+	document.addEventListener('pointermove',onPointerMove);
+	document.addEventListener('pointerup',onPointerUp);
+	grid.querySelectorAll(':scope > .card').forEach(card=>{
+		if(card.querySelector(':scope > .panel-resize-handle-y'))return;
+		const heightHandle=document.createElement('div');
+		heightHandle.className='panel-resize-handle-y';
+		heightHandle.title='上下にドラッグして高さ変更';
+		heightHandle.addEventListener('pointerdown',e=>{
+			if(!layoutEditMode||currentViewId!=='patrol')return;
+			e.preventDefault();
+			e.stopPropagation();
+			activeResize={type:'height',card,startY:e.clientY,startHeight:panelRowsToPixels(getPanelRows(card))};
+			card.classList.add('resizing-y');
+			document.body.style.userSelect='none';
+		});
+		function createWidthHandle(side){
+			const handle=document.createElement('div');
+			handle.className='panel-resize-handle-x handle-'+side;
+			handle.title='左右にドラッグして横幅変更';
+			handle.addEventListener('pointerdown',e=>{
+				if(!layoutEditMode||currentViewId!=='patrol')return;
+				e.preventDefault();
+				e.stopPropagation();
+				const gridRect=grid.getBoundingClientRect();
+				const columnWidth=(gridRect.width-DASH_GRID_GAP)/2;
+				activeResize={type:'width',side:side,card,startX:e.clientX,startUnits:getPanelWidthUnits(card),threshold:Math.max(24,columnWidth*0.22)};
+				card.classList.add('resizing-x');
+				document.body.style.userSelect='none';
+			});
+			return handle;
+		}
+		card.appendChild(heightHandle);
+		card.appendChild(createWidthHandle('left'));
+		card.appendChild(createWidthHandle('right'));
+	});
+	updatePatrolResizeHandlePositions();
+	window.addEventListener('resize',updatePatrolResizeHandlePositions);
+}
 function saveDashboardLayout(){
   const grid=document.getElementById('dashboard-grid');if(!grid)return;
   const order=[...grid.querySelectorAll(':scope > .card')].map(c=>c.id);
@@ -2935,12 +3210,38 @@ function loadDashboardLayout(){
 		updateDashboardResizeHandlePositions();
   }catch(e){}
 }
+function savePatrolLayout(){
+	const grid=document.getElementById('patrol-layout-root');if(!grid)return;
+	const order=[...grid.querySelectorAll(':scope > .card')].map(c=>c.id);
+	const sizes={};
+	const heights={};
+	const columns={};
+	PATROL_LAYOUT_CARD_IDS.forEach(id=>{
+		const card=document.getElementById(id);if(!card)return;
+		const sc=DASH_SIZE_CLASSES.find(c=>card.classList.contains(c));
+		sizes[id]=sc?sc.replace('panel-size-',''):'1x1';
+		heights[id]=getPanelRows(card);
+		columns[id]=getPanelColumn(card);
+	});
+	localStorage.setItem('patrolLayout',JSON.stringify({order,sizes,heights,columns}));
+}
+function loadPatrolLayout(){
+	const grid=document.getElementById('patrol-layout-root');if(!grid)return;
+	try{
+		const saved=JSON.parse(localStorage.getItem('patrolLayout')||'{}');
+		if(saved.sizes){Object.entries(saved.sizes).forEach(([id,size])=>{const card=document.getElementById(id);if(!card)return;DASH_SIZE_CLASSES.forEach(c=>card.classList.remove(c));card.classList.add('panel-size-'+size);});}
+		if(saved.columns){Object.entries(saved.columns).forEach(([id,column])=>{const card=document.getElementById(id);if(card&&getPanelWidthUnits(card)===1)setPanelColumn(card,parseInt(column,10)===2?2:1);});}
+		if(saved.heights){Object.entries(saved.heights).forEach(([id,rows])=>{const card=document.getElementById(id);if(card)setPanelRows(card,parseInt(rows,10)||getPanelRows(card),false);});}
+		if(saved.order&&saved.order.length){
+			saved.order.forEach(id=>{const el=document.getElementById(id);if(el&&el.parentNode===grid)grid.appendChild(el);});
+		}
+		updatePatrolResizeHandlePositions();
+	}catch(e){}
+}
 function toggleLayoutEdit(){
+	if(!isLayoutEditableView(currentViewId))return;
   layoutEditMode=!layoutEditMode;
-  const grid=document.getElementById('dashboard-grid');
-  if(grid)grid.classList.toggle('edit-mode',layoutEditMode);
-  const btn=document.getElementById('nav-layout-edit');
-  if(btn)btn.classList.toggle('layout-edit-active',layoutEditMode);
+	syncLayoutEditState();
 }
 // ── Init ──
 buildFilterBar();
@@ -2954,8 +3255,12 @@ setInterval(loadGoldHistory,30000);
 initChat();
 initPanelDragAndCollapse();
 initGridDragDrop();
+initPatrolGridDragDrop();
 initDashboardResizeHandles();
+initPatrolResizeHandles();
 loadDashboardLayout();
+loadPatrolLayout();
+syncLayoutEditState();
 (async function startupDeviceCheck(){
   async function fetchDevicesOnly(){
     const r=await fetch('/api/devices');const res=await r.json();

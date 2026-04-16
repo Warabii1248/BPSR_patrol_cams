@@ -141,7 +141,7 @@ func defaultConfig() *Config {
 		ActiveDeviceCount:        0,
 		FullThreshold:            0.0, // 0=従来通り全台
 		ConsecutiveFullThreshold: 3,   // 3連続満員でクラッシュ判定
-		FilterFile: "filter.json",
+		FilterFile:               "filter.json",
 		SceneMapIds: map[string]uint32{
 			"阿斯特里亚平原": 7, // アステリア平原
 		},

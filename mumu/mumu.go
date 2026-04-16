@@ -363,7 +363,7 @@ type PatrolOptions struct {
 type Patroller struct {
 	cfg              Config
 	mu               sync.RWMutex
-	wg               sync.WaitGroup     // 巡回goroutineの完了待機用
+	wg               sync.WaitGroup // 巡回goroutineの完了待機用
 	status           PatrolStatus
 	cancel           context.CancelFunc
 	lastChannel      uint32             // 最後に巡回したチャンネル（再開位置の計算に使用）
