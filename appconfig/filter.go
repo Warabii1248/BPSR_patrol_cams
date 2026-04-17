@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // FilterConfig はチャット候補フィルター設定（filter.json から読み書きされる）
@@ -45,6 +46,12 @@ func SaveFilter(path string, fc *FilterConfig) error {
 	data, err := json.MarshalIndent(fc, "", "  ")
 	if err != nil {
 		return err
+	}
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
 	}
 	return os.WriteFile(path, data, 0644)
 }

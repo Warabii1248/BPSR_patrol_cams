@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // WindowState はGUIウィンドウの位置・サイズを表す。
@@ -173,19 +174,7 @@ func defaultConfig() *Config {
 	}
 }
 
-// Load reads config.json at path. A missing file yields defaults without error.
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return defaultConfig(), nil
-		}
-		return nil, err
-	}
-	cfg := defaultConfig()
-	if err := json.Unmarshal(data, cfg); err != nil {
-		return nil, err
-	}
+func applyDefaults(cfg *Config) {
 	if cfg.AutoCheck <= 0 {
 		cfg.AutoCheck = 3
 	}
@@ -216,15 +205,44 @@ func Load(path string) (*Config, error) {
 	if cfg.MumuDelayMs == 0 {
 		cfg.MumuDelayMs = 1200
 	}
-	// ParallelLimit: 0は有効値（無制限）なのでデフォルト補正しない
-	// 旧フィールド parallel_group_delay_ms からの移行
-	if cfg.ParallelGroupDelaySecs == 0 {
-		// 0は有効値（ディレイなし）なのでそのまま
-	}
-	// FilterFile が設定されていれば filter.json を正規ソースとして読み込む
 	if cfg.FilterFile == "" {
 		cfg.FilterFile = "config/filter.json"
 	}
+	if len(cfg.SceneMapIds) == 0 {
+		cfg.SceneMapIds = map[string]uint32{
+			"阿斯特里亚平原": 7,
+		}
+	}
+	if cfg.GASFetchIntervalMins <= 0 {
+		cfg.GASFetchIntervalMins = 10
+	}
+	if cfg.GASSpawnThresholdHours <= 0 {
+		cfg.GASSpawnThresholdHours = 20.0
+	}
+}
+
+func ensureParentDir(path string) error {
+	dir := filepath.Dir(path)
+	if dir == "." || dir == "" {
+		return nil
+	}
+	return os.MkdirAll(dir, 0755)
+}
+
+// Load reads config.json at path. A missing file yields defaults without error.
+func Load(path string) (*Config, error) {
+	cfg := defaultConfig()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+	} else {
+		if err := json.Unmarshal(data, cfg); err != nil {
+			return nil, err
+		}
+	}
+	applyDefaults(cfg)
 	fc, err := LoadFilter(cfg.FilterFile)
 	if err != nil {
 		return nil, err
@@ -265,6 +283,9 @@ func Save(path string, cfg *Config) error {
 	cfgCopy.ChatReportMonsterAliasRules = nil
 	data, err := json.MarshalIndent(cfgCopy, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := ensureParentDir(path); err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
@@ -309,6 +330,9 @@ func SaveWindowState(path string, ws *WindowState) error {
 	cfg.ChatReportMonsterAliasRules = nil
 	data, err = json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := ensureParentDir(path); err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
