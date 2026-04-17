@@ -180,6 +180,39 @@ func (s *Server) persistGoldHistoryLocked() error {
 	return os.WriteFile(s.goldHistoryFile, data, 0644)
 }
 
+// appendLogLocked は s.mu を保持した状態で呼ぶこと。
+// ログに1行追記し、上限200件を維持した上でSSEクライアント一覧のスナップショットを返す。
+func (s *Server) appendLogLocked(line string) []chan string {
+	s.logLines = append(s.logLines, line)
+	if len(s.logLines) > 200 {
+		s.logLines = s.logLines[len(s.logLines)-200:]
+	}
+	clients := make([]chan string, len(s.clients))
+	copy(clients, s.clients)
+	return clients
+}
+
+// broadcastSSE はSSEクライアントにメッセージをノンブロッキング送信する。
+func broadcastSSE(clients []chan string, msg string) {
+	for _, ch := range clients {
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
+}
+
+// writeJSON は Content-Type を設定してvをJSONエンコードして書き込む。
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeOK は {"ok":true} のJSONレスポンスを書き込む。
+func writeOK(w http.ResponseWriter) {
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
 // SetSessionProvider はADD ↔ UID 対応に使うセッション情報提供関数を設定する。
 func (s *Server) SetSessionProvider(fn func() []DeviceSessionInfo) {
 	s.getSessions = fn
@@ -283,11 +316,7 @@ func (s *Server) OnDetect(det notifier.Detection) {
 	detCh := det.LineID // 検知されたチャンネル番号
 
 	s.mu.Lock()
-	// 通常ログに追記
-	s.logLines = append(s.logLines, line)
-	if len(s.logLines) > 200 {
-		s.logLines = s.logLines[len(s.logLines)-200:]
-	}
+	clients := s.appendLogLocked(line)
 	// 金ウリボ履歴に追記（最大50件）
 	monName := det.MonsterName
 	if monName == "" {
@@ -325,8 +354,6 @@ func (s *Server) OnDetect(det notifier.Detection) {
 		s.patrolChannels = newChs
 	}
 	saveChannelsFn := s.saveChannelsFn
-	clients := make([]chan string, len(s.clients))
-	copy(clients, s.clients)
 	s.mu.Unlock()
 
 	// ロック外で log.Printf（guiWriter 経由で再ロックするためデッドロック回避）
@@ -339,31 +366,15 @@ func (s *Server) OnDetect(det notifier.Detection) {
 		}
 	}
 	// SSEで全クライアントに通知
-	for _, ch := range clients {
-		select {
-		case ch <- line:
-		default:
-		}
-	}
+	broadcastSSE(clients, line)
 }
 
 // AddLog は1行のログをGUIのSSEストリームとlogLinesに追加する
 func (s *Server) AddLog(line string) {
 	s.mu.Lock()
-	s.logLines = append(s.logLines, line)
-	if len(s.logLines) > 200 {
-		s.logLines = s.logLines[len(s.logLines)-200:]
-	}
-	clients := make([]chan string, len(s.clients))
-	copy(clients, s.clients)
+	clients := s.appendLogLocked(line)
 	s.mu.Unlock()
-
-	for _, ch := range clients {
-		select {
-		case ch <- line:
-		default:
-		}
-	}
+	broadcastSSE(clients, line)
 }
 
 // SetPortMapApplyFn は portMap 変更の確認後に呼ぶコールバックを設定する。
@@ -417,12 +428,7 @@ func (s *Server) AddPortMapPending(ch uint32, newIP, oldIP string, voteCount int
 	s.mu.RUnlock()
 	s.pendingPortMapMu.Unlock()
 
-	for _, ch := range clients {
-		select {
-		case ch <- "[PORTMAP_PENDING]":
-		default:
-		}
-	}
+	broadcastSSE(clients, "[PORTMAP_PENDING]")
 }
 
 // OnChat はチャット受信イベントをログに追加しSSEで配信する
@@ -443,16 +449,11 @@ func (s *Server) OnChat(clientIP, sender, message string, channel uint32, hasCh 
 	if len(s.chatLog) > 500 {
 		s.chatLog = s.chatLog[len(s.chatLog)-500:]
 	}
-	clients := make([]chan string, len(s.chatClients))
-	copy(clients, s.chatClients)
+	chatClients := make([]chan string, len(s.chatClients))
+	copy(chatClients, s.chatClients)
 	s.chatMu.Unlock()
 
-	for _, ch := range clients {
-		select {
-		case ch <- jsonStr:
-		default:
-		}
-	}
+	broadcastSSE(chatClients, jsonStr)
 }
 
 // guiWriter は標準 log 出力をGUIのSSEにも転送する io.Writer
@@ -505,6 +506,26 @@ func extractUID(line string) string {
 		return ""
 	}
 	return uid
+}
+
+// getDeviceIPCtx は mumu.GetDeviceIP をコンテキストのキャンセルに対応させるラッパー。
+// GetDeviceIP 自体はコンテキストを受け取らないため、内部ゴルーチンで実行し ctx 終了時に空文字を返す。
+func getDeviceIPCtx(ctx context.Context, serial string, cfg mumu.Config) string {
+	ch := make(chan string, 1)
+	go func() {
+		ip, err := mumu.GetDeviceIP(serial, cfg)
+		if err != nil {
+			log.Printf("[MuMu] GetDeviceIP %s: %v", serial, err)
+			ip = ""
+		}
+		ch <- ip
+	}()
+	select {
+	case ip := <-ch:
+		return ip
+	case <-ctx.Done():
+		return ""
+	}
 }
 
 // LogWriter は log.SetOutput() に渡す io.Writer を返す。
@@ -642,10 +663,6 @@ type win32RECT struct {
 	Left, Top, Right, Bottom int32
 }
 
-// win32POINT は Win32 の POINT 構造体
-type win32POINT struct {
-	X, Y int32
-}
 
 var (
 	modUser32         = syscall.NewLazyDLL("user32.dll")
@@ -794,15 +811,7 @@ func openBrowser(url string) {
 // handleIndex はメインHTMLページを返す
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// 強制dashboard遷移を防ぐためのガードを注入（デフォルトは無効化しない）
-	html := indexHTML
-	// 既存の2秒ごとdashboard切替やsetTimeout/setIntervalによるswitchView('dashboard')を除去
-	html = strings.ReplaceAll(html, "setTimeout(function(){switchView('dashboard'", "")
-	html = strings.ReplaceAll(html, "setInterval(function(){switchView('dashboard'", "")
-	// switchViewの自動呼び出しをガード（window.__disableAutoSwitchView==trueの時のみ無効化）
-	html = strings.ReplaceAll(html, "function switchView(id,navEl){", "function switchView(id,navEl){if(window.__disableAutoSwitchView)return;")
-	// window.__disableAutoSwitchViewはデフォルトでfalse（何も挿入しない）
-	fmt.Fprint(w, html)
+	fmt.Fprint(w, processedIndexHTML)
 }
 
 // handleDeviceMap はADBデバイスのエミュレータIPを取得し、
@@ -837,6 +846,7 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 		Confirmed bool   `json:"confirmed"`
 	}
 
+	cfg := s.patroller.Config()
 	entries := make([]DeviceEntry, len(adbDevices))
 	var wg sync.WaitGroup
 	for i, serial := range adbDevices {
@@ -844,20 +854,7 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(idx int, ser string) {
 			defer wg.Done()
-			ipCh := make(chan string, 1)
-			go func() {
-				ip, ipErr := mumu.GetDeviceIP(ser, s.patroller.Config())
-				if ipErr != nil {
-					log.Printf("[MuMu] GetDeviceIP %s: %v", ser, ipErr)
-					ip = ""
-				}
-				ipCh <- ip
-			}()
-			var devIP string
-			select {
-			case devIP = <-ipCh:
-			case <-ctx.Done():
-			}
+			devIP := getDeviceIPCtx(ctx, ser, cfg)
 			entries[idx].DeviceIP = devIP
 			if devIP != "" {
 				if sess, ok := ipToSess[devIP]; ok {
@@ -872,8 +869,7 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"devices": entries})
+	writeJSON(w, map[string]interface{}{"devices": entries})
 }
 
 // handleDevices はADB接続デバイス一覧をJSONで返す
@@ -885,10 +881,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	if devices == nil {
 		devices = []string{}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"devices": devices,
-	})
+	writeJSON(w, map[string]interface{}{"devices": devices})
 }
 
 // handleSwitch はチャンネル切替リクエストを処理する
@@ -943,26 +936,23 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 			mumu.SwitchGroup(r.Context(), serials, start, end, req.Channel, cfg, switchResults, &switchMu)
 		}
 		for serial, err := range switchResults {
-			r := result{Serial: serial, OK: err == nil}
+			res := result{Serial: serial, OK: err == nil}
 			if err != nil {
-				r.Error = err.Error()
+				res.Error = err.Error()
 			}
-			results = append(results, r)
+			results = append(results, res)
 		}
 	} else {
 		// 単体切替
 		err := mumu.SwitchChannel(r.Context(), req.Serial, req.Channel, cfg)
-		r := result{Serial: req.Serial, OK: err == nil}
+		res := result{Serial: req.Serial, OK: err == nil}
 		if err != nil {
-			r.Error = err.Error()
+			res.Error = err.Error()
 		}
-		results = append(results, r)
+		results = append(results, res)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"results": results,
-	})
+	writeJSON(w, map[string]interface{}{"results": results})
 }
 
 // handleLogs は既存ログ一覧をJSONで返す
@@ -972,10 +962,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	copy(lines, s.logLines)
 	s.mu.RUnlock()
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"logs": lines,
-	})
+	writeJSON(w, map[string]interface{}{"logs": lines})
 }
 
 // handlePatrolChannels はconfig読み込み済みのチャンネルリストを返す（GET）または保存する（POST）
@@ -1005,14 +992,14 @@ func (s *Server) handlePatrolChannels(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[GUI] channels.txt に %d件保存しました", len(filtered))
 			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+		writeOK(w)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"channels": s.patrolChannels,
-	})
+	s.mu.RLock()
+	chs := make([]uint32, len(s.patrolChannels))
+	copy(chs, s.patrolChannels)
+	s.mu.RUnlock()
+	writeJSON(w, map[string]interface{}{"channels": chs})
 }
 
 // handleGoldHistory は金ウリボ検知履歴を返す
@@ -1025,8 +1012,7 @@ func (s *Server) handleGoldHistory(w http.ResponseWriter, r *http.Request) {
 	for i, j := 0, len(h)-1; i < j; i, j = i+1, j-1 {
 		h[i], h[j] = h[j], h[i]
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(h)
+	writeJSON(w, h)
 }
 
 // handleDeleteGoldHistory は検知履歴の1件を削除する
@@ -1070,8 +1056,7 @@ func (s *Server) handleDeleteGoldHistory(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "not found", 404)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	writeOK(w)
 }
 
 // handleClearGoldHistory は検知履歴を全件削除する
@@ -1089,8 +1074,7 @@ func (s *Server) handleClearGoldHistory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	writeOK(w)
 }
 
 // handleConfig は config.json の読み込み（GET）または保存（POST）を行う。
@@ -1151,8 +1135,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+		writeOK(w)
 		return
 	}
 	if s.getConfigFn == nil {
@@ -1193,8 +1176,7 @@ func (s *Server) handlePatrolStart(w http.ResponseWriter, r *http.Request) {
 		s.mu.RUnlock()
 	}
 	if len(channels) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": "チャンネルリストが空です"})
+		writeJSON(w, map[string]interface{}{"ok": false, "error": "チャンネルリストが空です"})
 		return
 	}
 	opts := mumu.PatrolOptions{
@@ -1203,8 +1185,7 @@ func (s *Server) handlePatrolStart(w http.ResponseWriter, r *http.Request) {
 		StartChannel: req.StartChannel,
 	}
 	s.patroller.Start(req.Serials, channels, s.patrolChannelsFile, opts)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	writeOK(w)
 }
 
 // handleMonsterScan はモンスタースキャンモードを切り替える
@@ -1226,8 +1207,7 @@ func (s *Server) handleMonsterScan(w http.ResponseWriter, r *http.Request) {
 	if fn != nil {
 		fn(body.Enabled)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "enabled": body.Enabled})
+	writeJSON(w, map[string]interface{}{"ok": true, "enabled": body.Enabled})
 }
 
 // handleTestDetect はテスト用ゴールドウリボ検知を発火する
@@ -1242,8 +1222,7 @@ func (s *Server) handleTestDetect(w http.ResponseWriter, r *http.Request) {
 	}
 	monster := r.URL.Query().Get("monster")
 	go s.testDetectFn(monster)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "monster": monster})
+	writeJSON(w, map[string]interface{}{"ok": true, "monster": monster})
 }
 
 // handlePatrolClearFull は満員判定リストをクリアする
@@ -1253,8 +1232,7 @@ func (s *Server) handlePatrolClearFull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.patroller.ClearFullChannels()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	writeOK(w)
 }
 
 // handlePatrolStop は巡回を停止する
@@ -1264,8 +1242,7 @@ func (s *Server) handlePatrolStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.patroller.Stop()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	writeOK(w)
 }
 
 // handleADBRestart は ADB サーバーを kill-server → start-server で再起動する。
@@ -1278,8 +1255,7 @@ func (s *Server) handleADBRestart(w http.ResponseWriter, r *http.Request) {
 	if err := mumu.RestartServer(r.Context(), s.patroller.Config()); err != nil {
 		log.Printf("[MuMu] ADB再起動失敗: %v", err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	writeOK(w)
 }
 
 // handleSpawnLog は出現ログ専用の分離ウィンドウ用HTMLページを返す
@@ -1294,53 +1270,29 @@ func (s *Server) handleChatLog(w http.ResponseWriter, r *http.Request) {
 	events := make([]ChatEvent, len(s.chatLog))
 	copy(events, s.chatLog)
 	s.chatMu.RUnlock()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(events)
+	writeJSON(w, events)
 }
 
 // handleChatEvents はチャットをServer-Sent Eventsでリアルタイム配信する
 func (s *Server) handleChatEvents(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "SSE not supported", 500)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	ch := make(chan string, 32)
-	s.chatMu.Lock()
-	s.chatClients = append(s.chatClients, ch)
-	s.chatMu.Unlock()
-
-	defer func() {
-		s.chatMu.Lock()
-		for i, c := range s.chatClients {
-			if c == ch {
-				s.chatClients = append(s.chatClients[:i], s.chatClients[i+1:]...)
-				break
+	s.sseStream(w, r,
+		func(ch chan string) {
+			s.chatMu.Lock()
+			s.chatClients = append(s.chatClients, ch)
+			s.chatMu.Unlock()
+		},
+		func(ch chan string) {
+			s.chatMu.Lock()
+			for i, c := range s.chatClients {
+				if c == ch {
+					s.chatClients = append(s.chatClients[:i], s.chatClients[i+1:]...)
+					break
+				}
 			}
-		}
-		s.chatMu.Unlock()
-	}()
-
-	ctx := r.Context()
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg := <-ch:
-			fmt.Fprintf(w, "data: %s\n\n", msg)
-			flusher.Flush()
-		case <-ticker.C:
-			fmt.Fprintf(w, ": heartbeat\n\n")
-			flusher.Flush()
-		}
-	}
+			s.chatMu.Unlock()
+		},
+		func(msg string) string { return msg },
+	)
 }
 
 // handlePortMapPending は確認待ち portMap 変更の一覧を返す。
@@ -1349,8 +1301,7 @@ func (s *Server) handlePortMapPending(w http.ResponseWriter, r *http.Request) {
 	list := make([]PendingPortMapChange, len(s.pendingPortMaps))
 	copy(list, s.pendingPortMaps)
 	s.pendingPortMapMu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(list)
+	writeJSON(w, list)
 }
 
 // handlePortMapConfirm は portMap 変更の適用・却下を処理する。
@@ -1394,19 +1345,17 @@ func (s *Server) handlePortMapConfirm(w http.ResponseWriter, r *http.Request) {
 			applyFn(p.Ch, p.NewIP)
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, `{"ok":true}`)
+	writeOK(w)
 }
 
 // handlePortMapEntries はポートマップの全エントリを返す。
 func (s *Server) handlePortMapEntries(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	fn := s.getPortMapFn
 	if fn == nil {
-		json.NewEncoder(w).Encode([]PortMapEntry{})
+		writeJSON(w, []PortMapEntry{})
 		return
 	}
-	json.NewEncoder(w).Encode(fn())
+	writeJSON(w, fn())
 }
 
 // handlePortMapMapCh は現在セッションを指定chにマッピングする。
@@ -1427,8 +1376,7 @@ func (s *Server) handlePortMapMapCh(w http.ResponseWriter, r *http.Request) {
 	if fn != nil {
 		fn(req.Ch)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"ok":true,"ch":%d}`, req.Ch)
+	writeJSON(w, map[string]interface{}{"ok": true, "ch": req.Ch})
 }
 
 // handlePortMapMapAll は全セッションをLineIDでマッピングする。
@@ -1442,8 +1390,7 @@ func (s *Server) handlePortMapMapAll(w http.ResponseWriter, r *http.Request) {
 	if fn != nil {
 		count = fn()
 	}
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"ok":true,"mapped":%d}`, count)
+	writeJSON(w, map[string]interface{}{"ok": true, "mapped": count})
 }
 
 // handleChatLogPage はチャットログ専用の分離ウィンドウ用HTMLページを返す
@@ -1454,12 +1401,16 @@ func (s *Server) handleChatLogPage(w http.ResponseWriter, r *http.Request) {
 
 // handlePatrolStatus は現在の巡回状態を返す
 func (s *Server) handlePatrolStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(s.patroller.Status())
+	writeJSON(w, s.patroller.Status())
 }
 
-// handleSSE はServer-Sent Eventsで検知ログをリアルタイム配信する
-func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+// sseStream はSSEエンドポイントの共通ループ処理。
+// add/remove でクライアントチャネルの登録・解除を行い、format でメッセージを整形する。
+func (s *Server) sseStream(w http.ResponseWriter, r *http.Request,
+	add func(chan string),
+	remove func(chan string),
+	format func(string) string,
+) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "SSE not supported", 500)
@@ -1470,20 +1421,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	ch := make(chan string, 32)
-	s.mu.Lock()
-	s.clients = append(s.clients, ch)
-	s.mu.Unlock()
-
-	defer func() {
-		s.mu.Lock()
-		for i, c := range s.clients {
-			if c == ch {
-				s.clients = append(s.clients[:i], s.clients[i+1:]...)
-				break
-			}
-		}
-		s.mu.Unlock()
-	}()
+	add(ch)
+	defer remove(ch)
 
 	ctx := r.Context()
 	ticker := time.NewTicker(15 * time.Second)
@@ -1494,8 +1433,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case msg := <-ch:
-			escaped := strings.ReplaceAll(msg, "\n", "\\n")
-			fmt.Fprintf(w, "data: %s\n\n", escaped)
+			fmt.Fprintf(w, "data: %s\n\n", format(msg))
 			flusher.Flush()
 		case <-ticker.C:
 			fmt.Fprintf(w, ": heartbeat\n\n")
@@ -1503,6 +1441,38 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// handleSSE はServer-Sent Eventsで検知ログをリアルタイム配信する
+func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	s.sseStream(w, r,
+		func(ch chan string) {
+			s.mu.Lock()
+			s.clients = append(s.clients, ch)
+			s.mu.Unlock()
+		},
+		func(ch chan string) {
+			s.mu.Lock()
+			for i, c := range s.clients {
+				if c == ch {
+					s.clients = append(s.clients[:i], s.clients[i+1:]...)
+					break
+				}
+			}
+			s.mu.Unlock()
+		},
+		func(msg string) string { return strings.ReplaceAll(msg, "\n", "\\n") },
+	)
+}
+
+// processedIndexHTML は indexHTML に対して起動時に一度だけ適用した加工済みHTML。
+// handleIndex が呼ばれるたびに同じ置換処理を繰り返さないようにする。
+var processedIndexHTML = func() string {
+	html := indexHTML
+	html = strings.ReplaceAll(html, "setTimeout(function(){switchView('dashboard'", "")
+	html = strings.ReplaceAll(html, "setInterval(function(){switchView('dashboard'", "")
+	html = strings.ReplaceAll(html, "function switchView(id,navEl){", "function switchView(id,navEl){if(window.__disableAutoSwitchView)return;")
+	return html
+}()
 
 const indexHTML = `<!DOCTYPE html>
 <html lang="ja">
