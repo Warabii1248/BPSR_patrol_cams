@@ -663,7 +663,6 @@ type win32RECT struct {
 	Left, Top, Right, Bottom int32
 }
 
-
 var (
 	modUser32         = syscall.NewLazyDLL("user32.dll")
 	procGetWindowRect = modUser32.NewProc("GetWindowRect")
@@ -1739,7 +1738,6 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 <div class="titlebar" id="hdr-bar"></div>
 <!-- Sidebar -->
 <div class="sidebar">
-  <div class="nav-section">メイン</div>
   <div class="nav-item active" id="nav-dashboard" onclick="switchView('dashboard',this)">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
     ダッシュボード
@@ -1752,7 +1750,6 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
     チャットログ
   </div>
-  <div class="nav-section">制御</div>
   <div class="nav-item" id="nav-devices" onclick="switchView('devices',this)">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>
     デバイス管理
@@ -1761,7 +1758,6 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke-linecap="round"/></svg>
     チャンネル巡回
   </div>
-  <div class="nav-section">設定</div>
   <div class="nav-item" id="nav-settings" onclick="switchView('settings',this)">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round"/></svg>
     設定
