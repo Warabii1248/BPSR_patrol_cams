@@ -185,26 +185,47 @@ func main() {
 		if det.ChatLineID > 0 {
 			ch = det.ChatLineID
 		}
-		if ch < 1 || ch > 100 {
+		if ch > 100 {
+			// ch=0 は「チャンネル不明」（テスト通知含む）のためスキップしない
 			log.Printf("[DETECTION] 通知対象外ch: %d (通知スキップ)", ch)
 			return
 		}
-		// 通知対象エネミーのみ通知
-		notifyEnemies := cfg.NotifyEnemies
-		monster := det.MonsterName
-		if monster == "" && det.Source == notifier.SourceAuto {
-			monster = "ウリボ・ゴールド"
-		}
-		found := false
-		for _, n := range notifyEnemies {
-			if n == monster {
-				found = true
-				break
+		// 通知対象エネミーのみ通知（テンプレートIDまたはモンスター名で判定）
+		{
+			// 設定名 → テンプレートID のマッピング
+			enemyIDMap := map[string]uint64{
+				"ウリボ・ゴールド": ncap.LoyalBoarletTemplateID,
+				"金ナッポ":        ncap.GoldNappoTemplateID,
+				"銀ナッポ":        ncap.SilverNappoTemplateID,
 			}
-		}
-		if !found {
-			log.Printf("[DETECTION] 通知対象外エネミー: %s (通知スキップ)", monster)
-			return
+			// テンプレートID → 設定名 の逆引き
+			idToName := map[uint64]string{
+				ncap.LoyalBoarletTemplateID: "ウリボ・ゴールド",
+				ncap.GoldNappoTemplateID:    "金ナッポ",
+				ncap.SilverNappoTemplateID:  "銀ナッポ",
+			}
+			// 対象モンスターの設定名を特定
+			var configName string
+			if det.TemplateID != 0 {
+				configName = idToName[det.TemplateID]
+			} else if _, ok := enemyIDMap[det.MonsterName]; ok {
+				// TemplateID未設定時はモンスター名でフォールバック
+				configName = det.MonsterName
+			}
+			// 対象モンスターの場合のみフィルターを適用
+			if configName != "" {
+				allowed := false
+				for _, e := range cfg.NotifyEnemies {
+					if e.Name == configName && e.Enabled {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					log.Printf("[DETECTION] 通知対象外エネミー: %s (通知スキップ)", configName)
+					return
+				}
+			}
 		}
 		log.Println("[DETECTION]\n" + notifier.Format(det))
 		if err3 := discord.Send(det); err3 != nil {
@@ -329,6 +350,14 @@ func main() {
 			cfg.GASURL = c.GASURL
 			cfg.GASSpawnThresholdHours = c.GASSpawnThresholdHours
 			return nil
+		},
+	)
+	guiServer.SetWindowStateFns(
+		func() (*appconfig.WindowState, error) {
+			return appconfig.LoadWindowState(*configPath)
+		},
+		func(ws *appconfig.WindowState) error {
+			return appconfig.SaveWindowState(*configPath, ws)
 		},
 	)
 

@@ -7,10 +7,24 @@ import (
 	"os"
 )
 
+// WindowState はGUIウィンドウの位置・サイズを表す。
+type WindowState struct {
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+// EnemyNotifyConfig は通知対象エネミーの名前と有効/無効フラグを保持する。
+type EnemyNotifyConfig struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
 // Config はアプリ全体の設定（config.json から読み書きされる）
 type Config struct {
-	// NotifyEnemies は通知対象のエネミー名リスト（例: ["ウリボ・ゴールド", "金ナッポ", "銀ナッポ"]）
-	NotifyEnemies []string `json:"notify_enemies,omitempty"`
+	// NotifyEnemies は通知対象のエネミーリスト（名前とenable/disableフラグ）。
+	NotifyEnemies []EnemyNotifyConfig `json:"notify_enemies"`
 	// --- キャプチャ設定 ---
 
 	// Network はキャプチャするNICの説明文。"auto" で最アクティブなNICを自動選択。
@@ -60,6 +74,8 @@ type Config struct {
 	MumuPreKeycode string `json:"mumu_pre_keycode"`
 	// MumuDelayMs は各ADBコマンド間のウェイト(ms)。デフォルト: 1200
 	MumuDelayMs int `json:"mumu_delay_ms"`
+	// WindowState はGUIウィンドウの位置・サイズ。
+	WindowState *WindowState `json:"window_state,omitempty"`
 
 	// --- チャンネル巡回設定 ---
 
@@ -123,6 +139,11 @@ type Config struct {
 
 func defaultConfig() *Config {
 	return &Config{
+		NotifyEnemies: []EnemyNotifyConfig{
+			{Name: "ウリボ・ゴールド", Enabled: true},
+			{Name: "金ナッポ", Enabled: true},
+			{Name: "銀ナッポ", Enabled: true},
+		},
 		AutoCheck:                3,
 		DebounceSeconds:          30,
 		Locations:                "data/locations.json",
@@ -243,6 +264,50 @@ func Save(path string, cfg *Config) error {
 	cfgCopy.ChatReportLocationRules = nil
 	cfgCopy.ChatReportMonsterAliasRules = nil
 	data, err := json.MarshalIndent(cfgCopy, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// LoadWindowState reads only window_state from config.json.
+func LoadWindowState(path string) (*WindowState, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return cfg.WindowState, nil
+}
+
+// SaveWindowState updates only window_state in config.json without touching filter.json.
+func SaveWindowState(path string, ws *WindowState) error {
+	var cfg Config
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			cfg = *defaultConfig()
+		} else {
+			return err
+		}
+	} else {
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return err
+		}
+	}
+	cfg.WindowState = ws
+	cfg.ChatExclude = nil
+	cfg.ChatReportSenders = nil
+	cfg.ChatReportExcludedSenders = nil
+	cfg.ChatReportLocationRules = nil
+	cfg.ChatReportMonsterAliasRules = nil
+	data, err = json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}

@@ -26,10 +26,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// loyalBoarletTemplateID はゴールドウリボのテンプレートID
-const loyalBoarletTemplateID = 10904
-const goldNappoTemplateID = 10900
-const silverNappoTemplateID = 10901
+// エクスポート済みテンプレートID（main.go の通知フィルターで使用）
+const (
+	LoyalBoarletTemplateID uint64 = 10904 // ウリボ・ゴールド
+	GoldNappoTemplateID    uint64 = 10900 // 金ナッポ
+	SilverNappoTemplateID  uint64 = 10901 // 銀ナッポ
+)
+
+// 内部エイリアス（既存コードとの互換性）
+const loyalBoarletTemplateID = LoyalBoarletTemplateID
+const goldNappoTemplateID = GoldNappoTemplateID
+const silverNappoTemplateID = SilverNappoTemplateID
 
 // locationHints はチャンネル番号の隣に現れることが多い場所ヒントワード
 var locationHints = []string{
@@ -1478,13 +1485,13 @@ func (cd *CapDevice) processSyncNearEntities(sess *session, payload []byte) {
 				case silverNappoTemplateID:
 					name = "銀ナッポ"
 				case loyalBoarletTemplateID:
-					name = "ゴールドウリボ"
+					name = "ウリボ・ゴールド"
 				}
 			}
 			pos := &playerPosition{X: posX, Y: posY, Z: posZ}
 			log.Printf("[%s][検知] %s: tmplID=%d pos=(%.1f,%.1f,%.1f) Ch=%d",
 				sess.label, name, tmplID, posX, posY, posZ, sess.lineID)
-			cd.triggerDetection(sess, notifier.SourceAuto, name, pos, 0)
+			cd.triggerDetection(sess, notifier.SourceAuto, name, pos, 0, tmplID)
 		}
 
 		// スキャンモード: 全モンスターのID・名前・座標を出力（未知ID調査用）
@@ -1809,7 +1816,7 @@ func (cd *CapDevice) tryScanChatPayload(sess *session, payload []byte) {
 
 // ───── 検知・通知 ─────
 
-func (cd *CapDevice) triggerDetection(sess *session, source, name string, pos *playerPosition, chatLineID uint32) {
+func (cd *CapDevice) triggerDetection(sess *session, source, name string, pos *playerPosition, chatLineID uint32, tmplID uint64) {
 	if cd.notifyFn == nil {
 		return
 	}
@@ -1902,6 +1909,7 @@ func (cd *CapDevice) triggerDetection(sess *session, source, name string, pos *p
 		ChatLineID:        chatLineID,
 		Location:          locName,
 		MonsterName:       name,
+		TemplateID:        tmplID,
 		InstanceLabel:     sess.label,
 		Time:              time.Now(),
 	}
@@ -1922,10 +1930,22 @@ func (cd *CapDevice) ForceDetect(monster string) {
 	if monster == "" {
 		monster = "テスト通知"
 	}
-	log.Printf("[ForceDetect] テスト通知発火: %s", monster)
+	// モンスター名からTemplateIDを設定（onDetectのエネミーフィルターを通過させるため）
+	var templateID uint64
+	switch monster {
+	case "ウリボゴールド", "ウリボ・ゴールド":
+		templateID = LoyalBoarletTemplateID
+		monster = "ウリボ・ゴールド"
+	case "金ナッポ":
+		templateID = GoldNappoTemplateID
+	case "銀ナッポ":
+		templateID = SilverNappoTemplateID
+	}
+	log.Printf("[ForceDetect] テスト通知発火: %s (templateID=%d)", monster, templateID)
 	cd.notifyFn(notifier.Detection{
 		Source:      notifier.SourceAuto,
 		MonsterName: monster,
+		TemplateID:  templateID,
 		Time:        time.Now(),
 	})
 }

@@ -22,6 +22,7 @@ import (
 
 	webview "github.com/jchv/go-webview2"
 
+	"github.com/balrogsxt/StarResonanceAPI/appconfig"
 	"github.com/balrogsxt/StarResonanceAPI/mumu"
 	"github.com/balrogsxt/StarResonanceAPI/notifier"
 )
@@ -50,6 +51,8 @@ type Server struct {
 	channelNotifyFn    func(uint32) // Patrollerのチャンネル切替時コールバック
 	getConfigFn        func() ([]byte, error)
 	saveConfigFn       func([]byte) error
+	loadWindowStateFn  func() (*appconfig.WindowState, error)
+	saveWindowStateFn  func(*appconfig.WindowState) error
 
 	mu              sync.RWMutex
 	logLines        []string             // 検知ログ（最大200件）
@@ -245,6 +248,12 @@ func (s *Server) SetChannelNotifyFn(fn func(uint32)) {
 func (s *Server) SetConfigFns(getFn func() ([]byte, error), saveFn func([]byte) error) {
 	s.getConfigFn = getFn
 	s.saveConfigFn = saveFn
+}
+
+// SetWindowStateFns はウィンドウ位置・サイズの読み書きコールバックを設定する。
+func (s *Server) SetWindowStateFns(loadFn func() (*appconfig.WindowState, error), saveFn func(*appconfig.WindowState) error) {
+	s.loadWindowStateFn = loadFn
+	s.saveWindowStateFn = saveFn
 }
 
 // NotifyChMovePacket は ncap が [0x2E] パケットを受信したとき main.go から呼ぶ。
@@ -594,29 +603,10 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	return url, nil
 }
 
-// windowState はウィンドウの位置・サイズを保存する
-type windowState struct {
-	X      int `json:"x"`
-	Y      int `json:"y"`
-	Width  int `json:"width"`
-	Height int `json:"height"`
-}
+const legacyWindowStateFile = "config/window_state.json"
 
-const windowStateFile = "config/window_state.json"
-
-func loadWindowState() *windowState {
-	data, err := os.ReadFile(windowStateFile)
-	if err != nil {
-		return nil
-	}
-	var ws windowState
-	if err := json.Unmarshal(data, &ws); err != nil {
-		return nil
-	}
-	if ws.Width < 200 || ws.Height < 200 {
-		return nil
-	}
-	return &ws
+func isValidWindowState(ws *appconfig.WindowState) bool {
+	return ws != nil && ws.Width >= 200 && ws.Height >= 200
 }
 
 // win32RECT は Win32 の RECT 構造体
@@ -635,7 +625,31 @@ var (
 	procSetWindowPos  = modUser32.NewProc("SetWindowPos")
 )
 
-func saveWindowState(hwnd uintptr) {
+func (s *Server) loadWindowState() *appconfig.WindowState {
+	if s.loadWindowStateFn != nil {
+		ws, err := s.loadWindowStateFn()
+		if err == nil && isValidWindowState(ws) {
+			return ws
+		}
+		if err != nil {
+			log.Printf("[GUI] window state load failed: %v", err)
+		}
+	}
+	data, err := os.ReadFile(legacyWindowStateFile)
+	if err != nil {
+		return nil
+	}
+	var ws appconfig.WindowState
+	if err := json.Unmarshal(data, &ws); err != nil {
+		return nil
+	}
+	if !isValidWindowState(&ws) {
+		return nil
+	}
+	return &ws
+}
+
+func (s *Server) saveWindowState(hwnd uintptr) {
 	var r win32RECT
 	ret, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
 	if ret == 0 {
@@ -646,15 +660,21 @@ func saveWindowState(hwnd uintptr) {
 	if w < 200 || h < 200 {
 		return
 	}
-	ws := windowState{
+	ws := &appconfig.WindowState{
 		X: int(r.Left), Y: int(r.Top),
 		Width: w, Height: h,
+	}
+	if s.saveWindowStateFn != nil {
+		if err := s.saveWindowStateFn(ws); err != nil {
+			log.Printf("[GUI] window state save failed: %v", err)
+		}
+		return
 	}
 	data, err := json.MarshalIndent(ws, "", "  ")
 	if err != nil {
 		return
 	}
-	if err := os.WriteFile(windowStateFile, data, 0644); err != nil {
+	if err := os.WriteFile(legacyWindowStateFile, data, 0644); err != nil {
 		log.Printf("[GUI] window state save failed: %v", err)
 	}
 }
@@ -667,7 +687,7 @@ func (s *Server) RunWindow(ctx context.Context) error {
 	}
 	log.Printf("[GUI] opening window: %s", url)
 
-	ws := loadWindowState()
+	ws := s.loadWindowState()
 	winWidth, winHeight := 1000, 720
 	centerWin := true
 	if ws != nil {
@@ -710,7 +730,7 @@ func (s *Server) RunWindow(ctx context.Context) error {
 			case <-done:
 				return
 			case <-t.C:
-				saveWindowState(hwnd)
+				s.saveWindowState(hwnd)
 			}
 		}
 	}()
@@ -718,7 +738,7 @@ func (s *Server) RunWindow(ctx context.Context) error {
 	w.Run()
 	close(done)
 	// Run() 直後にも保存を試みる（まだ HWND が有効な場合がある）
-	saveWindowState(hwnd)
+	s.saveWindowState(hwnd)
 	w.Destroy()
 	return nil
 }
@@ -3180,9 +3200,9 @@ async function saveConfig(silent){
 		else if(f.type==='multiline-list')updated[f.k]=el.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 		else if(f.type==='csv')updated[f.k]=el.value.split(',').map(s=>s.trim()).filter(Boolean);
 		else updated[f.k]=el.value;});
-	// 通知エネミー
+	// 通知エネミー（{name, enabled} 形式で全件保存）
 	updated.notify_enemies=[];
-	document.querySelectorAll('.cfg-enemy').forEach(chk=>{if(chk.checked)updated.notify_enemies.push(chk.value);});
+	document.querySelectorAll('.cfg-enemy').forEach(chk=>{updated.notify_enemies.push({name:chk.value,enabled:chk.checked});});
 	const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updated)});
 	const d=await r.json();const st=document.getElementById('cfg-status');
 		if(st && !silent){
@@ -3192,10 +3212,15 @@ async function saveConfig(silent){
 	cfgData=updated;renderChatRuleManagers();renderChatCandidatePanels();
 }
 function renderConfigForm(cfg){
-	// 通知エネミー チェックボックス反映
-	const notifyEnemies=cfg.notify_enemies||["ウリボ・ゴールド","金ナッポ","銀ナッポ"];
+	// 通知エネミー チェックボックス反映（{name,enabled} 形式）
+	const notifyEnemies=cfg.notify_enemies||[
+		{name:"ウリボ・ゴールド",enabled:true},
+		{name:"金ナッポ",enabled:true},
+		{name:"銀ナッポ",enabled:true}
+	];
 	document.querySelectorAll('.cfg-enemy').forEach(chk=>{
-		chk.checked=notifyEnemies.includes(chk.value);
+		const entry=notifyEnemies.find(e=>e.name===chk.value);
+		chk.checked=entry?entry.enabled:true;
 	});
 }
 // ── Uptime counter ──

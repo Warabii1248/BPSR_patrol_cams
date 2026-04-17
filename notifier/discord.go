@@ -39,6 +39,9 @@ type Detection struct {
 	// MonsterName is the in-game monster name (may be empty for chat detections).
 	MonsterName string
 
+	// TemplateID is the game's monster template ID (0 if unknown, e.g. chat detections).
+	TemplateID uint64
+
 	// Message is the raw world-chat text (populated for SourceChat).
 	Message string
 

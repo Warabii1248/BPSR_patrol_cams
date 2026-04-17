@@ -13,13 +13,29 @@
   "mumu_clear_length": 3,
   "mumu_pre_keycode": "KEYCODE_P",
   "mumu_delay_ms": 1200,
+  "window_state": {
+    "x": 767,
+    "y": 420,
+    "width": 1256,
+    "height": 820
+  },
   "patrol_channels_file": "config/channels.txt",
+  "port_map_file": "config/port_ch_map.json",
   "patrol_dwell_secs": 15,
   "patrol_move_timeout_secs": 30,
   "patrol_merge_timeout_secs": 15,
   "parallel_limit": 0,
   "parallel_group_delay_secs": 20,
-  "patrol_serials": null
-  ,
+  "patrol_serials": null,
+  "active_device_count": 0,
+  "full_threshold": 0,
+  "consecutive_full_threshold": 5,
+  "scene_map_ids": {
+    "阿斯特里亚平原": 7
+  },
+  "monster_scan": false,
+  "gas_url": "",
+  "gas_fetch_interval_mins": 10,
+  "gas_spawn_threshold_hours": 20,
   "notify_enemies": ["ウリボ・ゴールド", "金ナッポ", "銀ナッポ"]
 }
