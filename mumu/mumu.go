@@ -52,65 +52,91 @@ func DefaultConfig() Config {
 }
 
 // newCmd は HideWindow: true でコマンドを作成する（GUIモード時のコンソール点滅防止）
-func newCmd(name string, args ...string) *exec.Cmd {
-	cmd := exec.Command(name, args...)
+// ctx がキャンセルされると実行中のプロセスが即座に強制終了される。
+func newCmd(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return cmd
 }
 
-func runAdb(cfg Config, args ...string) (string, error) {
-	cmd := newCmd(cfg.ADBPath, args...)
+func runAdb(ctx context.Context, cfg Config, args ...string) (string, error) {
+	cmd := newCmd(ctx, cfg.ADBPath, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", fmt.Errorf("adb %v: %w\n%s", args, err, string(out))
 	}
 	if cfg.GlobalDelay > 0 {
-		time.Sleep(cfg.GlobalDelay)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(cfg.GlobalDelay):
+		}
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
-func adb(serial string, cfg Config, args ...string) (string, error) {
+func adb(ctx context.Context, serial string, cfg Config, args ...string) (string, error) {
 	full := append([]string{"-s", serial}, args...)
-	return runAdb(cfg, full...)
+	return runAdb(ctx, cfg, full...)
 }
 
 // EnsureServer は ADB サーバーが起動していることを確認し、未起動なら起動する。
 // RestartServer と異なり kill-server は行わないため既存接続を維持できる。
-func EnsureServer(cfg Config) error {
+func EnsureServer(ctx context.Context, cfg Config) error {
 	log.Println("[MuMu] adb start-server...")
-	out, err := newCmd(cfg.ADBPath, "start-server").CombinedOutput()
+	out, err := newCmd(ctx, cfg.ADBPath, "start-server").CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("adb start-server: %w\n%s", err, string(out))
 	}
 	log.Println("[MuMu] ADB サーバー起動確認完了")
-	time.Sleep(500 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+	}
 	return nil
 }
 
 // RestartServer は adb kill-server → adb start-server でADBサーバーを再起動する。
 // ADB接続が切れた場合の復旧に使用する。
-func RestartServer(cfg Config) error {
+func RestartServer(ctx context.Context, cfg Config) error {
 	log.Println("[MuMu] adb kill-server...")
 	// kill-server は失敗しても無視（既に停止済みの場合あり）
-	_ = newCmd(cfg.ADBPath, "kill-server").Run()
-	time.Sleep(500 * time.Millisecond)
+	_ = newCmd(ctx, cfg.ADBPath, "kill-server").Run()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+	}
 
 	log.Println("[MuMu] adb start-server...")
-	out, err := newCmd(cfg.ADBPath, "start-server").CombinedOutput()
+	out, err := newCmd(ctx, cfg.ADBPath, "start-server").CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("adb start-server: %w\n%s", err, string(out))
 	}
 	log.Println("[MuMu] ADBサーバー再起動完了")
-	time.Sleep(500 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+	}
 	return nil
 }
 
 // ListDevices は接続中のADBデバイス一覧を返す。
 // ADBサーバーの再起動は行わない（通常の取得に使用）。
-func ListDevices(cfg Config) ([]string, error) {
+func ListDevices(ctx context.Context, cfg Config) ([]string, error) {
 	log.Println("[MuMu] デバイス一覧を取得中...")
-	devices, err := listDevicesOnce(cfg)
+	devices, err := listDevicesOnce(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -122,15 +148,15 @@ func ListDevices(cfg Config) ([]string, error) {
 
 // ListDevicesWithRestart は adb kill-server/start-server でADBサーバーを再起動してから
 // デバイス一覧を返す。接続が切れた場合の復旧用。
-func ListDevicesWithRestart(cfg Config) ([]string, error) {
-	if restartErr := RestartServer(cfg); restartErr != nil {
+func ListDevicesWithRestart(ctx context.Context, cfg Config) ([]string, error) {
+	if restartErr := RestartServer(ctx, cfg); restartErr != nil {
 		log.Printf("[MuMu] ADB再起動失敗: %v", restartErr)
 	}
-	return ListDevices(cfg)
+	return ListDevices(ctx, cfg)
 }
 
-func listDevicesOnce(cfg Config) ([]string, error) {
-	out, err := runAdb(cfg, "devices")
+func listDevicesOnce(ctx context.Context, cfg Config) ([]string, error) {
+	out, err := runAdb(ctx, cfg, "devices")
 	if err != nil {
 		log.Printf("[MuMu] adb devices 失敗: %v", err)
 		return nil, err
@@ -161,25 +187,28 @@ func listDevicesOnce(cfg Config) ([]string, error) {
 
 // SwitchChannel は指定デバイスを指定チャンネルに切り替える。
 // 失敗した場合は adb kill-server/start-server で復旧してリトライする。
-func SwitchChannel(serial string, channel uint32, cfg Config) error {
-	err := switchChannelOnce(serial, channel, cfg)
+func SwitchChannel(ctx context.Context, serial string, channel uint32, cfg Config) error {
+	err := switchChannelOnce(ctx, serial, channel, cfg)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		log.Printf("[MuMu] switch_channel失敗(%v)、ADBサーバーを再起動してリトライ...", err)
-		if restartErr := RestartServer(cfg); restartErr != nil {
+		if restartErr := RestartServer(ctx, cfg); restartErr != nil {
 			log.Printf("[MuMu] ADB再起動失敗: %v", restartErr)
 			return err // 再起動失敗なら元のエラーを返す
 		}
-		return switchChannelOnce(serial, channel, cfg)
+		return switchChannelOnce(ctx, serial, channel, cfg)
 	}
 	return nil
 }
 
-func switchChannelOnce(serial string, channel uint32, cfg Config) error {
+func switchChannelOnce(ctx context.Context, serial string, channel uint32, cfg Config) error {
 	log.Printf("[MuMu] switch_channel: serial=%s channel=%d", serial, channel)
 
 	// Pキーでチャンネル入力を開く
 	if cfg.PreKeycode != "" {
-		if _, err := adb(serial, cfg, "shell", "input", "keyevent", cfg.PreKeycode); err != nil {
+		if _, err := adb(ctx, serial, cfg, "shell", "input", "keyevent", cfg.PreKeycode); err != nil {
 			return fmt.Errorf("pre_keycode: %w", err)
 		}
 	}
@@ -190,7 +219,7 @@ func switchChannelOnce(serial string, channel uint32, cfg Config) error {
 			fmt.Sprintf("%d", cfg.TapX),
 			fmt.Sprintf("%d", cfg.TapY),
 		}
-		if _, err := adb(serial, cfg, tapArgs...); err != nil {
+		if _, err := adb(ctx, serial, cfg, tapArgs...); err != nil {
 			return fmt.Errorf("tap: %w", err)
 		}
 	}
@@ -204,17 +233,17 @@ func switchChannelOnce(serial string, channel uint32, cfg Config) error {
 		keycodes = append(keycodes, fmt.Sprintf("KEYCODE_%c", c))
 	}
 	args := append([]string{"shell", "input", "keyevent"}, keycodes...)
-	if _, err := adb(serial, cfg, args...); err != nil {
+	if _, err := adb(ctx, serial, cfg, args...); err != nil {
 		return fmt.Errorf("clear+input: %w", err)
 	}
 	// Enterで確定
-	if _, err := adb(serial, cfg, "shell", "input", "keyevent", "KEYCODE_ENTER"); err != nil {
+	if _, err := adb(ctx, serial, cfg, "shell", "input", "keyevent", "KEYCODE_ENTER"); err != nil {
 		return fmt.Errorf("enter: %w", err)
 	}
 
 	// Pキーでチャンネル入力を閉じる（満員時のダイアログも閉じる）
 	if cfg.PreKeycode != "" {
-		if _, err := adb(serial, cfg, "shell", "input", "keyevent", cfg.PreKeycode); err != nil {
+		if _, err := adb(ctx, serial, cfg, "shell", "input", "keyevent", cfg.PreKeycode); err != nil {
 			return fmt.Errorf("pre_keycode: %w", err)
 		}
 	}
@@ -236,14 +265,14 @@ func ParallelLimit(cfg Config, total int) int {
 }
 
 // switchGroup は serials[start:end] を並列で切り替え、全完了を待つ。
-func SwitchGroup(serials []string, start, end int, channel uint32, cfg Config, results map[string]error, mu *sync.Mutex) {
+func SwitchGroup(ctx context.Context, serials []string, start, end int, channel uint32, cfg Config, results map[string]error, mu *sync.Mutex) {
 	var wg sync.WaitGroup
 	for i := start; i < end; i++ {
 		s := serials[i]
 		wg.Add(1)
 		go func(serial string) {
 			defer wg.Done()
-			err := SwitchChannel(serial, channel, cfg)
+			err := SwitchChannel(ctx, serial, channel, cfg)
 			mu.Lock()
 			results[serial] = err
 			mu.Unlock()
@@ -255,7 +284,7 @@ func SwitchGroup(serials []string, start, end int, channel uint32, cfg Config, r
 // GetDeviceIP は指定デバイスの仮想NWインターフェースIPを返す。
 // "adb -s <serial> shell ip route get 1" の出力から src フィールドをパースする。
 func GetDeviceIP(serial string, cfg Config) (string, error) {
-	cmd := newCmd(cfg.ADBPath, "-s", serial, "shell", "ip", "route", "get", "1")
+	cmd := newCmd(context.Background(), cfg.ADBPath, "-s", serial, "shell", "ip", "route", "get", "1")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("ip route get: %w", err)
@@ -626,14 +655,14 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			targets := serials
 			if len(targets) == 0 {
 				var devErr error
-				targets, devErr = ListDevices(currentCfg)
+				targets, devErr = ListDevices(ctx, currentCfg)
 				if devErr != nil || len(targets) == 0 {
 					// ADB認識不能の可能性 → kill-server/start-server で復旧試行
 					log.Printf("[MuMu] 巡回: デバイス取得失敗または0台、ADB再起動を試みます...")
-					if restartErr := RestartServer(currentCfg); restartErr != nil {
+					if restartErr := RestartServer(ctx, currentCfg); restartErr != nil {
 						log.Printf("[MuMu] ADB再起動失敗: %v", restartErr)
 					}
-					targets, devErr = ListDevices(currentCfg)
+					targets, devErr = ListDevices(ctx, currentCfg)
 					if devErr != nil {
 						log.Printf("[MuMu] 巡回: デバイス再取得失敗: %v", devErr)
 						select {
@@ -698,7 +727,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 					case <-time.After(groupDelay):
 					}
 				}
-				SwitchGroup(targets, start, end, ch, currentCfg, patrolResults, &patrolMu)
+				SwitchGroup(ctx, targets, start, end, ch, currentCfg, patrolResults, &patrolMu)
 			}
 			// 全台切替完了時刻を記録（この時刻以降の[0x2E]のみカウント）
 			switchDoneAt := time.Now()

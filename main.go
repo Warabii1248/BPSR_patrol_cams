@@ -169,7 +169,7 @@ func main() {
 	}
 
 	// 起動時に ADB サーバーを確実に起動する（未起動の場合の検知失敗を防ぐ）
-	if err := mumu.EnsureServer(mumuCfg); err != nil {
+	if err := mumu.EnsureServer(context.Background(), mumuCfg); err != nil {
 		log.Printf("warn: ADB サーバー起動失敗（検知に影響する可能性あり）: %v", err)
 	}
 
@@ -195,8 +195,8 @@ func main() {
 			// 設定名 → テンプレートID のマッピング
 			enemyIDMap := map[string]uint64{
 				"ウリボ・ゴールド": ncap.LoyalBoarletTemplateID,
-				"金ナッポ":        ncap.GoldNappoTemplateID,
-				"銀ナッポ":        ncap.SilverNappoTemplateID,
+				"金ナッポ":     ncap.GoldNappoTemplateID,
+				"銀ナッポ":     ncap.SilverNappoTemplateID,
 			}
 			// テンプレートID → 設定名 の逆引き
 			idToName := map[uint64]string{
@@ -308,6 +308,41 @@ func main() {
 	})
 	guiServer.SetPortMapApplyFn(func(ch uint32, serverIP string) {
 		capDevice.ApplyPortMapUpdate(ch, serverIP)
+	})
+
+	// ポートマップ関連コールバック
+	guiServer.SetGetPortMapFn(func() []gui.PortMapEntry {
+		entries := capDevice.PortMapEntries()
+		out := make([]gui.PortMapEntry, len(entries))
+		for i, e := range entries {
+			out[i] = gui.PortMapEntry{
+				Ch:        e.Ch,
+				ServerIP:  e.ServerIP,
+				UpdatedAt: e.UpdatedAt,
+			}
+		}
+		return out
+	})
+	guiServer.SetMapChFn(func(ch uint32) {
+		sessions := capDevice.Sessions()
+		for _, s := range sessions {
+			if s.ServerIP != "" {
+				capDevice.ApplyPortMapUpdate(ch, s.ServerIP)
+			}
+		}
+		log.Printf("[GUI] 指定chマッピング: ch=%d, %d件のセッションを登録", ch, len(sessions))
+	})
+	guiServer.SetMapAllFn(func() int {
+		sessions := capDevice.Sessions()
+		count := 0
+		for _, s := range sessions {
+			if s.ServerIP != "" && s.LineID > 0 {
+				capDevice.ApplyPortMapUpdate(s.LineID, s.ServerIP)
+				count++
+			}
+		}
+		log.Printf("[GUI] 全chマッピング: %d件のセッションを登録", count)
+		return count
 	})
 
 	// チャンネルリストをファイルに保存するコールバック

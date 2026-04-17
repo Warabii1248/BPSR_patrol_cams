@@ -5,22 +5,32 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 )
+
+// PortMapEntryInfo はポートマップの1エントリを表す（GUI向け）。
+type PortMapEntryInfo struct {
+	Ch        uint32    `json:"ch"`
+	ServerIP  string    `json:"server_ip"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
 
 // PortMap はサーバーアドレス("ip:port")とch番号の対応を管理する。
 // 巡回モードで訪れたchを自動記録し、ポートが変わった場合は自動更新する。
 type PortMap struct {
-	mu       sync.RWMutex
-	portToCh map[string]uint32 // "ip:port" → ch
-	file     string
+	mu        sync.RWMutex
+	portToCh  map[string]uint32    // "ip:port" → ch
+	updatedAt map[string]time.Time // "ip:port" → 最終更新時刻
+	file      string
 }
 
 // LoadPortMap は既存のJSONファイルを読み込んでPortMapを返す。
 // ファイルが存在しない場合は空のPortMapを返す。
 func LoadPortMap(path string) *PortMap {
 	pm := &PortMap{
-		portToCh: make(map[string]uint32),
-		file:     path,
+		portToCh:  make(map[string]uint32),
+		updatedAt: make(map[string]time.Time),
+		file:      path,
 	}
 	data, err := os.ReadFile(path)
 	if err == nil {
@@ -28,6 +38,13 @@ func LoadPortMap(path string) *PortMap {
 			log.Printf("[PortMap] 読み込みエラー (%s): %v", path, jsonErr)
 		} else {
 			log.Printf("[PortMap] %d件読み込み: %s", len(pm.portToCh), path)
+			// ファイルの更新日時を全エントリの初期タイムスタンプとして設定
+			if fi, statErr := os.Stat(path); statErr == nil {
+				mt := fi.ModTime()
+				for ip := range pm.portToCh {
+					pm.updatedAt[ip] = mt
+				}
+			}
 		}
 	}
 	return pm
@@ -87,7 +104,26 @@ func (pm *PortMap) Update(ch uint32, serverIP string) {
 		log.Printf("[PortMap] ch=%d 登録: %s", ch, serverIP)
 	}
 	pm.portToCh[serverIP] = ch
+	pm.updatedAt[serverIP] = time.Now()
 	pm.save()
+}
+
+// Entries は全エントリを PortMapEntryInfo のスライスとして返す。
+func (pm *PortMap) Entries() []PortMapEntryInfo {
+	if pm == nil {
+		return nil
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	out := make([]PortMapEntryInfo, 0, len(pm.portToCh))
+	for ip, ch := range pm.portToCh {
+		out = append(out, PortMapEntryInfo{
+			Ch:        ch,
+			ServerIP:  ip,
+			UpdatedAt: pm.updatedAt[ip],
+		})
+	}
+	return out
 }
 
 // Count は登録件数を返す。

@@ -53,6 +53,9 @@ type Server struct {
 	saveConfigFn       func([]byte) error
 	loadWindowStateFn  func() (*appconfig.WindowState, error)
 	saveWindowStateFn  func(*appconfig.WindowState) error
+	getPortMapFn       func() []PortMapEntry // ポートマップ全件取得
+	mapChFn            func(ch uint32)       // 現在セッションを指定chにマッピング
+	mapAllFn           func() int            // 全セッションをLineIDでマッピング
 
 	mu              sync.RWMutex
 	logLines        []string             // 検知ログ（最大200件）
@@ -68,6 +71,13 @@ type Server struct {
 	pendingPortMaps   []PendingPortMapChange
 	pendingPortMapSeq int
 	portMapApplyFn    func(ch uint32, serverIP string)
+}
+
+// PortMapEntry はポートマップの1エントリ（GUI向け）
+type PortMapEntry struct {
+	Ch        uint32    `json:"ch"`
+	ServerIP  string    `json:"server_ip"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // GoldBoarEvent は金ウリボ検知の1件分の記録
@@ -361,6 +371,21 @@ func (s *Server) SetPortMapApplyFn(fn func(ch uint32, serverIP string)) {
 	s.portMapApplyFn = fn
 }
 
+// SetGetPortMapFn はポートマップ全件取得コールバックを設定する。
+func (s *Server) SetGetPortMapFn(fn func() []PortMapEntry) {
+	s.getPortMapFn = fn
+}
+
+// SetMapChFn は現在セッションを指定chにマッピングするコールバックを設定する。
+func (s *Server) SetMapChFn(fn func(ch uint32)) {
+	s.mapChFn = fn
+}
+
+// SetMapAllFn は全セッションをLineIDでマッピングするコールバックを設定する。
+func (s *Server) SetMapAllFn(fn func() int) {
+	s.mapAllFn = fn
+}
+
 // AddPortMapPending はクォーラム成立した portMap 変更を確認待ちキューに追加し、SSE で通知する。
 // 同一 ch の既存エントリがあれば上書き（最新情報に差し替え）。
 func (s *Server) AddPortMapPending(ch uint32, newIP, oldIP string, voteCount int) {
@@ -541,6 +566,9 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/chat-events", s.handleChatEvents)
 	mux.HandleFunc("/api/portmap/pending", s.handlePortMapPending)
 	mux.HandleFunc("/api/portmap/confirm", s.handlePortMapConfirm)
+	mux.HandleFunc("/api/portmap/entries", s.handlePortMapEntries)
+	mux.HandleFunc("/api/portmap/map-ch", s.handlePortMapMapCh)
+	mux.HandleFunc("/api/portmap/map-all", s.handlePortMapMapAll)
 	mux.HandleFunc("/spawn-log", s.handleSpawnLog)
 	mux.HandleFunc("/chat-log", s.handleChatLogPage)
 	mux.HandleFunc("/events", s.handleSSE)
@@ -568,7 +596,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 		for attempt := 1; attempt <= 3; attempt++ {
 			time.Sleep(1 * time.Second)
 			log.Printf("[MuMu] 起動時デバイス確認 (%d/3)...", attempt)
-			devices, err := mumu.ListDevices(cfg)
+			devices, err := mumu.ListDevices(context.Background(), cfg)
 			if err != nil {
 				log.Printf("[MuMu] 起動時デバイス取得失敗 (%d/3): %v", attempt, err)
 				continue
@@ -582,12 +610,12 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 		}
 		// 3回全て失敗 → ADB サーバーを再起動して再確認
 		log.Println("[MuMu] デバイスが見つからないため ADB サーバーを自動再起動します...")
-		if err := mumu.RestartServer(cfg); err != nil {
+		if err := mumu.RestartServer(context.Background(), cfg); err != nil {
 			log.Printf("[MuMu] ADB 再起動失敗: %v", err)
 			return
 		}
 		time.Sleep(1 * time.Second)
-		devices, err := mumu.ListDevices(cfg)
+		devices, err := mumu.ListDevices(context.Background(), cfg)
 		if err != nil {
 			log.Printf("[MuMu] ADB 再起動後のデバイス取得失敗: %v", err)
 			return
@@ -783,7 +811,7 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	adbDevices, err := mumu.ListDevices(s.patroller.Config())
+	adbDevices, err := mumu.ListDevices(ctx, s.patroller.Config())
 	if err != nil {
 		log.Printf("[MuMu] device-map: ListDevices error: %v", err)
 		http.Error(w, err.Error(), 500)
@@ -850,7 +878,7 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 
 // handleDevices はADB接続デバイス一覧をJSONで返す
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
-	devices, err := mumu.ListDevices(s.patroller.Config())
+	devices, err := mumu.ListDevices(r.Context(), s.patroller.Config())
 	if err != nil {
 		log.Printf("[MuMu] adb devices エラー: %v", err)
 	}
@@ -893,7 +921,7 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 	if len(serials) == 0 && req.Serial == "" {
 		// 何も指定なし → 全台を ListDevices で取得
 		var err error
-		serials, err = mumu.ListDevices(cfg)
+		serials, err = mumu.ListDevices(r.Context(), cfg)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -912,7 +940,7 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 			if start > 0 && cfg.ParallelGroupDelay > 0 {
 				time.Sleep(cfg.ParallelGroupDelay)
 			}
-			mumu.SwitchGroup(serials, start, end, req.Channel, cfg, switchResults, &switchMu)
+			mumu.SwitchGroup(r.Context(), serials, start, end, req.Channel, cfg, switchResults, &switchMu)
 		}
 		for serial, err := range switchResults {
 			r := result{Serial: serial, OK: err == nil}
@@ -923,7 +951,7 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// 単体切替
-		err := mumu.SwitchChannel(req.Serial, req.Channel, cfg)
+		err := mumu.SwitchChannel(r.Context(), req.Serial, req.Channel, cfg)
 		r := result{Serial: req.Serial, OK: err == nil}
 		if err != nil {
 			r.Error = err.Error()
@@ -1247,7 +1275,7 @@ func (s *Server) handleADBRestart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", 405)
 		return
 	}
-	if err := mumu.RestartServer(s.patroller.Config()); err != nil {
+	if err := mumu.RestartServer(r.Context(), s.patroller.Config()); err != nil {
 		log.Printf("[MuMu] ADB再起動失敗: %v", err)
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1370,6 +1398,54 @@ func (s *Server) handlePortMapConfirm(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `{"ok":true}`)
 }
 
+// handlePortMapEntries はポートマップの全エントリを返す。
+func (s *Server) handlePortMapEntries(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	fn := s.getPortMapFn
+	if fn == nil {
+		json.NewEncoder(w).Encode([]PortMapEntry{})
+		return
+	}
+	json.NewEncoder(w).Encode(fn())
+}
+
+// handlePortMapMapCh は現在セッションを指定chにマッピングする。
+// リクエスト: {"ch": 5}
+func (s *Server) handlePortMapMapCh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Ch uint32 `json:"ch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Ch == 0 {
+		http.Error(w, "ch must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	fn := s.mapChFn
+	if fn != nil {
+		fn(req.Ch)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"ok":true,"ch":%d}`, req.Ch)
+}
+
+// handlePortMapMapAll は全セッションをLineIDでマッピングする。
+func (s *Server) handlePortMapMapAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	fn := s.mapAllFn
+	count := 0
+	if fn != nil {
+		count = fn()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"ok":true,"mapped":%d}`, count)
+}
+
 // handleChatLogPage はチャットログ専用の分離ウィンドウ用HTMLページを返す
 func (s *Server) handleChatLogPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1476,6 +1552,7 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;
 #view-dashboard{overflow-y:auto}
 #view-patrol{overflow-y:auto;padding-right:4px}
 #view-settings{overflow-y:auto;padding-right:4px}
+#view-data-management{overflow-y:auto;padding-right:4px}
 /* Card */
 .card{background:linear-gradient(180deg, rgba(20,25,38,.98) 0%, rgba(19,22,33,.96) 100%);border:1px solid rgba(88,103,142,.25);border-radius:var(--radius-lg);padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.12)}
 .card-title{font-size:10px;font-weight:600;color:var(--text2);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:7px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.06);cursor:default}
@@ -1719,6 +1796,10 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round"/></svg>
     設定
   </div>
+  <div class="nav-item" id="nav-data-management" onclick="switchView('data-management',this);loadPortMapEntries()">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="8" cy="4.5" rx="5.5" ry="2"/><path d="M2.5 4.5v3c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-3"/><path d="M2.5 7.5v3c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-3"/></svg>
+    データ管理
+  </div>
   <div class="sidebar-bottom">
     <div class="nav-item" id="nav-layout-edit" onclick="toggleLayoutEdit()">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>
@@ -1941,9 +2022,103 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		</div>
 	</div>
 </div>
+<!-- ===== データ管理 ===== -->
+<div class="view" id="view-data-management">
+  <div class="cfg-stack">
+    <div class="card cfg-card">
+      <div class="cfg-card-title">chマッピング管理</div>
+      <!-- 操作パネル -->
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
+        <div>
+          <div style="font-size:12px;color:var(--text2);margin-bottom:4px">全chマッピング（現在セッションのLineIDを自動登録）</div>
+          <button class="btn primary" onclick="portmapMapAll()">⚡ 全chマッピング</button>
+        </div>
+        <div style="border-left:1px solid var(--border);padding-left:12px">
+          <div style="font-size:12px;color:var(--text2);margin-bottom:4px">指定chマッピング（現在セッションを指定chに登録）</div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <label style="font-size:12px">Ch:</label>
+            <input type="number" id="portmap-ch-input" min="1" max="9999" placeholder="例: 40" style="width:80px">
+            <button class="btn success" onclick="portmapMapCh()">📌 マッピング</button>
+          </div>
+        </div>
+        <div style="margin-left:auto">
+          <button class="btn" onclick="loadPortMapEntries()">🔄 更新</button>
+        </div>
+      </div>
+      <div id="portmap-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;min-height:1.4em"></div>
+      <!-- エントリ一覧テーブル -->
+      <div style="overflow-x:auto">
+        <table id="portmap-table" style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border)">
+              <th style="text-align:left;padding:6px 10px;color:var(--text2);font-weight:500;white-space:nowrap">Ch</th>
+              <th style="text-align:left;padding:6px 10px;color:var(--text2);font-weight:500;white-space:nowrap">サーバーIP:ポート</th>
+              <th style="text-align:left;padding:6px 10px;color:var(--text2);font-weight:500;white-space:nowrap">更新日時</th>
+            </tr>
+          </thead>
+          <tbody id="portmap-tbody">
+            <tr><td colspan="3" style="padding:12px 10px;color:var(--text3);text-align:center">読み込み中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="portmap-count" style="font-size:11px;color:var(--text3);margin-top:6px"></div>
+    </div>
+  </div>
+</div>
 </div><!-- /main -->
 </div><!-- /app -->
 <script>
+// ===== データ管理 / chマッピング =====
+function loadPortMapEntries() {
+  fetch('/api/portmap/entries').then(r=>r.json()).then(entries=>{
+    const tbody = document.getElementById('portmap-tbody');
+    const count = document.getElementById('portmap-count');
+    if (!tbody) return;
+    if (!entries || entries.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" style="padding:12px 10px;color:var(--text3);text-align:center">マッピングデータなし</td></tr>';
+      if (count) count.textContent = '';
+      return;
+    }
+    entries.sort((a,b) => a.ch - b.ch);
+    tbody.innerHTML = entries.map(e => {
+      const dt = e.updated_at ? new Date(e.updated_at).toLocaleString('ja-JP') : '--';
+      return '<tr style="border-bottom:1px solid var(--border)">' +
+        '<td style="padding:5px 10px;font-weight:600;color:var(--accent)">'+e.ch+'</td>' +
+        '<td style="padding:5px 10px;font-family:monospace;font-size:12px">'+e.server_ip+'</td>' +
+        '<td style="padding:5px 10px;color:var(--text2);font-size:12px">'+dt+'</td>' +
+        '</tr>';
+    }).join('');
+    if (count) count.textContent = '合計 '+entries.length+' 件';
+  }).catch(()=>{
+    const tbody = document.getElementById('portmap-tbody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="3" style="padding:12px 10px;color:#f87171;text-align:center">取得失敗</td></tr>';
+  });
+}
+function portmapSetStatus(msg, isErr) {
+  const el = document.getElementById('portmap-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = isErr ? '#f87171' : 'var(--text2)';
+}
+function portmapMapAll() {
+  portmapSetStatus('全chマッピング実行中...', false);
+  fetch('/api/portmap/map-all', {method:'POST'}).then(r=>r.json()).then(d=>{
+    portmapSetStatus('完了: '+d.mapped+' 件をマッピングしました', false);
+    loadPortMapEntries();
+  }).catch(()=>portmapSetStatus('エラーが発生しました', true));
+}
+function portmapMapCh() {
+  const inp = document.getElementById('portmap-ch-input');
+  const ch = inp ? parseInt(inp.value) : 0;
+  if (!ch || ch <= 0) { portmapSetStatus('ch番号を入力してください', true); return; }
+  portmapSetStatus('ch'+ch+' にマッピング中...', false);
+  fetch('/api/portmap/map-ch', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ch:ch})})
+    .then(r=>r.json()).then(d=>{
+      portmapSetStatus('ch'+ch+' にマッピングしました', false);
+      if (inp) inp.value = '';
+      loadPortMapEntries();
+    }).catch(()=>portmapSetStatus('エラーが発生しました', true));
+}
 // 巡回チャンネルリストから開始Chプルダウン生成・同期
 function updateStartChDropdown() {
   fetch('/api/patrol/channels').then(r=>r.json()).then(data=>{

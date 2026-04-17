@@ -305,6 +305,14 @@ func (cd *CapDevice) ApplyPortMapUpdate(ch uint32, serverIP string) {
 	}
 }
 
+// PortMapEntries はポートマップの全エントリを返す（GUI向け）。
+func (cd *CapDevice) PortMapEntries() []PortMapEntryInfo {
+	if cd.portMap == nil {
+		return nil
+	}
+	return cd.portMap.Entries()
+}
+
 // SetCurrentChannel は Patroller が現在巡回中のチャンネルを通知する。
 // パケットから lineID が取得できない場合のフォールバックとして使用される。
 // 同時に、接続中のセッションのサーバーポートをポートマップ投票に登録する。
