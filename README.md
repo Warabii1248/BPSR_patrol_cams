@@ -1,6 +1,6 @@
 # BPSR patrol cams
 
-[balrogsxt/StarResonanceAPI](https://github.com/balrogsxt/StarResonanceAPI) をベースに改変・拡張したツールです。
+https://github.com/yukkuman/bpsr-loyal-emu をベースに改変・拡張したツールです。
 
 スターレゾナンスで複数エミュレータを使い、指定モンスター（ウリボ・ゴールド、金ナッポ、銀ナッポ等）を自動検知して Discord に通知します。  
 検知したチャンネルは巡回リストから自動削除され、次のチャンネルへ進みます。
