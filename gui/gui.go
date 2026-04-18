@@ -1845,9 +1845,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		<div class="card panel-size-1x1" id="card-dash-report" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
       <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
         発見報告候補
-        <span style="margin-left:auto;display:flex;align-items:center;gap:6px">
-          <button id="btn-dash-notify" class="btn toggle-btn btn-chat-notify" onclick="toggleChatNotify()" title="Windows通知OFF">🔔</button>
-        </span>
+        <span style="margin-left:auto;font-size:10px;color:var(--text3)">自動抽出</span>
       </div>
       <div id="dash-chat-report-area" class="chat-report-list"></div>
     </div>
@@ -1886,7 +1884,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		</div>
 		<div class="col chat-side-card">
 			<div class="card">
-				<div class="card-title">発見報告候補<button id="btn-chat-notify" class="btn toggle-btn btn-chat-notify" onclick="toggleChatNotify()" style="margin-left:auto" title="Windows通知OFF">🔔</button></div>
+				<div class="card-title">発見報告候補</div>
 				<div class="chat-report-summary" id="chat-report-summary">発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。</div>
 				<div id="chat-report-area" class="chat-report-list"></div>
 			</div>
@@ -2874,38 +2872,10 @@ function appendChatToPanel(ev){
   const isDup=chatEvents.slice(-50).some(e=>e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
   if(isDup)return;
   chatEvents.push(ev);if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
-  if(isChatCandidate(ev))sendCandidateNotification(ev);
 	renderChatPanel();
 }
 function clearChatPanel(){chatEvents=[];const el=document.getElementById('chat-area');if(el)el.innerHTML='';renderDashChat([]);renderChatCandidatePanels([]);}
-let chatNotifyEnabled=localStorage.getItem('chatNotifyEnabled')!=='false';
-function toggleChatNotify(){
-  chatNotifyEnabled=!chatNotifyEnabled;
-  localStorage.setItem('chatNotifyEnabled',chatNotifyEnabled);
-  updateChatNotifyBtns();
-  if(chatNotifyEnabled&&'Notification' in window&&Notification.permission==='default')Notification.requestPermission();
-}
-function updateChatNotifyBtns(){
-  document.querySelectorAll('.btn-chat-notify').forEach(btn=>{
-    btn.classList.toggle('active',chatNotifyEnabled);
-    btn.title=chatNotifyEnabled?'Windows通知ON (クリックでOFF)':'Windows通知OFF (クリックでON)';
-  });
-}
-function sendCandidateNotification(ev){
-  if(!chatNotifyEnabled)return;
-  if(!('Notification' in window))return;
-  if(Notification.permission!=='granted')return;
-  const facts=extractChatCandidateFacts(ev);
-  const parts=[];
-  if(facts.channel>0)parts.push('Ch'+facts.channel);
-  if(facts.location)parts.push(facts.location);
-  if(facts.monster)parts.push(facts.monster);
-  const body=ev.sender+': '+ev.message+(parts.length?' ['+parts.join(' / ')+']':'');
-  try{new Notification('発見報告候補',{body});}catch(_){}
-}
 async function initChat(){
-  if('Notification' in window&&Notification.permission==='default'&&chatNotifyEnabled)Notification.requestPermission();
-  updateChatNotifyBtns();
   const dm=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
   if(dm.devices)dm.devices.forEach(e=>{if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
   refreshChatDeviceDropdown();
