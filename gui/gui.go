@@ -743,7 +743,7 @@ func (s *Server) RunWindow(ctx context.Context) error {
 	w := webview.NewWithOptions(webview.WebViewOptions{
 		Debug: false,
 		WindowOptions: webview.WindowOptions{
-			Title:  "BPSR_patrol_cams",
+			Title:  "BPSR patrol cams",
 			Width:  uint(winWidth),
 			Height: uint(winHeight),
 			Center: centerWin,
@@ -1478,7 +1478,7 @@ const indexHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BPSR_patrol_cams</title>
+<title>BPSR patrol cams</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -1845,7 +1845,9 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		<div class="card panel-size-1x1" id="card-dash-report" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
       <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
         発見報告候補
-        <span style="margin-left:auto;font-size:10px;color:var(--text3)">自動抽出</span>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:6px">
+          <button id="btn-dash-notify" class="btn toggle-btn btn-chat-notify" onclick="toggleChatNotify()" title="Windows通知OFF">🔔</button>
+        </span>
       </div>
       <div id="dash-chat-report-area" class="chat-report-list"></div>
     </div>
@@ -1884,7 +1886,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		</div>
 		<div class="col chat-side-card">
 			<div class="card">
-				<div class="card-title">発見報告候補</div>
+				<div class="card-title">発見報告候補<button id="btn-chat-notify" class="btn toggle-btn btn-chat-notify" onclick="toggleChatNotify()" style="margin-left:auto" title="Windows通知OFF">🔔</button></div>
 				<div class="chat-report-summary" id="chat-report-summary">発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。</div>
 				<div id="chat-report-area" class="chat-report-list"></div>
 			</div>
@@ -2556,11 +2558,11 @@ function renderDashDevices(devs,deviceMap){
   if(!devs||devs.length===0){el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return;}
   el.innerHTML=devs.map(d=>{
     const info=deviceMap[d]||{};
-    const confirmed=info.confirmed||false,uid=info.user_uid||'',ch=info.line_id||'';
-    const sub=uid?((confirmed?'🔗 ':'')+' UID:'+uid+(ch?' Ch'+ch:'')):'未認証';
+    const uid=info.user_uid||'',ch=info.line_id||'',confirmed=info.confirmed||false;
+    const sub=uid?((confirmed?'🔗 ':'')+' UID:'+uid+(ch?' Ch'+ch:'')):'--';
     return '<div class="device-row"><div class="device-icon">📱</div>'
       +'<div class="device-info"><div class="device-name">'+escHtml(d)+'</div><div class="device-sub">'+escHtml(sub)+'</div></div>'
-      +'<div class="device-badge '+(confirmed?'connected':'offline')+'">'+(confirmed?'接続済':'未認証')+'</div></div>';
+      +'<div class="device-badge '+(confirmed?'connected':'offline')+'">'+escHtml(d)+'</div></div>';
   }).join('');
 }
 // ── Devices ──
@@ -2583,7 +2585,7 @@ async function refreshDevices(){
     const checked=selectedDevices.has(d)?'checked':'';
     const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
     const eid='ch-'+encodeURIComponent(d);
-    return '<div class="device-entry'+(confirmed?' matched':'')+'">'
+    return '<div class="device-entry'+(confirmed?' matched':'')+'">';
       +'<label class="check-label"><input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)"><span class="serial">'+escHtml(d)+'</span>'+uidHtml+'</label>'
       +'<div style="display:flex;gap:6px;margin-top:4px"><input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px"><button style="padding:3px 8px;font-size:.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button></div></div>';
   }).join('');
@@ -2719,7 +2721,6 @@ function getChatCandidateScore(ev){
 	const rules=getChatCandidateConfig();
 	if(!message||length<4||length>80)return 0;
 	const excludeKeywords=['ありがとう','ありがと','よろしく','こん','こんばんは','おつ','了解','りょ','募集','売り','買い','null'];
-	if(rules.senders.length && !rules.senders.some(v=>sender.includes(v.toLowerCase())))return 0;
 	if(rules.excludedSenders.some(v=>sender.includes(v.toLowerCase())))return 0;
 	if(excludeKeywords.some(v=>message.includes(v)))return 0;
 	if(!facts.channel && !facts.location && !facts.monster && !facts.hasCoords && !facts.hasReportVerb)return 0;
@@ -2775,7 +2776,6 @@ function chatMsgHtml(ev,opts){
 	const scoreBadge=opts.report?'<span class="chat-report-score">score '+getChatCandidateScore(ev)+'</span>':'';
 	const rowClass='chat-msg'+(opts.report?' report':'');
 	const actionHtml=opts.withActions===false?'':'<span class="chat-msg-actions">'
-		+'<button type="button" class="chat-action-btn" data-action="sender-include" data-sender="'+escHtml(ev.sender)+'" onclick="applyChatFilterAction(this)">発言者+</button>'
 		+'<button type="button" class="chat-action-btn exclude" data-action="sender-exclude" data-sender="'+escHtml(ev.sender)+'" onclick="applyChatFilterAction(this)">発言者-</button>'
 		+'</span>';
 	return '<div class="'+rowClass+'" onmouseover="this.style.background=\'var(--bg2)\'" onmouseout="this.style.background=\'\'">'
@@ -2856,9 +2856,7 @@ function renderChatCandidatePanels(source){
 	const rules=getChatCandidateConfig();
 	const emptyHtml='<div class="chat-report-empty">候補はまだありません</div>';
 	if(summary){
-		const parts=[];
-		if(rules.senders.length)parts.push('含む発言者: '+rules.senders.join(', '));
-		summary.textContent=parts.length?parts.join(' / '):'発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。';
+		summary.textContent='発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。';
 	}
 	if(full)full.innerHTML=picked.length?picked.slice().reverse().map(ev=>chatMsgHtml(ev,{report:true})).join(''):emptyHtml;
 	if(dash)dash.innerHTML=picked.length?picked.slice(-6).reverse().map(ev=>chatMsgHtml(ev,{report:true,withActions:false})).join(''):emptyHtml;
@@ -2876,10 +2874,38 @@ function appendChatToPanel(ev){
   const isDup=chatEvents.slice(-50).some(e=>e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
   if(isDup)return;
   chatEvents.push(ev);if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
+  if(isChatCandidate(ev))sendCandidateNotification(ev);
 	renderChatPanel();
 }
 function clearChatPanel(){chatEvents=[];const el=document.getElementById('chat-area');if(el)el.innerHTML='';renderDashChat([]);renderChatCandidatePanels([]);}
+let chatNotifyEnabled=localStorage.getItem('chatNotifyEnabled')!=='false';
+function toggleChatNotify(){
+  chatNotifyEnabled=!chatNotifyEnabled;
+  localStorage.setItem('chatNotifyEnabled',chatNotifyEnabled);
+  updateChatNotifyBtns();
+  if(chatNotifyEnabled&&'Notification' in window&&Notification.permission==='default')Notification.requestPermission();
+}
+function updateChatNotifyBtns(){
+  document.querySelectorAll('.btn-chat-notify').forEach(btn=>{
+    btn.classList.toggle('active',chatNotifyEnabled);
+    btn.title=chatNotifyEnabled?'Windows通知ON (クリックでOFF)':'Windows通知OFF (クリックでON)';
+  });
+}
+function sendCandidateNotification(ev){
+  if(!chatNotifyEnabled)return;
+  if(!('Notification' in window))return;
+  if(Notification.permission!=='granted')return;
+  const facts=extractChatCandidateFacts(ev);
+  const parts=[];
+  if(facts.channel>0)parts.push('Ch'+facts.channel);
+  if(facts.location)parts.push(facts.location);
+  if(facts.monster)parts.push(facts.monster);
+  const body=ev.sender+': '+ev.message+(parts.length?' ['+parts.join(' / ')+']':'');
+  try{new Notification('発見報告候補',{body});}catch(_){}
+}
 async function initChat(){
+  if('Notification' in window&&Notification.permission==='default'&&chatNotifyEnabled)Notification.requestPermission();
+  updateChatNotifyBtns();
   const dm=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
   if(dm.devices)dm.devices.forEach(e=>{if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
   refreshChatDeviceDropdown();
@@ -3768,7 +3794,7 @@ const spawnLogHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>出現ログ - LoyalBoarlet Monitor</title>
+<title>出現ログ - BPSR Patrol Cams</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg0:#0f1117;--bg1:#161b27;--bg2:#1e2535;--bg3:#252d40;--accent:#4f8ef7;--warn:#f5a623;--text1:#e8eaf0;--text2:#9aa3b8;--text3:#5c6680;--border:#2a3348;--radius:8px;}
@@ -3814,7 +3840,7 @@ const chatLogHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>チャットログ - LoyalBoarlet Monitor</title>
+<title>チャットログ - BPSR Patrol Cams</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg0:#0f1117;--bg1:#161b27;--bg2:#1e2535;--bg3:#252d40;--accent:#4f8ef7;--warn:#f5a623;--text1:#e8eaf0;--text2:#9aa3b8;--text3:#5c6680;--border:#2a3348;}

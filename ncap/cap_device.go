@@ -91,6 +91,7 @@ type session struct {
 	clientEndpoint  string    // "ip:port"（セッションキー、TCP接続ごとにユニーク）
 	clientIP        string    // エミュレータのIPアドレス（ポートなし、表示用）
 	serverIP        string    // 現在のプライマリゲームサーバーアドレス
+	serverIPSetAt   time.Time // serverIP が最後に変更された時刻
 	serverConfirmed bool      // 0x15/IDENT-P3 でサーバー確定済み
 	confirmedAt     time.Time // serverConfirmed が true になった時刻（チャット紐付けの優先度に使用）
 
@@ -329,7 +330,7 @@ func (cd *CapDevice) SetCurrentChannel(ch uint32) {
 		cd.sessionsMu.RLock()
 		for _, sess := range cd.sessions {
 			sess.mu.Lock()
-			if sess.serverIP != "" && sess.lineID == 0 {
+			if sess.serverIP != "" && sess.lineID == 0 && now.Sub(sess.serverIPSetAt) <= portVoteWindow {
 				sess.lineID = ch
 				serverIP := sess.serverIP
 				label := sess.label
@@ -572,6 +573,7 @@ func (cd *CapDevice) cleanupSessions() {
 					log.Printf("[%s] idle timeout → 状態リセット", s.label)
 					s.resetTCPState()
 					s.serverIP = ""
+					s.serverIPSetAt = time.Time{}
 
 					if s.userUID != 0 {
 						// 認証済みセッション（UID確定済）はマップに残して再接続時に再利用
@@ -666,6 +668,7 @@ func (cd *CapDevice) mergeSessionIfDuplicate(newSess *session) {
 	}
 	if newSess.serverIP != "" {
 		existing.serverIP = newSess.serverIP
+		existing.serverIPSetAt = newSess.serverIPSetAt
 	}
 	existing.userUID = newSess.userUID
 	existing.lastAnyPacketAt = newSess.lastAnyPacketAt
@@ -895,6 +898,7 @@ func (cd *CapDevice) handleClientToServer(clientIP, srcKey, revKey string, tcp *
 				if existing.serverIP != serverAddr {
 					log.Printf("[%s] C→S: 接続切替登録 [%s] → [%s]", existing.label, existing.serverIP, serverAddr)
 					existing.serverIP = serverAddr
+					existing.serverIPSetAt = now
 				}
 				cd.registerConn(srcKey, revKey, clientEndpoint)
 				existing.lastAnyPacketAt = now
@@ -919,6 +923,7 @@ func (cd *CapDevice) handleClientToServer(clientIP, srcKey, revKey string, tcp *
 		if existing.serverIP != serverAddr {
 			prev := existing.serverIP
 			existing.serverIP = serverAddr
+			existing.serverIPSetAt = now
 			cd.tryPortMapLineID(existing) // serverIP 更新時に portMap から ch を補完
 			if !existing.serverConfirmed {
 				existing.resetTCPState()
@@ -970,6 +975,7 @@ func (cd *CapDevice) handleClientToServer(clientIP, srcKey, revKey string, tcp *
 	sess.getStream(serverAddr).nextSeq = initNextSeq
 	if sess.serverIP != serverAddr {
 		sess.serverIP = serverAddr
+		sess.serverIPSetAt = now
 	}
 	cd.tryPortMapLineID(sess) // serverIP 確定時に portMap から ch を補完
 	// 巡回中かつ未割当セッションの場合、portMap クォーラム投票に参加
@@ -1080,6 +1086,7 @@ func (cd *CapDevice) handleServerToClientFast(srcIP, dstIP, srcKey, revKey strin
 		if sess.serverIP != newServerAddr {
 			log.Printf("[%s] fast-path: サーバー変更 [%s] → [%s]", sess.label, sess.serverIP, newServerAddr)
 			sess.serverIP = newServerAddr
+			sess.serverIPSetAt = time.Now()
 			// 未確定時は古い sub-stream をクリア
 			sess.streams = make(map[string]*tcpSubStream)
 			cd.sessionsMu.Lock()
