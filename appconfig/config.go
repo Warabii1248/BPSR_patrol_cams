@@ -57,6 +57,10 @@ type Config struct {
 	ChatReportLocationRules []string `json:"chat_report_location_rules,omitempty"`
 	// ChatReportMonsterAliasRules はモンスター別名の追加ルール。
 	ChatReportMonsterAliasRules []string `json:"chat_report_monster_alias_rules,omitempty"`
+	// ChatReportMinLength は報告候補の最小文字数。0でデフォルト(4)。
+	ChatReportMinLength int `json:"chat_report_min_length,omitempty"`
+	// ChatReportMaxLength は報告候補の最大文字数。0でデフォルト(80)。
+	ChatReportMaxLength int `json:"chat_report_max_length,omitempty"`
 
 	// --- GUI / ADB 設定 ---
 
@@ -253,6 +257,8 @@ func Load(path string) (*Config, error) {
 	cfg.ChatReportExcludedSenders = fc.ChatReportExcludedSenders
 	cfg.ChatReportLocationRules = fc.ChatReportLocationRules
 	cfg.ChatReportMonsterAliasRules = fc.ChatReportMonsterAliasRules
+	cfg.ChatReportMinLength = fc.ChatReportMinLength
+	cfg.ChatReportMaxLength = fc.ChatReportMaxLength
 	return cfg, nil
 }
 
@@ -270,6 +276,8 @@ func Save(path string, cfg *Config) error {
 		ChatReportExcludedSenders:   cfg.ChatReportExcludedSenders,
 		ChatReportLocationRules:     cfg.ChatReportLocationRules,
 		ChatReportMonsterAliasRules: cfg.ChatReportMonsterAliasRules,
+		ChatReportMinLength:         cfg.ChatReportMinLength,
+		ChatReportMaxLength:         cfg.ChatReportMaxLength,
 	}
 	if err := SaveFilter(filterPath, fc); err != nil {
 		return err
@@ -281,6 +289,8 @@ func Save(path string, cfg *Config) error {
 	cfgCopy.ChatReportExcludedSenders = nil
 	cfgCopy.ChatReportLocationRules = nil
 	cfgCopy.ChatReportMonsterAliasRules = nil
+	cfgCopy.ChatReportMinLength = 0
+	cfgCopy.ChatReportMaxLength = 0
 	data, err := json.MarshalIndent(cfgCopy, "", "  ")
 	if err != nil {
 		return err
@@ -328,6 +338,8 @@ func SaveWindowState(path string, ws *WindowState) error {
 	cfg.ChatReportExcludedSenders = nil
 	cfg.ChatReportLocationRules = nil
 	cfg.ChatReportMonsterAliasRules = nil
+	cfg.ChatReportMinLength = 0
+	cfg.ChatReportMaxLength = 0
 	data, err = json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

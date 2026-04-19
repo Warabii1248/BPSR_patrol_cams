@@ -22,6 +22,10 @@ type FilterConfig struct {
 	// ChatReportMonsterAliasRules はモンスター別名の追加ルール。
 	// 形式: "モンスター名|別名1,別名2,..."
 	ChatReportMonsterAliasRules []string `json:"chat_report_monster_alias_rules"`
+	// ChatReportMinLength は報告候補の最小文字数。0でデフォルト(4)。
+	ChatReportMinLength int `json:"chat_report_min_length,omitempty"`
+	// ChatReportMaxLength は報告候補の最大文字数。0でデフォルト(80)。
+	ChatReportMaxLength int `json:"chat_report_max_length,omitempty"`
 }
 
 // LoadFilter は path から FilterConfig を読み込む。

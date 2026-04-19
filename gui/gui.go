@@ -1669,8 +1669,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .chat-msg-main{display:flex;gap:8px;align-items:flex-start}
 .chat-msg-body{flex:1;min-width:0;word-break:break-word}
 .chat-msg-text{color:var(--text1);user-select:text}
-.chat-msg-actions{display:flex;gap:4px;flex-wrap:wrap;opacity:0;transition:opacity .15s;align-items:center}
-.chat-msg:hover .chat-msg-actions{opacity:1}
+.chat-msg-actions{display:flex;gap:4px;flex-wrap:wrap;opacity:0;transition:opacity .15s;align-items:center;pointer-events:none}
+.chat-msg:hover .chat-msg-actions{opacity:1;pointer-events:auto}
 .chat-action-btn{padding:2px 6px;font-size:10px;border-radius:999px;background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.28);color:var(--accent)}
 .chat-action-btn.exclude{background:rgba(233,75,75,.08);border-color:rgba(233,75,75,.24);color:var(--danger)}
 .chat-split{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.95fr);gap:10px;align-items:start;align-content:start;min-height:0;flex:1}
@@ -1884,7 +1884,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		</div>
 		<div class="col chat-side-card">
 			<div class="card">
-				<div class="card-title">発見報告候補</div>
+				<div class="card-title" style="display:flex;align-items:center;gap:8px"><span>発見報告候補</span><button id="notify-sound-toggle" class="btn" style="margin-left:auto;font-size:12px;padding:2px 8px" onclick="toggleNotifySound()" title="通知音ON/OFF">🔔</button><input type="range" id="notify-sound-volume" min="0" max="1" step="0.05" style="width:70px" title="通知音量" oninput="setNotifyVolume(this.value)"></div>
 				<div class="chat-report-summary" id="chat-report-summary">発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。</div>
 				<div id="chat-report-area" class="chat-report-list"></div>
 			</div>
@@ -2591,6 +2591,8 @@ async function refreshDevices(){
 function toggleDevice(s,c){c?selectedDevices.add(s):selectedDevices.delete(s);}
 // ── Chat Panel ──
 let chatEvents=[],chatIPToSerial={},chatKnownSerials=[];
+let notifySoundEnabled=localStorage.getItem('notifySoundEnabled')!=='false';
+let notifySoundVolume=parseFloat(localStorage.getItem('notifySoundVolume')||'0.5');
 const DEFAULT_CHAT_LOCATION_RULES=[];
 const CHAT_MONSTER_ALIASES=[];
 function chatMessageLength(text){return Array.from(String(text||'')).length;}
@@ -2709,6 +2711,8 @@ function getChatCandidateConfig(){
 	return {
 		senders: normalizeCsvList(cfgData.chat_report_senders),
 		excludedSenders: normalizeCsvList(cfgData.chat_report_excluded_senders),
+		minLength: parseInt(cfgData.chat_report_min_length)||4,
+		maxLength: parseInt(cfgData.chat_report_max_length)||80,
 	};
 }
 function getChatCandidateScore(ev){
@@ -2717,7 +2721,7 @@ function getChatCandidateScore(ev){
 	const sender=facts.sender;
 	const length=chatMessageLength(facts.rawMessage);
 	const rules=getChatCandidateConfig();
-	if(!message||length<4||length>80)return 0;
+	if(!message||length<rules.minLength||length>rules.maxLength)return 0;
 	const excludeKeywords=['ありがとう','ありがと','よろしく','こん','こんばんは','おつ','了解','りょ','募集','売り','買い','null'];
 	if(rules.excludedSenders.some(v=>sender.includes(v.toLowerCase())))return 0;
 	if(excludeKeywords.some(v=>message.includes(v)))return 0;
@@ -2742,12 +2746,12 @@ function getChatCandidateScore(ev){
 }
 function isChatCandidate(ev){
 	const facts=extractChatCandidateFacts(ev);
+	if(!(facts.channel>0) || !facts.location)return false;
 	const score=getChatCandidateScore(ev);
 	if(score>=6)return true;
-	if(facts.inferredMonster==='ウリボ・ゴールド' && facts.channel>0 && facts.location && score>=5)return true;
-	if((facts.inferredMonster==='金ナッポ' || facts.inferredMonster==='銀ナッポ') && facts.channel>0 && facts.location && score>=5)return true;
-	if(score>=4 && facts.channel>0 && facts.location)return true;
-	if(score>=4 && facts.monster && (facts.channel>0 || facts.location))return true;
+	if(facts.inferredMonster==='ウリボ・ゴールド' && score>=5)return true;
+	if((facts.inferredMonster==='金ナッポ' || facts.inferredMonster==='銀ナッポ') && score>=5)return true;
+	if(score>=4)return true;
 	return false;
 }
 function dedupeChatEvents(source){
@@ -2868,10 +2872,41 @@ function renderChatPanel(){
   renderDashChat(deduped.slice(-8));
 	renderChatCandidatePanels(filtered);
 }
+function playNotifyBeep(){
+	if(!notifySoundEnabled)return;
+	try{
+		const ctx=new(window.AudioContext||window.webkitAudioContext)();
+		const osc=ctx.createOscillator();
+		const gain=ctx.createGain();
+		osc.connect(gain);gain.connect(ctx.destination);
+		osc.type='sine';osc.frequency.value=880;
+		gain.gain.setValueAtTime(notifySoundVolume,ctx.currentTime);
+		gain.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.3);
+		osc.start();osc.stop(ctx.currentTime+0.3);
+		osc.onended=()=>ctx.close();
+	}catch(_){}
+}
+function toggleNotifySound(){
+	notifySoundEnabled=!notifySoundEnabled;
+	localStorage.setItem('notifySoundEnabled',notifySoundEnabled);
+	applyNotifySoundUI();
+	if(notifySoundEnabled)playNotifyBeep();
+}
+function setNotifyVolume(v){
+	notifySoundVolume=parseFloat(v);
+	localStorage.setItem('notifySoundVolume',notifySoundVolume);
+}
+function applyNotifySoundUI(){
+	const btn=document.getElementById('notify-sound-toggle');
+	const vol=document.getElementById('notify-sound-volume');
+	if(btn){btn.textContent=notifySoundEnabled?'🔔':'🔕';btn.classList.toggle('active',notifySoundEnabled);}
+	if(vol){vol.value=notifySoundVolume;vol.disabled=!notifySoundEnabled;}
+}
 function appendChatToPanel(ev){
   const isDup=chatEvents.slice(-50).some(e=>e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
   if(isDup)return;
   chatEvents.push(ev);if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
+  if(isChatCandidate(ev))playNotifyBeep();
 	renderChatPanel();
 }
 function clearChatPanel(){chatEvents=[];const el=document.getElementById('chat-area');if(el)el.innerHTML='';renderDashChat([]);renderChatCandidatePanels([]);}
@@ -2880,7 +2915,7 @@ async function initChat(){
   if(dm.devices)dm.devices.forEach(e=>{if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
   refreshChatDeviceDropdown();
   const h=await fetch('/api/chat-log').then(r=>r.json()).catch(()=>[]);
-  chatEvents=h||[];renderChatPanel();
+  chatEvents=h||[];renderChatPanel();applyNotifySoundUI();
   const es=new EventSource('/api/chat-events');
   es.onmessage=e=>{try{appendChatToPanel(JSON.parse(e.data));}catch(_){}};
 }
@@ -3083,6 +3118,8 @@ const CHAT_RULE_FIELDS=[
 const CFG_FIELDS=[
   {k:'discord_webhook',label:'Discord Webhook URL',type:'text',desc:'空にするとDiscord通知無効'},
   {k:'chat_exclude',label:'チャット除外キーワード',type:'csv',desc:'カンマ区切り。例: いない,終わった'},
+  {k:'chat_report_min_length',label:'報告候補 最小文字数',type:'number',desc:'0でデフォルト(4)。これ未満のメッセージを除外'},
+  {k:'chat_report_max_length',label:'報告候補 最大文字数',type:'number',desc:'0でデフォルト(80)。これ超のメッセージを除外'},
   {k:'patrol_dwell_secs',label:'滞在時間 (秒)',type:'number',desc:'ch移動完了後〜次ch移動開始までの待機秒数'},
   {k:'patrol_move_timeout_secs',label:'初回マージ待ちタイムアウト (秒)',type:'number',desc:'1台目のマージを待つ最大秒数。0=無効'},
   {k:'patrol_merge_timeout_secs',label:'残りマージ待ちタイムアウト (秒)',type:'number',desc:'1台目受信後、残り台数を待つ最大秒数'},
