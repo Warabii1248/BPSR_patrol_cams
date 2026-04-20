@@ -1,4 +1,4 @@
-﻿# LoyalBoarlet Monitor - Build & distribution package script
+﻿# BPSR Patrol Cams - Build & distribution package script
 # Usage: .\build.ps1          (release build)
 #        .\build.ps1 -Debug   (debug build with console window)
 #
@@ -21,11 +21,11 @@ param(
 $ErrorActionPreference = "Stop"
 
 # -- Version --
-$Version = "1.0.0.5"
-$ExeName = "LoyalBoarlet.exe"
-$ZipName = "LoyalBoarlet-v$Version-windows-amd64.zip"
+$Version = "2.0.0"
+$ExeName = "BPSR_patrol_cams.exe"
+$ZipName = "BPSR_patrol_cams-v$Version-windows-amd64.zip"
 
-Write-Host "=== LoyalBoarlet Monitor Build ===" -ForegroundColor Cyan
+Write-Host "=== BPSR Patrol Cams Build ===" -ForegroundColor Cyan
 Write-Host "Version : $Version"
 Write-Host "Mode    : $(if ($Debug) { 'Debug (with console)' } else { 'Release (no console)' })"
 Write-Host ""
@@ -123,7 +123,7 @@ if (Test-Path "config\channels.txt") {
 }
 
 $readmeLines = @(
-    "LoyalBoarlet Monitor v$Version",
+    "BPSR Patrol Cams v$Version",
     "===============================",
     "",
     "[Required software]",
@@ -132,7 +132,7 @@ $readmeLines = @(
     "  Check WinPcap API-compatible Mode during installation.",
     "",
     "[How to run]",
-    "  Double-click LoyalBoarlet.exe",
+    "  Double-click BPSR_patrol_cams.exe",
     "",
     "[Config files]",
     "  config\config.json         - Discord Webhook URL and other settings",
