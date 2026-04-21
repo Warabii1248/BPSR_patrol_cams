@@ -126,16 +126,6 @@ func (pm *PortMap) Entries() []PortMapEntryInfo {
 	return out
 }
 
-// Count は登録件数を返す。
-func (pm *PortMap) Count() int {
-	if pm == nil {
-		return 0
-	}
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-	return len(pm.portToCh)
-}
-
 // save はWriteロック保持中に呼び出す。
 func (pm *PortMap) save() {
 	data, err := json.MarshalIndent(pm.portToCh, "", "  ")

@@ -798,18 +798,6 @@ func (s *Server) RunWindow(ctx context.Context) error {
 	return nil
 }
 
-// Start はHTTPサーバーをバックグラウンド起動してブラウザで開く
-func (s *Server) Start(ctx context.Context) error {
-	url, err := s.startHTTP(ctx)
-	if err != nil {
-		return err
-	}
-	log.Printf("[GUI] http server: %s", url)
-	openBrowser(url)
-	<-ctx.Done()
-	return nil
-}
-
 func openBrowser(url string) {
 	cmd := exec.Command("cmd", "/c", "start", url)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}

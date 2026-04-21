@@ -1,10 +1,7 @@
 package global
 
 import (
-	"fmt"
-	"log"
 	"sync"
-	"time"
 )
 
 // 场景怪物数据
@@ -53,71 +50,3 @@ type Monster struct {
 	UpdateTime    int64                    `json:"-"`                        //数据最后更新时间
 }
 
-func ClearAllData() {
-	clearMonsterList()
-}
-func clearMonsterList() {
-	SceneMonsterListLock.Lock()
-	defer SceneMonsterListLock.Unlock()
-	SceneMonsterList = make(map[uint64]*Monster)
-}
-
-//func clearScene() {
-//	CurrentSceneLock.Lock()
-//	defer CurrentSceneLock.Unlock()
-//	//玩家坐标去掉,场景切换其他信息不会变动,但是如果是网络中断导致的重新识别服务器会导致当前场景数据被清空
-//	if CurrentScene != nil && CurrentScene.Player != nil{
-//		CurrentScene.Player.Pos = nil
-//	}
-//}
-
-func FindMonsterId(uuid uint64, callback func(*Monster)) {
-	var monster *Monster
-	var isNew bool
-
-	// 加锁获取或创建monster对象
-	SceneMonsterListLock.Lock()
-	if existing, has := SceneMonsterList[uuid]; has {
-		monster = existing
-		isNew = false
-	} else {
-		monster = &Monster{
-			UpdateTime: time.Now().Unix(),
-		}
-		SceneMonsterList[uuid] = monster
-		isNew = true
-	}
-	SceneMonsterListLock.Unlock()
-
-	// 在锁外调用callback，避免死锁和长时间持锁
-	startTime := time.Now()
-	callback(monster)
-
-	// 记录性能指标
-	duration := time.Since(startTime).Milliseconds()
-	if duration >= 100 {
-		log.Println(fmt.Sprintf("%d 异常更新耗时: %d ms", uuid, duration))
-	}
-
-	// 如果不是新创建的对象，需要更新时间戳
-	if !isNew {
-		SceneMonsterListLock.Lock()
-		if currentMonster, exists := SceneMonsterList[uuid]; exists {
-			currentMonster.UpdateTime = time.Now().Unix()
-		}
-		SceneMonsterListLock.Unlock()
-	}
-}
-
-func UpdateScene(callback func(*SceneInfo)) {
-	CurrentSceneLock.Lock()
-	defer CurrentSceneLock.Unlock()
-	if CurrentScene == nil {
-		CurrentScene = &SceneInfo{
-			Player: &ScenePlayer{},
-			Scene:  &SceneData{},
-		}
-	}
-	callback(CurrentScene)
-
-}

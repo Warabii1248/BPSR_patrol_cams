@@ -37,20 +37,6 @@ type Config struct {
 	DwellDuration time.Duration
 }
 
-// DefaultConfig はデフォルト値を返す
-func DefaultConfig() Config {
-	return Config{
-		ADBPath:            "adb",
-		TapX:               975,
-		TapY:               664,
-		ClearLength:        3,
-		PreKeycode:         "KEYCODE_P",
-		GlobalDelay:        800 * time.Millisecond,
-		ParallelLimit:      0,
-		ParallelGroupDelay: 0,
-	}
-}
-
 // newCmd は HideWindow: true でコマンドを作成する（GUIモード時のコンソール点滅防止）
 // ctx がキャンセルされると実行中のプロセスが即座に強制終了される。
 func newCmd(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -144,15 +130,6 @@ func ListDevices(ctx context.Context, cfg Config) ([]string, error) {
 		log.Println("[MuMu] デバイスが見つかりません。ADBでエミュレーターが認識されているか確認してください")
 	}
 	return devices, nil
-}
-
-// ListDevicesWithRestart は adb kill-server/start-server でADBサーバーを再起動してから
-// デバイス一覧を返す。接続が切れた場合の復旧用。
-func ListDevicesWithRestart(ctx context.Context, cfg Config) ([]string, error) {
-	if restartErr := RestartServer(ctx, cfg); restartErr != nil {
-		log.Printf("[MuMu] ADB再起動失敗: %v", restartErr)
-	}
-	return ListDevices(ctx, cfg)
 }
 
 func listDevicesOnce(ctx context.Context, cfg Config) ([]string, error) {
