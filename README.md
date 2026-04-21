@@ -190,7 +190,7 @@ PortMap システムが管理するポート番号→チャンネル番号のマ
 .\build.ps1
 ```
 
-`LoyalBoarlet\` フォルダにビルド済みファイルが出力されます。  
+`release\` フォルダにビルド済みファイルが出力され、実行ファイル名は `BPSR_patrol_cams.exe` です。  
 `winres\winres.json` と `winres\icon.ico` を置いておくと EXE にアイコンが自動埋め込みされます（`go-winres` が未インストールの場合は自動でインストールされます）。
 
 ### 手動ビルド
@@ -199,7 +199,7 @@ PortMap システムが管理するポート番号→チャンネル番号のマ
 $env:CGO_ENABLED = "1"
 $env:CGO_CFLAGS  = "-IC:\npcap-sdk\Include"
 $env:CGO_LDFLAGS = "-LC:\npcap-sdk\Lib\x64 -lwpcap"
-go build -ldflags "-s -w -H windowsgui -X main.Version=dev" -o LoyalBoarlet.exe .
+go build -ldflags "-s -w -H windowsgui -X main.Version=dev" -o BPSR_patrol_cams.exe .
 ```
 
 ---

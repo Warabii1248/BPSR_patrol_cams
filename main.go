@@ -18,7 +18,6 @@ import (
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/balrogsxt/StarResonanceAPI/appconfig"
-	"github.com/balrogsxt/StarResonanceAPI/gasfetch"
 	"github.com/balrogsxt/StarResonanceAPI/gui"
 	"github.com/balrogsxt/StarResonanceAPI/location"
 	"github.com/balrogsxt/StarResonanceAPI/mumu"
@@ -385,9 +384,8 @@ func main() {
 			}
 			// モンスタースキャン
 			capDevice.SetMonsterScan(c.MonsterScan)
-			// GAS 設定（次のtickから反映）
-			cfg.GASURL = c.GASURL
-			cfg.GASSpawnThresholdHours = c.GASSpawnThresholdHours
+			// GAS 対象エネミー（即時反映）
+			guiServer.SetGASTargetEnemy(c.GASTargetEnemy)
 			return nil
 		},
 	)
@@ -415,28 +413,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// GAS 自動チャンネル更新ゴルーチン
-	if cfg.GASURL != "" {
-		interval := time.Duration(cfg.GASFetchIntervalMins * float64(time.Minute))
-		if interval <= 0 {
-			interval = 10 * time.Minute
-		}
-		go func() {
-			// 起動直後に1回実行
-			runGASFetch(cfg, guiServer)
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					runGASFetch(cfg, guiServer)
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-	}
-
 	if cfg.GUIPort > 0 {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -458,21 +434,6 @@ func main() {
 	log.Println("shutting down...")
 }
 
-// runGASFetch は GAS から討伐情報を取得してチャンネルリストを更新する。
-func runGASFetch(cfg *appconfig.Config, srv *gui.Server) {
-	entries, err := gasfetch.Fetch(cfg.GASURL)
-	if err != nil {
-		log.Printf("[GASFetch] 取得失敗: %v", err)
-		return
-	}
-	chs := gasfetch.FilterChannels(entries, cfg.GASSpawnThresholdHours)
-	if len(chs) == 0 {
-		log.Printf("[GASFetch] 閾値%.1fh以上のchなし（全%d件）", cfg.GASSpawnThresholdHours, len(entries))
-		return
-	}
-	log.Printf("[GASFetch] チャンネル更新: %d件 (閾値=%.1fh): %v", len(chs), cfg.GASSpawnThresholdHours, chs)
-	srv.UpdateChannelsFromGAS(chs)
-}
 
 // runChMapCollector はターミナルからch番号を受け取り、
 // 現在のセッションのサーバーポートをch番号と対応付けてJSONファイルに保存する。

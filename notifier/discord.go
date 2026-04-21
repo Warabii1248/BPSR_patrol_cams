@@ -1,4 +1,4 @@
-// Package notifier sends LoyalBoarlet detection notifications to Discord.
+// Package notifier sends rare enemies detection notifications to Discord.
 package notifier
 
 import (
@@ -17,7 +17,7 @@ const (
 	SourceChat = "チャット"
 )
 
-// Detection carries all information for one LoyalBoarlet notification.
+// Detection carries all information for one rare enemies notification.
 type Detection struct {
 	// Source is SourceAuto ("自動") or SourceChat ("チャット").
 	Source string
@@ -55,8 +55,8 @@ type Detection struct {
 
 // DiscordWebhook sends notifications via a Discord incoming webhook.
 type DiscordWebhook struct {
-	URL            string
-	ChatReportURL  string
+	URL           string
+	ChatReportURL string
 }
 
 // Send posts the detection as a text message to the configured webhook(s).

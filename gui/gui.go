@@ -67,6 +67,8 @@ type Server struct {
 	chatLog     []ChatEvent   // チャットログ（最大500件）
 	chatClients []chan string // チャットSSEクライアント
 
+	gasTargetEnemy string // Chrome拡張から受信したchのフィルタ対象エネミー名
+
 	pendingPortMapMu  sync.Mutex
 	pendingPortMaps   []PendingPortMapChange
 	pendingPortMapSeq int
@@ -124,6 +126,7 @@ func New(port int, mumuCfg mumu.Config, patrolChannels []uint32, patrolChannelsF
 		patrolChannelsFile: patrolChannelsFile,
 		goldHistoryFile:    historyFile,
 		cooldownChs:        make(map[uint32]time.Time),
+		gasTargetEnemy:     "金ウリボ",
 	}
 	if err := s.loadGoldHistoryFromDisk(); err != nil {
 		log.Printf("[GUI] gold history load failed: %v", err)
@@ -259,6 +262,13 @@ func (s *Server) filterCooldown(chs []uint32) []uint32 {
 	return filtered
 }
 
+// SetGASTargetEnemy は Chrome拡張から受信するチャンネルのフィルタ対象エネミー名を設定する。
+func (s *Server) SetGASTargetEnemy(target string) {
+	s.mu.Lock()
+	s.gasTargetEnemy = target
+	s.mu.Unlock()
+}
+
 // UpdateChannelsFromGAS は GAS から取得したチャンネルリストで巡回リストを上書きする。
 // channels.txt に保存することで、Patroller のホットリロード機能が自動的に検知して反映する。
 func (s *Server) UpdateChannelsFromGAS(chs []uint32) {
@@ -320,7 +330,7 @@ func (s *Server) OnDetect(det notifier.Detection) {
 	// 金ウリボ履歴に追記（最大50件）
 	monName := det.MonsterName
 	if monName == "" {
-		monName = "ゴールドウリボ"
+		monName = "ウリボ・ゴールド"
 	}
 	loc := det.Location
 	if loc == "" {
@@ -576,6 +586,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/patrol/status", s.handlePatrolStatus)
 	mux.HandleFunc("/api/patrol/clear-full", s.handlePatrolClearFull)
 	mux.HandleFunc("/api/patrol/channels", s.handlePatrolChannels)
+	mux.HandleFunc("/api/patrol/channels/gas", s.handlePatrolChannelsGAS)
 	mux.HandleFunc("/api/test-detect", s.handleTestDetect)
 	mux.HandleFunc("/api/monster-scan", s.handleMonsterScan)
 	mux.HandleFunc("/api/config", s.handleConfig)
@@ -1001,6 +1012,39 @@ func (s *Server) handlePatrolChannels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"channels": chs})
 }
 
+// handlePatrolChannelsGAS は Chrome拡張からエネミー名付きチャンネルを受信し、
+// GASTargetEnemy 設定でフィルタして巡回リストを更新する。
+func (s *Server) handlePatrolChannelsGAS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		Entries []struct {
+			Channel uint32 `json:"channel"`
+			Enemy   string `json:"enemy"`
+		} `json:"entries"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+
+	s.mu.RLock()
+	target := s.gasTargetEnemy
+	s.mu.RUnlock()
+
+	var chs []uint32
+	for _, e := range req.Entries {
+		if target == "" || strings.Contains(e.Enemy, target) {
+			chs = append(chs, e.Channel)
+		}
+	}
+	log.Printf("[GASSync] 受信: 全%d件 → 対象(%s): %d件", len(req.Entries), target, len(chs))
+	s.UpdateChannelsFromGAS(chs)
+	writeOK(w)
+}
+
 // handleGoldHistory は金ウリボ検知履歴を返す
 func (s *Server) handleGoldHistory(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
@@ -1209,7 +1253,7 @@ func (s *Server) handleMonsterScan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"ok": true, "enabled": body.Enabled})
 }
 
-// handleTestDetect はテスト用ゴールドウリボ検知を発火する
+// handleTestDetect はテスト用ウリボ・ゴールド検知を発火する
 func (s *Server) handleTestDetect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", 405)
@@ -2544,7 +2588,7 @@ async function loadGoldHistory(){
     const tbl = (!h || h.length === 0) ? '<div class="no-history">検知履歴なし</div>'
       : '<table class="gold-table"><colgroup><col class="col-time"><col class="col-name"><col class="col-ch"><col><col class="col-action"></colgroup>'
       + '<thead><tr><th>時刻</th><th>名前</th><th>Ch</th><th>場所</th><th></th></tr></thead><tbody>'
-      + h.map(e=>{const nm=e.monster_name||'ゴールドウリボ';const cls=nm.includes('銀ナッポ')?'name-cell silver':'name-cell';return '<tr><td class="time-cell">'+escHtml(e.time||'')+'</td><td class="'+cls+'">'+escHtml(nm)+'</td><td class="ch-cell">Ch'+Number(e.channel)+'</td><td>'+escHtml(e.location||'')+'</td><td class="action-cell"><button onclick="removeGoldHistory('+Number(e.timestamp)+')">×</button></td></tr>'}).join('')
+      + h.map(e=>{const nm=e.monster_name||'ウリボ・ゴールド';const cls=nm.includes('銀ナッポ')?'name-cell silver':'name-cell';return '<tr><td class="time-cell">'+escHtml(e.time||'')+'</td><td class="'+cls+'">'+escHtml(nm)+'</td><td class="ch-cell">Ch'+Number(e.channel)+'</td><td>'+escHtml(e.location||'')+'</td><td class="action-cell"><button onclick="removeGoldHistory('+Number(e.timestamp)+')">×</button></td></tr>'}).join('')
       + '</tbody></table>';
     const c1=document.getElementById('gold-history-container');if(c1)c1.innerHTML=tbl;
     const c2=document.getElementById('gold-history-container-patrol');if(c2)c2.innerHTML=tbl;
@@ -3122,8 +3166,8 @@ const CHAT_RULE_FIELDS=[
 	{k:'chat_report_monster_alias_rules',label:'モンスター別名ルール',type:'multiline-list',desc:'1行形式: モンスター名|別名'},
 ];
 const CFG_FIELDS=[
-  {k:'discord_webhook',label:'Discord Webhook URL',type:'text',desc:'空にするとDiscord通知無効'},
-  {k:'discord_chat_report_webhook',label:'Discord 報告候補 Webhook URL',type:'text',desc:'チャット報告候補を別チャンネルに通知。空で無効'},
+  {k:'discord_webhook',label:'Discord Webhook URL (検知報告)',type:'text',desc:'空にするとDiscord通知無効'},
+  {k:'discord_chat_report_webhook',label:'Discord Webhook URL (ワルチャ報告)',type:'text',desc:'チャット報告候補を別チャンネルに通知。空で無効'},
   {k:'chat_exclude',label:'チャット除外キーワード',type:'csv',desc:'カンマ区切り。例: いない,終わった'},
   {k:'chat_report_min_length',label:'報告候補 最小文字数',type:'number',desc:'0でデフォルト(4)。これ未満のメッセージを除外'},
   {k:'chat_report_max_length',label:'報告候補 最大文字数',type:'number',desc:'0でデフォルト(80)。これ超のメッセージを除外'},
@@ -3137,6 +3181,7 @@ const CFG_FIELDS=[
   {k:'mumu_tap_x',label:'タップX座標',type:'number',desc:'チャンネル入力欄のタップX'},
   {k:'mumu_tap_y',label:'タップY座標',type:'number',desc:'チャンネル入力欄のタップY'},
   {k:'mumu_pre_keycode',label:'プリキーコード',type:'text',desc:'チャンネル入力欄を開くキーコード'},
+  {k:'gas_target_enemy',label:'GAS 対象エネミー',type:'select',options:['金ウリボ','金ナッポ'],desc:'Chrome拡張から受信するエネミー種別'},
 ];
 let cfgData={};
 function renderConfigFields(containerId, fields){
@@ -3148,6 +3193,13 @@ function renderConfigFields(containerId, fields){
 		if(f.type==='multiline-list'&&Array.isArray(val))val=val.join('\n');
 		if(f.type==='multiline-list'){
 			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><textarea id="cfg-'+f.k+'" rows="10" spellcheck="false" placeholder="'+escHtml(f.desc||'')+'">'+escHtml(String(val))+'</textarea>'+noteHtml+'</div>';
+		}
+		if(f.type==='bool'){
+			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="cfg-'+f.k+'"'+(val?' checked':'')+'>'+escHtml(f.desc||'')+'</label></div>';
+		}
+		if(f.type==='select'){
+			const opts=(f.options||[]).map(o=>'<option value="'+escHtml(o)+'"'+(val===o?' selected':'')+'>'+escHtml(o)+'</option>').join('');
+			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><select id="cfg-'+f.k+'">'+opts+'</select>'+noteHtml+'</div>';
 		}
 		var inputType=f.type==='csv'?'text':f.type;
 		return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><input type="'+inputType+'" id="cfg-'+f.k+'" value="'+escHtml(String(val))+'" placeholder="'+escHtml(f.desc||'')+'">'+noteHtml+'</div>';
@@ -3334,9 +3386,22 @@ async function addChatLocationRuleValue(nameValue, aliasValue){
 	const name=String(nameValue||'').trim();
 	const alias=String(aliasValue||'').trim();
 	if(!name||!alias)return;
-	const rule=getChatLocationRules().find(v=>v.name===name);
-	const monsters=rule&&Array.isArray(rule.monsters)?rule.monsters.join(','):'';
-	await appendChatFilterValue('chat_report_location_rules',[name,alias,monsters].join('|'));
+	const current=Array.isArray(cfgData.chat_report_location_rules)?cfgData.chat_report_location_rules:[];
+	const idx=current.findIndex(line=>{const p=parseChatLocationRuleLine(line);return p&&p.name===name;});
+	if(idx>=0){
+		const parsed=parseChatLocationRuleLine(current[idx]);
+		const newAliases=normalizeCsvList(parsed.aliases.concat([alias]));
+		const newLine=[name,newAliases.join(','),parsed.monsters.join(',')].join('|');
+		const updated=current.slice();
+		updated[idx]=newLine;
+		updateChatFilterTextarea('chat_report_location_rules',updated);
+		renderChatCandidatePanels();
+		await saveConfig(true);
+	}else{
+		const rule=getChatLocationRules().find(v=>v.name===name);
+		const monsters=rule&&Array.isArray(rule.monsters)?rule.monsters.join(','):'';
+		await appendChatFilterValue('chat_report_location_rules',[name,alias,monsters].join('|'));
+	}
 	const input=document.getElementById('cfg-location-rule-alias');
 	if(input)input.value='';
 	renderChatRuleManagers();
@@ -3380,6 +3445,7 @@ async function saveConfig(silent){
 		if(f.type==='number')updated[f.k]=parseFloat(el.value)||0;
 		else if(f.type==='multiline-list')updated[f.k]=el.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 		else if(f.type==='csv')updated[f.k]=el.value.split(',').map(s=>s.trim()).filter(Boolean);
+		else if(f.type==='bool')updated[f.k]=el.checked;
 		else updated[f.k]=el.value;});
 	// 通知エネミー（{name, enabled} 形式で全件保存）
 	updated.notify_enemies=[];
@@ -3837,7 +3903,7 @@ async function load(){
   const c=document.getElementById('container');
   if(!h||h.length===0){c.innerHTML='<div class="no-data">出現履歴なし</div>';return;}
   c.innerHTML='<table><thead><tr><th>時刻</th><th>名前</th><th>Ch</th><th>場所</th></tr></thead><tbody>'
-    +h.map(e=>{const nm=e.monster_name||'ゴールドウリボ';const cls=nm.includes('銀ナッポ')?'monster silver':'monster';return '<tr><td class="time">'+eH(e.time||'')+'</td><td class="'+cls+'">'+eH(nm)+'</td><td class="ch">Ch'+Number(e.channel)+'</td><td>'+eH(e.location||'')+'</td></tr>'}).join('')
+    +h.map(e=>{const nm=e.monster_name||'ウリボ・ゴールド';const cls=nm.includes('銀ナッポ')?'monster silver':'monster';return '<tr><td class="time">'+eH(e.time||'')+'</td><td class="'+cls+'">'+eH(nm)+'</td><td class="ch">Ch'+Number(e.channel)+'</td><td>'+eH(e.location||'')+'</td></tr>'}).join('')
     +'</tbody></table>';
 }
 load();

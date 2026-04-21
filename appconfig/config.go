@@ -130,18 +130,11 @@ type Config struct {
 	// name・templateID・座標をログに出力する。未知モンスターのID調査用。
 	MonsterScan bool `json:"monster_scan"`
 
-	// --- GAS 自動チャンネル更新 ---
+	// --- GAS 自動チャンネル更新（Chrome拡張連携） ---
 
-	// GASURL は討伐タイマー情報を取得する Google Apps Script の URL。
-	// 空の場合は GAS 取得を無効化する。
-	GASURL string `json:"gas_url"`
-
-	// GASFetchIntervalMins は GAS から定期取得する間隔（分）。デフォルト: 10
-	GASFetchIntervalMins float64 `json:"gas_fetch_interval_mins"`
-
-	// GASSpawnThresholdHours は討伐からこの時間以上経過したchを巡回対象とする閾値（時間）。
-	// 20〜28 の範囲で設定。デフォルト: 20.0
-	GASSpawnThresholdHours float64 `json:"gas_spawn_threshold_hours"`
+	// GASTargetEnemy はChrome拡張から受信するチャンネルのフィルタ対象エネミー名。
+	// 部分一致で判定。例: "金ウリボ" or "金ナッポ"。デフォルト: "金ウリボ"
+	GASTargetEnemy string `json:"gas_target_enemy"`
 }
 
 func defaultConfig() *Config {
@@ -175,8 +168,7 @@ func defaultConfig() *Config {
 		SceneMapIds: map[string]uint32{
 			"阿斯特里亚平原": 7, // アステリア平原
 		},
-		GASFetchIntervalMins:   10,
-		GASSpawnThresholdHours: 20.0,
+		GASTargetEnemy: "金ウリボ",
 	}
 }
 
@@ -219,11 +211,8 @@ func applyDefaults(cfg *Config) {
 			"阿斯特里亚平原": 7,
 		}
 	}
-	if cfg.GASFetchIntervalMins <= 0 {
-		cfg.GASFetchIntervalMins = 10
-	}
-	if cfg.GASSpawnThresholdHours <= 0 {
-		cfg.GASSpawnThresholdHours = 20.0
+	if cfg.GASTargetEnemy == "" {
+		cfg.GASTargetEnemy = "金ウリボ"
 	}
 }
 
