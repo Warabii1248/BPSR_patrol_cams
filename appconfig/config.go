@@ -39,6 +39,8 @@ type Config struct {
 
 	// DiscordWebhook は Discord の Webhook URL。空で無効。
 	DiscordWebhook string `json:"discord_webhook"`
+	// DiscordChatReportWebhook は報告候補チャット通知専用の Discord Webhook URL。空で無効。
+	DiscordChatReportWebhook string `json:"discord_chat_report_webhook"`
 	// DebounceSeconds は同Ch+場所の重複通知を抑制する秒数。デフォルト: 30
 	DebounceSeconds int `json:"debounce_seconds"`
 

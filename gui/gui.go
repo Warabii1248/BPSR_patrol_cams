@@ -2863,12 +2863,18 @@ function renderChatCandidatePanels(source){
 	if(full)full.innerHTML=picked.length?picked.slice().reverse().map(ev=>chatMsgHtml(ev,{report:true})).join(''):emptyHtml;
 	if(dash)dash.innerHTML=picked.length?picked.slice(-6).reverse().map(ev=>chatMsgHtml(ev,{report:true,withActions:false})).join(''):emptyHtml;
 }
+function isChatAtBottom(){const el=document.getElementById('chat-area');return !el||el.scrollHeight-el.scrollTop-el.clientHeight<50;}
 function renderChatPanel(){
   const el=document.getElementById('chat-area');if(!el)return;
+  const atBottom=isChatAtBottom();
+  const prevScrollTop=el.scrollTop;
+  const prevScrollHeight=el.scrollHeight;
   const filtered=chatEvents.filter(chatMatchFilter);
 	const deduped=dedupeChatEvents(filtered);
 	if(!deduped.length){el.innerHTML='<div style="color:var(--text3);padding:8px;font-size:.82em">チャットなし</div>';renderDashChat([]);renderChatCandidatePanels([]);return;}
-  el.innerHTML=deduped.map(chatMsgHtml).join('');el.scrollTop=el.scrollHeight;
+  el.innerHTML=deduped.map(chatMsgHtml).join('');
+  if(atBottom){el.scrollTop=el.scrollHeight;}
+  else{el.scrollTop=prevScrollTop+(el.scrollHeight-prevScrollHeight);}
   renderDashChat(deduped.slice(-8));
 	renderChatCandidatePanels(filtered);
 }
@@ -3117,6 +3123,7 @@ const CHAT_RULE_FIELDS=[
 ];
 const CFG_FIELDS=[
   {k:'discord_webhook',label:'Discord Webhook URL',type:'text',desc:'空にするとDiscord通知無効'},
+  {k:'discord_chat_report_webhook',label:'Discord 報告候補 Webhook URL',type:'text',desc:'チャット報告候補を別チャンネルに通知。空で無効'},
   {k:'chat_exclude',label:'チャット除外キーワード',type:'csv',desc:'カンマ区切り。例: いない,終わった'},
   {k:'chat_report_min_length',label:'報告候補 最小文字数',type:'number',desc:'0でデフォルト(4)。これ未満のメッセージを除外'},
   {k:'chat_report_max_length',label:'報告候補 最大文字数',type:'number',desc:'0でデフォルト(80)。これ超のメッセージを除外'},
@@ -3877,8 +3884,9 @@ h1{font-size:13px;padding:0 16px;height:44px;background:var(--bg1);border-bottom
 </div>
 <div id="container"><div class="no-data">読み込み中...</div></div>
 <script>
-let all=[];
+let all=[],userScrolled=false;
 function escH(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function isAtBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<50;}
 function render(){
   const q=document.getElementById('search').value.toLowerCase();
   const filtered=q?all.filter(e=>e.sender.toLowerCase().includes(q)||e.message.toLowerCase().includes(q)):all;
@@ -3889,6 +3897,7 @@ function render(){
     const ch=e.has_ch?'<span class="ch">Ch'+e.channel+'</span>':'';
     return '<div class="msg"><span class="time">'+e.time+'</span><span class="ip">['+escH(e.client_ip)+']</span>'+ch+'<span class="sender">'+escH(e.sender)+'</span><span class="body">'+escH(e.message)+'</span></div>';
   }).join('');
+  userScrolled=false;
   c.scrollTop=c.scrollHeight;
 }
 function appendOne(ev){
@@ -3904,9 +3913,11 @@ function appendOne(ev){
   div.innerHTML='<span class="time">'+ev.time+'</span><span class="ip">['+escH(ev.client_ip)+']</span>'+ch+'<span class="sender">'+escH(ev.sender)+'</span><span class="body">'+escH(ev.message)+'</span>';
   c.appendChild(div);
   document.getElementById('count').textContent=all.length+'件';
-  c.scrollTop=c.scrollHeight;
+  if(!userScrolled)c.scrollTop=c.scrollHeight;
 }
 (async function(){
+  const c=document.getElementById('container');
+  c.addEventListener('scroll',()=>{userScrolled=!isAtBottom(c);});
   const h=await fetch('/api/chat-log').then(r=>r.json()).catch(()=>[]);
   all=h||[];
   render();

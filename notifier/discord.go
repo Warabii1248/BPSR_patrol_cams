@@ -55,24 +55,44 @@ type Detection struct {
 
 // DiscordWebhook sends notifications via a Discord incoming webhook.
 type DiscordWebhook struct {
-	URL string
+	URL            string
+	ChatReportURL  string
 }
 
-// Send posts the detection as a text message to the configured webhook.
-// It is a no-op when URL is empty.
+// Send posts the detection as a text message to the configured webhook(s).
+// SourceChat detections are additionally sent to ChatReportURL when set.
 func (d *DiscordWebhook) Send(det Detection) error {
-	if d == nil || d.URL == "" {
+	if d == nil {
 		return nil
 	}
-	payload := map[string]any{
-		"content": Format(det),
+	var urls []string
+	if d.URL != "" {
+		urls = append(urls, d.URL)
 	}
+	if det.Source == SourceChat && d.ChatReportURL != "" && d.ChatReportURL != d.URL {
+		urls = append(urls, d.ChatReportURL)
+	}
+	if len(urls) == 0 {
+		return nil
+	}
+	content := Format(det)
+	var lastErr error
+	for _, u := range urls {
+		if err := postWebhook(u, content); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+func postWebhook(url, content string) error {
+	payload := map[string]any{"content": content}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(d.URL, "application/json", bytes.NewReader(data))
+	resp, err := client.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
 		return err
 	}

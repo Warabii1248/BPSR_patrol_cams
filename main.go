@@ -136,11 +136,14 @@ func main() {
 		}
 	}
 
-	discord := &notifier.DiscordWebhook{URL: cfg.DiscordWebhook}
+	discord := &notifier.DiscordWebhook{URL: cfg.DiscordWebhook, ChatReportURL: cfg.DiscordChatReportWebhook}
 	if cfg.DiscordWebhook != "" {
 		log.Println("discord webhook configured")
 	} else {
 		log.Println("discord webhook not configured; detections will log only")
+	}
+	if cfg.DiscordChatReportWebhook != "" {
+		log.Println("discord chat report webhook configured")
 	}
 
 	// mumu.Config を構築（並列設定を含む）
@@ -371,6 +374,7 @@ func main() {
 			cfg.NotifyEnemies = c.NotifyEnemies
 			// Discord Webhook
 			discord.URL = c.DiscordWebhook
+			discord.ChatReportURL = c.DiscordChatReportWebhook
 			// デバウンス
 			capDevice.SetDebounce(time.Duration(c.DebounceSeconds) * time.Second)
 			// チャットフィルター（filter.json から保存された値）
