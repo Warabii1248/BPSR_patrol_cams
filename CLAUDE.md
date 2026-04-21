@@ -24,7 +24,6 @@ gui/                WebGUI サーバー（WebView2 + SSE）
 mumu/               MuMuエミュレーター ADB自動化
 notifier/           Discord Webhook 通知
 location/           マップ地点名ストア
-gasfetch/           Google Apps Script 討伐タイマー連携（現在未使用）
 global/             キャッシュ・モンスター名DB
 pb/                 Protobuf定義（パケット解析用）
 gas_extension/      Chrome拡張（GASページスクレイプ → Go連携）

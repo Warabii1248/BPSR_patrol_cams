@@ -1705,14 +1705,11 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .chat-msg:hover .chat-msg-actions{opacity:1;pointer-events:auto}
 .chat-action-btn{padding:2px 6px;font-size:10px;border-radius:999px;background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.28);color:var(--accent)}
 .chat-action-btn.exclude{background:rgba(233,75,75,.08);border-color:rgba(233,75,75,.24);color:var(--danger)}
-.chat-split{display:flex;flex-direction:row;gap:10px;align-items:start;min-height:0;flex:1}
-.chat-side-card{display:flex;flex-direction:column;min-height:0}
-.chat-report-list{display:flex;flex-direction:column;gap:0;background:var(--bg0);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;min-height:180px;max-height:calc(100vh - 220px)}
-.chat-report-list.compact{flex:1;min-height:0;max-height:none}
+.chat-split{display:flex;flex-direction:column;gap:10px;min-height:0;flex:1}
+.chat-report-list{display:flex;flex-direction:column;gap:0;background:var(--bg0);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;flex:1;min-height:0}
 .chat-report-empty{color:var(--text3);padding:10px;font-size:.82em}
 .chat-report-summary{color:var(--text3);font-size:.76em;line-height:1.5;margin-bottom:8px}
 .chat-report-score{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.24);color:#f5a623;font-size:10px;vertical-align:middle}
-@media (max-width:1100px){.chat-split{flex-direction:column}.chat-col-splitter{display:none!important}#card-chat-report-col{width:auto!important;min-width:0}#card-chat-log{flex:none}}
 /* Crash warning */
 .crash-warning{display:none;background:rgba(233,75,75,.1);border:1px solid rgba(233,75,75,.3);border-radius:var(--radius);padding:6px 10px;font-size:.8em;color:var(--danger);margin-bottom:6px}
 .patrol-progress{margin-top:10px}
@@ -1762,15 +1759,12 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .sidebar-bottom{margin-top:auto;border-top:1px solid var(--border);padding-top:6px}
 .nav-item.layout-edit-active{background:rgba(245,166,35,.1);color:var(--warn);border-left-color:var(--warn)}
 /* Chat log layout edit */
-#card-chat-log{flex:1 1 0;min-width:0}
-#card-chat-report-col{flex:none;width:320px;min-width:220px}
-.chat-col-splitter{display:none;width:10px;flex:none;align-self:stretch;cursor:ew-resize;position:relative}
-.chat-col-splitter::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:4px;height:52px;border-radius:999px;opacity:.72;background:repeating-linear-gradient(180deg,rgba(245,166,35,.78) 0 6px,transparent 6px 10px);box-shadow:0 0 0 1px rgba(245,166,35,.2)}
-.chat-area-resize-handle{display:none;height:14px;flex:none;align-self:stretch;cursor:ns-resize;position:relative}
-.chat-area-resize-handle::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:52px;height:10px;border-radius:999px;opacity:.72;background:repeating-linear-gradient(90deg,rgba(245,166,35,.78) 0 6px,transparent 6px 10px);box-shadow:0 0 0 1px rgba(245,166,35,.2)}
+#card-chat-log{flex:1;min-width:0;min-height:0}
+#card-chat-report-col{flex:1;min-width:0;min-height:0}
+.chat-swap-handle{display:none;align-items:center;justify-content:center;height:28px;flex:none;cursor:pointer;border-radius:var(--radius);border:1px dashed rgba(245,166,35,.5);color:var(--warn);font-size:11px;gap:6px;background:rgba(245,166,35,.06)}
+.chat-swap-handle:hover{background:rgba(245,166,35,.14)}
 #view-chat-log.edit-mode .card{outline:2px dashed rgba(245,166,35,.35);outline-offset:1px}
-@media (max-width:1100px){#card-chat-log{flex:none}#view-chat-log.edit-mode .chat-area-resize-handle{display:flex}}
-@media (min-width:1101px){#view-chat-log.edit-mode .chat-col-splitter{display:flex}}
+#view-chat-log.edit-mode .chat-swap-handle{display:flex}
 /* Grid drag drop indicator */
 .grid-drop-indicator{background:rgba(79,142,247,.08);border:2px dashed rgba(79,142,247,.45);border-radius:var(--radius-lg);pointer-events:none;min-height:60px}
 </style>
@@ -1923,18 +1917,15 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 				<button class="btn" style="margin-left:auto" onclick="window.open('/chat-log','chat-log','width=700,height=500')">⧉ 別ウィンドウ</button>
 				<button class="btn" onclick="clearChatPanel()">クリア</button>
 			</div>
-			<div class="log-area full" id="chat-area" style="flex:none;height:360px;border-radius:0;border:none;border-top:1px solid var(--border)"></div>
+			<div class="log-area full" id="chat-area" style="flex:1;border-radius:0;border:none;border-top:1px solid var(--border)"></div>
 		</div>
-		<div class="chat-area-resize-handle" id="chat-area-resize-handle" title="ドラッグして高さ変更"></div>
-		<div class="chat-col-splitter" id="chat-col-splitter" title="ドラッグして横幅変更"></div>
-		<div class="col chat-side-card" id="card-chat-report-col">
-			<div class="card">
-				<div class="card-title" style="display:flex;align-items:center;gap:8px"><span>発見報告候補</span><button id="notify-sound-toggle" class="btn" style="margin-left:auto;font-size:12px;padding:2px 8px" onclick="toggleNotifySound()" title="通知音ON/OFF">🔔</button><input type="range" id="notify-sound-volume" min="0" max="1" step="0.05" style="width:70px" title="通知音量" oninput="setNotifyVolume(this.value)"></div>
-				<div class="chat-report-summary" id="chat-report-summary">発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。</div>
-				<div id="chat-report-area" class="chat-report-list"></div>
-			</div>
+		<div class="chat-swap-handle" id="chat-swap-handle" onclick="swapChatPanels()" title="上下を入れ替え">⇅ 上下入れ替え</div>
+		<div class="card" id="card-chat-report-col" style="display:flex;flex-direction:column;padding:14px;overflow:hidden;min-height:0">
+			<div class="card-title" style="display:flex;align-items:center;gap:8px"><span>発見報告候補</span><button id="notify-sound-toggle" class="btn" style="margin-left:auto;font-size:12px;padding:2px 8px" onclick="toggleNotifySound()" title="通知音ON/OFF">🔔</button><input type="range" id="notify-sound-volume" min="0" max="1" step="0.05" style="width:70px" title="通知音量" oninput="setNotifyVolume(this.value)"></div>
+			<div class="chat-report-summary" id="chat-report-summary">発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。</div>
+			<div id="chat-report-area" class="chat-report-list"></div>
 		</div>
-  </div>
+	</div>
 </div>
 <!-- ===== デバイス管理 ===== -->
 <div class="view" id="view-devices">
@@ -3754,52 +3745,34 @@ function initPatrolResizeHandles(){
 	window.addEventListener('resize',updatePatrolResizeHandlePositions);
 }
 function saveChatLayout(){
-	const chatArea=document.getElementById('chat-area');
-	const reportCol=document.getElementById('card-chat-report-col');
+	const container=document.getElementById('chat-split-container');
+	const logCard=document.getElementById('card-chat-log');
 	const data={};
-	if(chatArea){const h=parseInt(chatArea.style.height);if(h>0)data.areaHeight=h;}
-	if(reportCol){const w=parseInt(reportCol.style.width);if(w>0)data.rightColWidth=w;}
+	if(container&&logCard){data.reportOnTop=container.firstElementChild!==logCard;}
 	localStorage.setItem('chatLayout',JSON.stringify(data));
 }
 function loadChatLayout(){
 	try{
 		const saved=JSON.parse(localStorage.getItem('chatLayout')||'{}');
-		const chatArea=document.getElementById('chat-area');
-		const reportCol=document.getElementById('card-chat-report-col');
-		if(saved.areaHeight&&chatArea)chatArea.style.height=saved.areaHeight+'px';
-		if(saved.rightColWidth&&reportCol)reportCol.style.width=saved.rightColWidth+'px';
+		if(saved.reportOnTop)swapChatPanels();
 	}catch(e){}
 }
-function initChatLayoutEdit(){
-	const chatArea=document.getElementById('chat-area');
-	const areaHandle=document.getElementById('chat-area-resize-handle');
-	const splitter=document.getElementById('chat-col-splitter');
-	const reportCol=document.getElementById('card-chat-report-col');
-	if(areaHandle&&chatArea){
-		areaHandle.addEventListener('pointerdown',e=>{
-			if(!layoutEditMode||currentViewId!=='chat-log')return;
-			e.preventDefault();
-			const startY=e.clientY,startH=parseInt(chatArea.style.height)||360;
-			function onMove(e){chatArea.style.height=Math.max(80,Math.min(1200,startH+e.clientY-startY))+'px';}
-			function onUp(){saveChatLayout();document.removeEventListener('pointermove',onMove);document.removeEventListener('pointerup',onUp);document.body.style.userSelect='';}
-			document.body.style.userSelect='none';
-			document.addEventListener('pointermove',onMove);
-			document.addEventListener('pointerup',onUp);
-		});
+function swapChatPanels(){
+	const container=document.getElementById('chat-split-container');
+	const logCard=document.getElementById('card-chat-log');
+	const reportCard=document.getElementById('card-chat-report-col');
+	const handle=document.getElementById('chat-swap-handle');
+	if(!container||!logCard||!reportCard||!handle)return;
+	if(container.firstElementChild===logCard){
+		container.appendChild(handle);
+		container.appendChild(logCard);
+	} else {
+		container.appendChild(handle);
+		container.appendChild(reportCard);
 	}
-	if(splitter&&reportCol){
-		splitter.addEventListener('pointerdown',e=>{
-			if(!layoutEditMode||currentViewId!=='chat-log')return;
-			e.preventDefault();
-			const startX=e.clientX,startW=reportCol.getBoundingClientRect().width;
-			function onMove(e){reportCol.style.width=Math.max(200,Math.min(600,startW-(e.clientX-startX)))+'px';}
-			function onUp(){saveChatLayout();document.removeEventListener('pointermove',onMove);document.removeEventListener('pointerup',onUp);document.body.style.userSelect='';}
-			document.body.style.userSelect='none';
-			document.addEventListener('pointermove',onMove);
-			document.addEventListener('pointerup',onUp);
-		});
-	}
+	saveChatLayout();
 }
+function initChatLayoutEdit(){}
 function saveDashboardLayout(){
   const grid=document.getElementById('dashboard-grid');if(!grid)return;
   const order=[...grid.querySelectorAll(':scope > .card')].map(c=>c.id);
