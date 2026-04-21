@@ -1705,14 +1705,14 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .chat-msg:hover .chat-msg-actions{opacity:1;pointer-events:auto}
 .chat-action-btn{padding:2px 6px;font-size:10px;border-radius:999px;background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.28);color:var(--accent)}
 .chat-action-btn.exclude{background:rgba(233,75,75,.08);border-color:rgba(233,75,75,.24);color:var(--danger)}
-.chat-split{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.95fr);gap:10px;align-items:start;align-content:start;min-height:0;flex:1}
+.chat-split{display:flex;flex-direction:row;gap:10px;align-items:start;min-height:0;flex:1}
 .chat-side-card{display:flex;flex-direction:column;min-height:0}
 .chat-report-list{display:flex;flex-direction:column;gap:0;background:var(--bg0);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;min-height:180px;max-height:calc(100vh - 220px)}
 .chat-report-list.compact{flex:1;min-height:0;max-height:none}
 .chat-report-empty{color:var(--text3);padding:10px;font-size:.82em}
 .chat-report-summary{color:var(--text3);font-size:.76em;line-height:1.5;margin-bottom:8px}
 .chat-report-score{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.24);color:#f5a623;font-size:10px;vertical-align:middle}
-@media (max-width:1100px){.chat-split{grid-template-columns:1fr;align-content:start}}
+@media (max-width:1100px){.chat-split{flex-direction:column}.chat-col-splitter{display:none!important}#card-chat-report-col{width:auto!important;min-width:0}#card-chat-log{flex:none}}
 /* Crash warning */
 .crash-warning{display:none;background:rgba(233,75,75,.1);border:1px solid rgba(233,75,75,.3);border-radius:var(--radius);padding:6px 10px;font-size:.8em;color:var(--danger);margin-bottom:6px}
 .patrol-progress{margin-top:10px}
@@ -1739,7 +1739,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .panel-size-2x3{--panel-rows:76}
 .panel-size-2x4{--panel-rows:100}
 #card-dash-gold{display:flex;flex-direction:column;min-height:0}
-#dash-chat-area,#dash-chat-report-area{flex:1;min-height:0;overflow-y:auto}
+#dash-chat-area{height:420px;overflow-y:auto;flex-shrink:0}
+#dash-chat-report-area{flex:1;min-height:0;overflow-y:auto}
 /* Edit mode */
 .layout-edit-surface.edit-mode .card{outline:2px dashed rgba(245,166,35,.35);outline-offset:1px}
 .layout-edit-surface.edit-mode .card-title{cursor:grab}
@@ -1760,6 +1761,16 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 /* Layout edit sidebar button */
 .sidebar-bottom{margin-top:auto;border-top:1px solid var(--border);padding-top:6px}
 .nav-item.layout-edit-active{background:rgba(245,166,35,.1);color:var(--warn);border-left-color:var(--warn)}
+/* Chat log layout edit */
+#card-chat-log{flex:1 1 0;min-width:0}
+#card-chat-report-col{flex:none;width:320px;min-width:220px}
+.chat-col-splitter{display:none;width:10px;flex:none;align-self:stretch;cursor:ew-resize;position:relative}
+.chat-col-splitter::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:4px;height:52px;border-radius:999px;opacity:.72;background:repeating-linear-gradient(180deg,rgba(245,166,35,.78) 0 6px,transparent 6px 10px);box-shadow:0 0 0 1px rgba(245,166,35,.2)}
+.chat-area-resize-handle{display:none;height:14px;flex:none;align-self:stretch;cursor:ns-resize;position:relative}
+.chat-area-resize-handle::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:52px;height:10px;border-radius:999px;opacity:.72;background:repeating-linear-gradient(90deg,rgba(245,166,35,.78) 0 6px,transparent 6px 10px);box-shadow:0 0 0 1px rgba(245,166,35,.2)}
+#view-chat-log.edit-mode .card{outline:2px dashed rgba(245,166,35,.35);outline-offset:1px}
+@media (max-width:1100px){#card-chat-log{flex:none}#view-chat-log.edit-mode .chat-area-resize-handle{display:flex}}
+@media (min-width:1101px){#view-chat-log.edit-mode .chat-col-splitter{display:flex}}
 /* Grid drag drop indicator */
 .grid-drop-indicator{background:rgba(79,142,247,.08);border:2px dashed rgba(79,142,247,.45);border-radius:var(--radius-lg);pointer-events:none;min-height:60px}
 </style>
@@ -1865,13 +1876,13 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       <div id="gold-history-container"><div class="no-history">検知履歴なし</div></div>
     </div>
     <!-- チャットログ -->
-		<div class="card panel-size-1x1" id="card-dash-chat" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
+		<div class="card panel-size-1x1" id="card-dash-chat" style="display:flex;flex-direction:column;padding:0;overflow:hidden;--panel-rows:58">
       <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
         チャットログ
         <button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="switchView('chat-log',document.getElementById('nav-chat-log'))">展開 →</button>
       </div>
-	<div style="flex:1;min-height:0;overflow-y:auto" id="dash-chat-area"></div>
+	<div id="dash-chat-area"></div>
     </div>
     <!-- 発見報告候補 -->
 		<div class="card panel-size-1x1" id="card-dash-report" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
@@ -1902,8 +1913,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 </div>
 <!-- ===== チャットログ ===== -->
 <div class="view" id="view-chat-log">
-	<div class="chat-split">
-		<div class="card" style="display:flex;flex-direction:column;padding:0;overflow:hidden;min-height:0">
+	<div class="chat-split" id="chat-split-container">
+		<div class="card" id="card-chat-log" style="display:flex;flex-direction:column;padding:0;overflow:hidden;min-height:0">
 			<div class="chat-toolbar">
 				<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
 				<span style="font-weight:500;color:var(--text2);text-transform:uppercase;font-size:10px;letter-spacing:.6px">チャットログ</span>
@@ -1912,9 +1923,11 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 				<button class="btn" style="margin-left:auto" onclick="window.open('/chat-log','chat-log','width=700,height=500')">⧉ 別ウィンドウ</button>
 				<button class="btn" onclick="clearChatPanel()">クリア</button>
 			</div>
-			<div class="log-area full" id="chat-area" style="flex:1;max-height:calc(100vh - 180px);border-radius:0;border:none;border-top:1px solid var(--border)"></div>
+			<div class="log-area full" id="chat-area" style="flex:none;height:360px;border-radius:0;border:none;border-top:1px solid var(--border)"></div>
 		</div>
-		<div class="col chat-side-card">
+		<div class="chat-area-resize-handle" id="chat-area-resize-handle" title="ドラッグして高さ変更"></div>
+		<div class="chat-col-splitter" id="chat-col-splitter" title="ドラッグして横幅変更"></div>
+		<div class="col chat-side-card" id="card-chat-report-col">
 			<div class="card">
 				<div class="card-title" style="display:flex;align-items:center;gap:8px"><span>発見報告候補</span><button id="notify-sound-toggle" class="btn" style="margin-left:auto;font-size:12px;padding:2px 8px" onclick="toggleNotifySound()" title="通知音ON/OFF">🔔</button><input type="range" id="notify-sound-volume" min="0" max="1" step="0.05" style="width:70px" title="通知音量" oninput="setNotifyVolume(this.value)"></div>
 				<div class="chat-report-summary" id="chat-report-summary">発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。</div>
@@ -2141,7 +2154,7 @@ document.addEventListener('DOMContentLoaded',function(){
   }
 });
 // ...既存コード...
-const EDITABLE_LAYOUT_VIEWS=['dashboard','patrol'];
+const EDITABLE_LAYOUT_VIEWS=['dashboard','patrol','chat-log'];
 let currentViewId='dashboard';
 function isLayoutEditableView(id){
 	return EDITABLE_LAYOUT_VIEWS.includes(id);
@@ -2151,6 +2164,8 @@ function syncLayoutEditState(){
 	const patrolRoot=document.getElementById('patrol-layout-root');
 	if(dashGrid)dashGrid.classList.toggle('edit-mode',layoutEditMode&&currentViewId==='dashboard');
 	if(patrolRoot)patrolRoot.classList.toggle('edit-mode',layoutEditMode&&currentViewId==='patrol');
+	const chatView=document.getElementById('view-chat-log');
+	if(chatView)chatView.classList.toggle('edit-mode',layoutEditMode&&currentViewId==='chat-log');
 	const btn=document.getElementById('nav-layout-edit');
 	if(btn){
 		const editable=isLayoutEditableView(currentViewId);
@@ -2907,7 +2922,7 @@ function renderChatPanel(){
   el.innerHTML=deduped.map(chatMsgHtml).join('');
   if(atBottom){el.scrollTop=el.scrollHeight;}
   else{el.scrollTop=prevScrollTop+(el.scrollHeight-prevScrollHeight);}
-  renderDashChat(deduped.slice(-8));
+  renderDashChat(deduped.slice(-15));
 	renderChatCandidatePanels(filtered);
 }
 function playNotifyBeep(){
@@ -3738,6 +3753,53 @@ function initPatrolResizeHandles(){
 	updatePatrolResizeHandlePositions();
 	window.addEventListener('resize',updatePatrolResizeHandlePositions);
 }
+function saveChatLayout(){
+	const chatArea=document.getElementById('chat-area');
+	const reportCol=document.getElementById('card-chat-report-col');
+	const data={};
+	if(chatArea){const h=parseInt(chatArea.style.height);if(h>0)data.areaHeight=h;}
+	if(reportCol){const w=parseInt(reportCol.style.width);if(w>0)data.rightColWidth=w;}
+	localStorage.setItem('chatLayout',JSON.stringify(data));
+}
+function loadChatLayout(){
+	try{
+		const saved=JSON.parse(localStorage.getItem('chatLayout')||'{}');
+		const chatArea=document.getElementById('chat-area');
+		const reportCol=document.getElementById('card-chat-report-col');
+		if(saved.areaHeight&&chatArea)chatArea.style.height=saved.areaHeight+'px';
+		if(saved.rightColWidth&&reportCol)reportCol.style.width=saved.rightColWidth+'px';
+	}catch(e){}
+}
+function initChatLayoutEdit(){
+	const chatArea=document.getElementById('chat-area');
+	const areaHandle=document.getElementById('chat-area-resize-handle');
+	const splitter=document.getElementById('chat-col-splitter');
+	const reportCol=document.getElementById('card-chat-report-col');
+	if(areaHandle&&chatArea){
+		areaHandle.addEventListener('pointerdown',e=>{
+			if(!layoutEditMode||currentViewId!=='chat-log')return;
+			e.preventDefault();
+			const startY=e.clientY,startH=parseInt(chatArea.style.height)||360;
+			function onMove(e){chatArea.style.height=Math.max(80,Math.min(1200,startH+e.clientY-startY))+'px';}
+			function onUp(){saveChatLayout();document.removeEventListener('pointermove',onMove);document.removeEventListener('pointerup',onUp);document.body.style.userSelect='';}
+			document.body.style.userSelect='none';
+			document.addEventListener('pointermove',onMove);
+			document.addEventListener('pointerup',onUp);
+		});
+	}
+	if(splitter&&reportCol){
+		splitter.addEventListener('pointerdown',e=>{
+			if(!layoutEditMode||currentViewId!=='chat-log')return;
+			e.preventDefault();
+			const startX=e.clientX,startW=reportCol.getBoundingClientRect().width;
+			function onMove(e){reportCol.style.width=Math.max(200,Math.min(600,startW-(e.clientX-startX)))+'px';}
+			function onUp(){saveChatLayout();document.removeEventListener('pointermove',onMove);document.removeEventListener('pointerup',onUp);document.body.style.userSelect='';}
+			document.body.style.userSelect='none';
+			document.addEventListener('pointermove',onMove);
+			document.addEventListener('pointerup',onUp);
+		});
+	}
+}
 function saveDashboardLayout(){
   const grid=document.getElementById('dashboard-grid');if(!grid)return;
   const order=[...grid.querySelectorAll(':scope > .card')].map(c=>c.id);
@@ -3816,6 +3878,8 @@ initDashboardResizeHandles();
 initPatrolResizeHandles();
 loadDashboardLayout();
 loadPatrolLayout();
+initChatLayoutEdit();
+loadChatLayout();
 syncLayoutEditState();
 (async function startupDeviceCheck(){
   async function fetchDevicesOnly(){
