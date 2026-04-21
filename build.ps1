@@ -110,8 +110,6 @@ New-Item -ItemType Directory -Force "$OutDir\logs"   | Out-Null
 
 if (Test-Path "config\config.json") {
     Copy-Item "config\config.json" "$OutDir\config\config.json"
-} elseif (Test-Path "config\config.example.json") {
-    Copy-Item "config\config.example.json" "$OutDir\config\config.json"
 }
 
 if (Test-Path "data\locations.json") {
@@ -120,6 +118,18 @@ if (Test-Path "data\locations.json") {
 
 if (Test-Path "config\channels.txt") {
     Copy-Item "config\channels.txt" "$OutDir\config\channels.txt"
+}
+
+if (Test-Path "config\filter.json") {
+    Copy-Item "config\filter.json" "$OutDir\config\filter.json"
+}
+
+if (Test-Path "config\port_ch_map.json") {
+    Copy-Item "config\port_ch_map.json" "$OutDir\config\port_ch_map.json"
+}
+
+if (Test-Path "gas_extension") {
+    Copy-Item "gas_extension" "$OutDir\gas_extension" -Recurse
 }
 
 $readmeLines = @(
