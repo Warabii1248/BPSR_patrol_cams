@@ -1687,6 +1687,12 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .cfg-card-title-collapsible{display:flex;align-items:center;gap:8px}
 .cfg-card-title-collapsible .btn{margin-left:auto;padding:2px 8px;font-size:10px}
 .chat-filter-card.minimized #chat-filter-content{display:none}
+.chat-score-threshold-box{padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg2);margin-bottom:10px}
+.chat-score-threshold-title{font-size:12px;font-weight:600;color:var(--text1);margin-bottom:8px}
+.chat-score-threshold-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.chat-score-threshold-controls input[type=range]{flex:1;min-width:180px}
+.chat-score-threshold-controls input[type=number]{width:72px}
+.chat-score-threshold-value{font-size:12px;color:var(--text2);min-width:120px}
 .check-label{display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text1)}
 /* Chat */
 .chat-toolbar{padding:5px 10px;border-bottom:1px solid var(--border);background:var(--bg1);display:flex;align-items:center;gap:8px;font-size:12px;flex-shrink:0;}
@@ -2810,11 +2816,7 @@ function isChatCandidate(ev){
 	const facts=extractChatCandidateFacts(ev);
 	if(!(facts.channel>0) || !facts.location)return false;
 	const score=getChatCandidateScore(ev);
-	if(score>=6)return true;
-	if(facts.inferredMonster==='ウリボ・ゴールド' && score>=5)return true;
-	if((facts.inferredMonster==='金ナッポ' || facts.inferredMonster==='銀ナッポ') && score>=5)return true;
-	if(score>=4)return true;
-	return false;
+	return score>=getChatNotifyMinScore();
 }
 function dedupeChatEvents(source){
 	const seen=new Set();
@@ -3185,6 +3187,15 @@ const CHAT_RULE_FIELDS=[
 ];
 const CHAT_FILTER_MINIMIZED_KEY='settingsChatFilterMinimized';
 let chatFilterMinimized=localStorage.getItem(CHAT_FILTER_MINIMIZED_KEY)==='true';
+const CHAT_NOTIFY_SCORE_MIN=0;
+const CHAT_NOTIFY_SCORE_MAX=20;
+const CHAT_NOTIFY_SCORE_DEFAULT=6;
+const CHAT_NOTIFY_SCORE_KEY='chatNotifyMinScore';
+let chatNotifyMinScore=CHAT_NOTIFY_SCORE_DEFAULT;
+try{
+	const saved=parseInt(localStorage.getItem(CHAT_NOTIFY_SCORE_KEY)||'',10);
+	if(Number.isFinite(saved))chatNotifyMinScore=saved;
+}catch(_){ }
 const CFG_FIELDS=[
   {k:'discord_webhook',label:'Discord Webhook URL (検知報告)',type:'text',desc:'空にするとDiscord通知無効',testBtn:true},
   {k:'discord_chat_report_webhook',label:'Discord Webhook URL (ワルチャ報告)',type:'text',desc:'チャット報告候補を別チャンネルに通知。空で無効',testBtn:true},
@@ -3252,6 +3263,41 @@ function toggleChatFilterMinimize(){
 	chatFilterMinimized=!chatFilterMinimized;
 	localStorage.setItem(CHAT_FILTER_MINIMIZED_KEY,String(chatFilterMinimized));
 	applyChatFilterMinimizeState();
+}
+function clampChatNotifyScore(value){
+	const n=parseInt(value,10);
+	if(!Number.isFinite(n))return CHAT_NOTIFY_SCORE_DEFAULT;
+	return Math.max(CHAT_NOTIFY_SCORE_MIN,Math.min(CHAT_NOTIFY_SCORE_MAX,n));
+}
+function getChatNotifyMinScore(){
+	chatNotifyMinScore=clampChatNotifyScore(chatNotifyMinScore);
+	return chatNotifyMinScore;
+}
+function syncChatNotifyScoreInputs(){
+	const score=getChatNotifyMinScore();
+	const slider=document.getElementById('chat-notify-score-slider');
+	const number=document.getElementById('chat-notify-score-number');
+	const label=document.getElementById('chat-notify-score-value');
+	if(slider && String(slider.value)!==String(score))slider.value=String(score);
+	if(number && String(number.value)!==String(score))number.value=String(score);
+	if(label)label.textContent='score '+score+' 以上で通知';
+}
+function setChatNotifyMinScore(value){
+	const next=clampChatNotifyScore(value);
+	if(next===chatNotifyMinScore){
+		syncChatNotifyScoreInputs();
+		return;
+	}
+	chatNotifyMinScore=next;
+	localStorage.setItem(CHAT_NOTIFY_SCORE_KEY,String(chatNotifyMinScore));
+	syncChatNotifyScoreInputs();
+	renderChatCandidatePanels();
+}
+function onChatNotifyScoreSliderInput(value){
+	setChatNotifyMinScore(value);
+}
+function onChatNotifyScoreNumberChange(value){
+	setChatNotifyMinScore(value);
 }
 function getCustomLocationRuleLines(){
 	return normalizeCsvList(cfgData.chat_report_location_rules);
@@ -3355,9 +3401,18 @@ function renderChatRuleManagers(){
 	const senderExcludeRules=normalizeCsvList(cfgData.chat_report_excluded_senders).join('\n');
 	const locationRules=normalizeCsvList(cfgData.chat_report_location_rules).join('\n');
 	const monsterRules=normalizeCsvList(cfgData.chat_report_monster_alias_rules).join('\n');
+	const notifyScore=getChatNotifyMinScore();
 	const locationRows=renderCustomLocationRuleRows(false);
 	const monsterRows=renderCustomMonsterAliasRuleRows(false);
 	root.innerHTML=''
+		+'<div class="chat-score-threshold-box">'
+		+'<div class="chat-score-threshold-title">通知しきい値</div>'
+		+'<div class="chat-score-threshold-controls">'
+		+'<input type="range" id="chat-notify-score-slider" min="'+CHAT_NOTIFY_SCORE_MIN+'" max="'+CHAT_NOTIFY_SCORE_MAX+'" step="1" value="'+notifyScore+'" oninput="onChatNotifyScoreSliderInput(this.value)">'
+		+'<input type="number" id="chat-notify-score-number" min="'+CHAT_NOTIFY_SCORE_MIN+'" max="'+CHAT_NOTIFY_SCORE_MAX+'" step="1" value="'+notifyScore+'" onchange="onChatNotifyScoreNumberChange(this.value)">'
+		+'<span id="chat-notify-score-value" class="chat-score-threshold-value">score '+notifyScore+' 以上で通知</span>'
+		+'</div>'
+		+'</div>'
 		+'<div class="cfg-rule-box">'
 		+'<div class="cfg-rule-box-title" style="color:var(--danger)">検知不要プレイヤー</div>'
 		+'<div class="cfg-rule-actions">'
@@ -3388,6 +3443,7 @@ function renderChatRuleManagers(){
 		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_monster_alias_rules" rows="10" spellcheck="false" placeholder="モンスター名|別名">'+escHtml(monsterRules)+'</textarea>'
 		+'<span class="cfg-note">追加内容はセル形式で表示しています。保存はこの一覧から行われます。</span>'
 		+'</div>';
+	syncChatNotifyScoreInputs();
 	if(scroller)requestAnimationFrame(()=>{ scroller.scrollTop=savedScroll; });
 }
 async function removeChatFilterValue(key, value){
