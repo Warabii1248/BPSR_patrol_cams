@@ -135,7 +135,6 @@ GUI はブラウザベースのウィンドウ（WebView2）で表示され、�
 | `full_threshold` | float | 満員と判定する接続数の閾値（active_device_count に対する割合） |
 | `consecutive_full_threshold` | int | 連続満員スキップでクラッシュとみなす回数 |
 | `scene_map_ids` | object | マップ名→マップ ID のマッピング（例: `{"阿斯特里亚平原": 7}`） |
-| `monster_scan` | bool | モンスタースキャンの有効/無効 |
 | `gas_url` | string | GAS エンドポイント URL |
 | `gas_fetch_interval_mins` | float | GAS からのチャンネルリスト取得間隔（分） |
 | `gas_spawn_threshold_hours` | float | GAS チャンネルフィルタ: この時間以内のスポーン記録があるチャンネルのみ使用 |

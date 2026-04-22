@@ -126,10 +126,6 @@ type Config struct {
 	// locations.json の mapId と対応させる。空の場合はデフォルト値を使用。
 	SceneMapIds map[string]uint32 `json:"scene_map_ids"`
 
-	// MonsterScan を true にすると 0x06 SyncNearEntities で出現した全モンスターの
-	// name・templateID・座標をログに出力する。未知モンスターのID調査用。
-	MonsterScan bool `json:"monster_scan"`
-
 	// --- GAS 自動チャンネル更新（Chrome拡張連携） ---
 
 	// GASTargetEnemy はChrome拡張から受信するチャンネルのフィルタ対象エネミー名。

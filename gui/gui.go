@@ -46,7 +46,6 @@ type Server struct {
 	goldHistoryFile    string
 	getSessions        func() []DeviceSessionInfo
 	testDetectFn       func(string)
-	monsterScanFn      func(bool) // モンスタースキャン有効/無効コールバック
 	saveChannelsFn     func([]uint32) error
 	channelNotifyFn    func(uint32) // Patrollerのチャンネル切替時コールバック
 	getConfigFn        func() ([]byte, error)
@@ -224,11 +223,6 @@ func (s *Server) SetSessionProvider(fn func() []DeviceSessionInfo) {
 // SetTestDetectFn はテスト通知ボタンから呼ばれるコールバックを設定する。
 func (s *Server) SetTestDetectFn(fn func(string)) {
 	s.testDetectFn = fn
-}
-
-// SetMonsterScanFn はGUIからモンスタースキャンを切り替えるコールバックを設定する。
-func (s *Server) SetMonsterScanFn(fn func(bool)) {
-	s.monsterScanFn = fn
 }
 
 // SetSaveChannelsFn はチャンネルリスト保存コールバックを設定する。
@@ -588,12 +582,12 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/patrol/channels", s.handlePatrolChannels)
 	mux.HandleFunc("/api/patrol/channels/gas", s.handlePatrolChannelsGAS)
 	mux.HandleFunc("/api/test-detect", s.handleTestDetect)
-	mux.HandleFunc("/api/monster-scan", s.handleMonsterScan)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/gold-history", s.handleGoldHistory)
 	mux.HandleFunc("/api/gold-history/delete", s.handleDeleteGoldHistory)
 	mux.HandleFunc("/api/gold-history/clear", s.handleClearGoldHistory)
 	mux.HandleFunc("/api/adb/restart", s.handleADBRestart)
+	mux.HandleFunc("/api/webhook/test", s.handleWebhookTest)
 	mux.HandleFunc("/api/chat-log", s.handleChatLog)
 	mux.HandleFunc("/api/chat-events", s.handleChatEvents)
 	mux.HandleFunc("/api/portmap/pending", s.handlePortMapPending)
@@ -1218,29 +1212,6 @@ func (s *Server) handlePatrolStart(w http.ResponseWriter, r *http.Request) {
 	s.patroller.Start(req.Serials, channels, s.patrolChannelsFile, opts)
 	writeOK(w)
 }
-
-// handleMonsterScan はモンスタースキャンモードを切り替える
-func (s *Server) handleMonsterScan(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", 405)
-		return
-	}
-	var body struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	s.mu.RLock()
-	fn := s.monsterScanFn
-	s.mu.RUnlock()
-	if fn != nil {
-		fn(body.Enabled)
-	}
-	writeJSON(w, map[string]interface{}{"ok": true, "enabled": body.Enabled})
-}
-
 // handleTestDetect はテスト用ウリボ・ゴールド検知を発火する
 func (s *Server) handleTestDetect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1285,6 +1256,26 @@ func (s *Server) handleADBRestart(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := mumu.RestartServer(r.Context(), s.patroller.Config()); err != nil {
 		log.Printf("[MuMu] ADB再起動失敗: %v", err)
+	}
+	writeOK(w)
+}
+
+// handleWebhookTest は指定URLにDiscordテスト通知を送る
+func (s *Server) handleWebhookTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "URL必須"})
+		return
+	}
+	if err := notifier.SendTest(req.URL); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
 	}
 	writeOK(w)
 }
@@ -1900,7 +1891,6 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       <button class="btn" onclick="testDetect('ウリボゴールド')">🔔 ウリボゴールド</button>
       <button class="btn" onclick="testDetect('金ナッポ')">🔔 金ナッポ</button>
       <button class="btn" onclick="testDetect('銀ナッポ')">🔔 銀ナッポ</button>
-      <button class="btn toggle-btn" id="btn-monster-scan" onclick="toggleMonsterScan()" title="出現した全モンスターのtmplID・名前・座標をログに出力します">🔍 怪物スキャン</button>
       <button class="btn" style="margin-left:auto" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉ 別ウィンドウ</button>
     </div>
   </div>
@@ -2020,7 +2010,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 				<button class="btn primary" onclick="saveConfig()">💾 保存・反映</button>
 				<span id="cfg-status" style="font-size:.82em;color:var(--text2)"></span>
 			</div>
-			<p class="cfg-note" style="margin-top:6px">* 滞在時間・タイムアウト・並列設定・通知エネミー・Webhook・デバウンス・チャットフィルター・モンスタースキャンは保存後すぐ反映されます。NIC・GUIポート・ロケーションファイルは再起動が必要です。</p>
+			<p class="cfg-note" style="margin-top:6px">* 滞在時間・タイムアウト・並列設定・通知エネミー・Webhook・デバウンス・チャットフィルターは保存後すぐ反映されます。NIC・GUIポート・ロケーションファイルは再起動が必要です。</p>
 		</div>
 	</div>
 </div>
@@ -2477,14 +2467,6 @@ function appendLog(line){
 async function testDetect(monster){
   const url = monster ? '/api/test-detect?monster=' + encodeURIComponent(monster) : '/api/test-detect';
   await fetch(url,{method:'POST'});
-}
-let monsterScanEnabled=false;
-async function toggleMonsterScan(){
-  monsterScanEnabled=!monsterScanEnabled;
-  await fetch('/api/monster-scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:monsterScanEnabled})});
-  const btn=document.getElementById('btn-monster-scan');
-  btn.classList.toggle('active',monsterScanEnabled);
-  btn.textContent=monsterScanEnabled?'🔍 スキャン中...':'🔍 怪物スキャン';
 }
 (function(){
   const src=new EventSource('/events');
@@ -3160,8 +3142,8 @@ const CHAT_RULE_FIELDS=[
 	{k:'chat_report_monster_alias_rules',label:'モンスター別名ルール',type:'multiline-list',desc:'1行形式: モンスター名|別名'},
 ];
 const CFG_FIELDS=[
-  {k:'discord_webhook',label:'Discord Webhook URL (検知報告)',type:'text',desc:'空にするとDiscord通知無効'},
-  {k:'discord_chat_report_webhook',label:'Discord Webhook URL (ワルチャ報告)',type:'text',desc:'チャット報告候補を別チャンネルに通知。空で無効'},
+  {k:'discord_webhook',label:'Discord Webhook URL (検知報告)',type:'text',desc:'空にするとDiscord通知無効',testBtn:true},
+  {k:'discord_chat_report_webhook',label:'Discord Webhook URL (ワルチャ報告)',type:'text',desc:'チャット報告候補を別チャンネルに通知。空で無効',testBtn:true},
   {k:'chat_exclude',label:'チャット除外キーワード',type:'csv',desc:'カンマ区切り。例: いない,終わった'},
   {k:'chat_report_min_length',label:'報告候補 最小文字数',type:'number',desc:'0でデフォルト(4)。これ未満のメッセージを除外'},
   {k:'chat_report_max_length',label:'報告候補 最大文字数',type:'number',desc:'0でデフォルト(80)。これ超のメッセージを除外'},
@@ -3196,7 +3178,8 @@ function renderConfigFields(containerId, fields){
 			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><select id="cfg-'+f.k+'">'+opts+'</select>'+noteHtml+'</div>';
 		}
 		var inputType=f.type==='csv'?'text':f.type;
-		return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><input type="'+inputType+'" id="cfg-'+f.k+'" value="'+escHtml(String(val))+'" placeholder="'+escHtml(f.desc||'')+'">'+noteHtml+'</div>';
+		var testBtnHtml=f.testBtn?('<div style="margin-top:4px"><button type="button" class="btn" onclick="testWebhook(\'cfg-'+f.k+'\')">📨 テスト送信</button><span id="cfg-'+f.k+'-test-result" style="margin-left:8px;font-size:11px;opacity:.8"></span></div>'):'';
+		return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><input type="'+inputType+'" id="cfg-'+f.k+'" value="'+escHtml(String(val))+'" placeholder="'+escHtml(f.desc||'')+'">'+noteHtml+testBtnHtml+'</div>';
 	}).join('');
 }
 function renderChatRuleTable(headers, rows, emptyText){
@@ -3451,6 +3434,18 @@ async function saveConfig(silent){
 				setTimeout(()=>st.textContent='',4000);
 		}
 	cfgData=updated;renderChatRuleManagers();renderChatCandidatePanels();
+}
+async function testWebhook(inputId){
+	const url=(document.getElementById(inputId)||{}).value||'';
+	const resultEl=document.getElementById(inputId+'-test-result');
+	if(!url.trim()){if(resultEl)resultEl.textContent='URL未入力';return;}
+	if(resultEl)resultEl.textContent='送信中...';
+	try{
+		const r=await fetch('/api/webhook/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url.trim()})});
+		const d=await r.json();
+		if(resultEl)resultEl.textContent=d.ok?'✓ 送信成功':'✗ 失敗: '+(d.error||'');
+	}catch(e){if(resultEl)resultEl.textContent='✗ エラー: '+e.message;}
+	setTimeout(()=>{if(resultEl)resultEl.textContent='';},5000);
 }
 function renderConfigForm(cfg){
 	// 通知エネミー チェックボックス反映（{name,enabled} 形式）

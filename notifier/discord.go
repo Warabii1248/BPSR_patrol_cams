@@ -85,6 +85,11 @@ func (d *DiscordWebhook) Send(det Detection) error {
 	return lastErr
 }
 
+// SendTest sends a simple test message to the given webhook URL.
+func SendTest(url string) error {
+	return postWebhook(url, "[テスト通知] BPSR Patrol Cams から送信テストです。")
+}
+
 func postWebhook(url, content string) error {
 	payload := map[string]any{"content": content}
 	data, err := json.Marshal(payload)

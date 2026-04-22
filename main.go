@@ -252,9 +252,6 @@ func main() {
 		capDevice.SetSceneMapIds(cfg.SceneMapIds)
 		log.Printf("scene_map_ids: %d件設定", len(cfg.SceneMapIds))
 	}
-	if cfg.MonsterScan {
-		capDevice.SetMonsterScan(true)
-	}
 	if cfg.PortMapFile != "" {
 		capDevice.SetPortMapFile(cfg.PortMapFile)
 		log.Printf("port map: %s", cfg.PortMapFile)
@@ -294,11 +291,6 @@ func main() {
 	// テスト通知ボタン用：プレイヤー位置を指定モンスター検知として発火
 	guiServer.SetTestDetectFn(func(monster string) {
 		capDevice.ForceDetect(monster)
-	})
-
-	// モンスタースキャンモード切替
-	guiServer.SetMonsterScanFn(func(enabled bool) {
-		capDevice.SetMonsterScan(enabled)
 	})
 
 	// チャット受信をGUIへ転送
@@ -382,8 +374,6 @@ func main() {
 			if len(c.SceneMapIds) > 0 {
 				capDevice.SetSceneMapIds(c.SceneMapIds)
 			}
-			// モンスタースキャン
-			capDevice.SetMonsterScan(c.MonsterScan)
 			// GAS 対象エネミー（即時反映）
 			guiServer.SetGASTargetEnemy(c.GASTargetEnemy)
 			return nil

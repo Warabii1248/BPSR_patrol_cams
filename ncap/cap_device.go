@@ -189,10 +189,6 @@ type CapDevice struct {
 	chatDedupMu sync.Mutex
 	chatDedup   map[string]time.Time // key=sender+"\x00"+message, value=最終受信時刻
 
-	// モンスタースキャンモード（GUI/config から動的切替可）
-	monsterScanMu sync.RWMutex
-	monsterScan   bool
-
 	// チャット通知コールバック（GUI へのリアルタイム配信用）
 	chatNotifyFn func(clientIP, sender, message string, channel uint32, hasCh bool)
 
@@ -273,19 +269,6 @@ func (cd *CapDevice) SetLocations(store *location.Store) {
 // SetDebounce はデバウンス期間を設定する
 func (cd *CapDevice) SetDebounce(d time.Duration) {
 	cd.debounce = d
-}
-
-// SetMonsterScan はモンスタースキャンモードを切り替える。
-// true にすると 0x06 SyncNearEntities で出現した全モンスターの name/tmplID/座標をログに出力する。
-func (cd *CapDevice) SetMonsterScan(enabled bool) {
-	cd.monsterScanMu.Lock()
-	cd.monsterScan = enabled
-	cd.monsterScanMu.Unlock()
-	if enabled {
-		log.Println("[SCAN] モンスタースキャン有効: 出現した全モンスターのID・座標をログに出力します")
-	} else {
-		log.Println("[SCAN] モンスタースキャン無効")
-	}
 }
 
 // SetPortMapFile はポートマップファイルを読み込み、自動記録を有効にする。
@@ -1509,14 +1492,6 @@ func (cd *CapDevice) processSyncNearEntities(sess *session, payload []byte) {
 			cd.triggerDetection(sess, notifier.SourceAuto, name, pos, 0, tmplID)
 		}
 
-		// スキャンモード: 全モンスターのID・名前・座標を出力（未知ID調査用）
-		cd.monsterScanMu.RLock()
-		scan := cd.monsterScan
-		cd.monsterScanMu.RUnlock()
-		if scan && (tmplID != 0 || name != "") {
-			log.Printf("[%s][SCAN] name=%q tmplID=%d pos=(%.1f,%.1f,%.1f) Ch=%d",
-				sess.label, name, tmplID, posX, posY, posZ, sess.lineID)
-		}
 	}
 }
 
