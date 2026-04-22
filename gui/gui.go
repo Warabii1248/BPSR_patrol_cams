@@ -1212,6 +1212,7 @@ func (s *Server) handlePatrolStart(w http.ResponseWriter, r *http.Request) {
 	s.patroller.Start(req.Serials, channels, s.patrolChannelsFile, opts)
 	writeOK(w)
 }
+
 // handleTestDetect はテスト用ウリボ・ゴールド検知を発火する
 func (s *Server) handleTestDetect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1683,6 +1684,9 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .cfg-note{font-size:.75em;color:var(--text3);margin-top:3px}
 .section-title{font-size:.78em;color:var(--accent);font-weight:500;margin:10px 0 5px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:4px}
 .cfg-card-title{font-size:.86em;color:var(--text1);font-weight:600;margin-bottom:10px}
+.cfg-card-title-collapsible{display:flex;align-items:center;gap:8px}
+.cfg-card-title-collapsible .btn{margin-left:auto;padding:2px 8px;font-size:10px}
+.chat-filter-card.minimized #chat-filter-content{display:none}
 .check-label{display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text1)}
 /* Chat */
 .chat-toolbar{padding:5px 10px;border-bottom:1px solid var(--border);background:var(--bg1);display:flex;align-items:center;gap:8px;font-size:12px;flex-shrink:0;}
@@ -1992,8 +1996,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 <div class="view" id="view-settings">
 	<div class="cfg-stack">
 		<div class="card cfg-card chat-filter-card">
-			<div class="cfg-card-title">チャット候補フィルター</div>
-			<div id="cfg-chat-rule-managers" class="cfg-rule-grid"></div>
+			<div class="cfg-card-title cfg-card-title-collapsible"><span>チャットフィルター</span><button id="chat-filter-toggle-btn" type="button" class="btn" onclick="toggleChatFilterMinimize()">－ 最小化</button></div>
+			<div id="chat-filter-content"><div id="cfg-chat-rule-managers" class="cfg-rule-grid"></div></div>
 		</div>
 		<div class="card cfg-card">
 			<div class="cfg-card-title">システム設定</div>
@@ -2615,10 +2619,43 @@ let notifySoundEnabled=localStorage.getItem('notifySoundEnabled')!=='false';
 let notifySoundVolume=parseFloat(localStorage.getItem('notifySoundVolume')||'0.5');
 const DEFAULT_CHAT_LOCATION_RULES=[];
 const CHAT_MONSTER_ALIASES=[];
+const CHAT_REPORT_VERBS=['発見','出現','いた','居た','います','あり','あります','湧','わき','沸','出た','でた','見つけ','みつけ','確認'];
+const CHAT_MONSTER_HINT_WORDS=['金','きん','gold','銀','ぎん','silver','うり','ウリ','豚','猪','boar','なぽ','なっぽ','ナッポ','nappo'];
 function chatMessageLength(text){return Array.from(String(text||'')).length;}
 function normalizeCsvList(items){return [...new Set((Array.isArray(items)?items:[]).map(v=>String(v||'').trim()).filter(Boolean))];}
 function normalizeChatCandidateText(text){
 	return String(text||'').toLowerCase().replace(/[\s\u3000・._\-\/]/g,'').replace(/[０-９]/g, ch=>String.fromCharCode(ch.charCodeAt(0)-0xFEE0));
+}
+function removeKnownChatTokens(baseText, tokenList){
+	let rest=String(baseText||'');
+	normalizeCsvList(tokenList).map(v=>normalizeChatCandidateText(v)).filter(Boolean).sort((a,b)=>b.length-a.length).forEach(tok=>{
+		rest=rest.split(tok).join('');
+	});
+	return rest;
+}
+function estimateChatMessageNoiseCount(facts){
+	let rest=String(facts&&facts.compactMessage||'');
+	if(!rest)return 0;
+	if(facts.channel>0){
+		const ch=String(facts.channel);
+		rest=rest.replace(new RegExp('(?:^|[^0-9])'+ch+'ch','g'),'');
+		rest=rest.replace(new RegExp('ch'+ch,'g'),'');
+		rest=rest.replace(new RegExp('^'+ch+'(?=[^0-9]|$)','g'),'');
+	}
+	rest=rest.replace(/[0-9]{2,4}[,、.．][0-9]{2,4}/g,'');
+	const tokens=[];
+	if(facts.locationRule&&Array.isArray(facts.locationRule.aliases))tokens.push(...facts.locationRule.aliases);
+	if(facts.monster){
+		const monsterRule=getChatMonsterAliases().find(rule=>rule.name===facts.monster);
+		if(monsterRule&&Array.isArray(monsterRule.aliases))tokens.push(...monsterRule.aliases);
+		tokens.push(facts.monster);
+	}
+	tokens.push(...CHAT_REPORT_VERBS);
+	tokens.push(...CHAT_MONSTER_HINT_WORDS);
+	rest=removeKnownChatTokens(rest,tokens);
+	rest=rest.replace(/[%％!！?？,、。．.~-]/g,'');
+	rest=rest.replace(/[0-9]/g,'');
+	return Array.from(rest).length;
 }
 function cloneChatLocationRule(rule){
 	return {name:String(rule.name||''),aliases:normalizeCsvList(rule.aliases||[]),monsters:normalizeCsvList(rule.monsters||[])};
@@ -2723,7 +2760,7 @@ function extractChatCandidateFacts(ev){
 	}
 	const monster=explicitMonster||inferredMonster;
 	const hasCoords=/[0-9]{2,4}[,、.．][0-9]{2,4}/.test(asciiMessage);
-	const hasReportVerb=['発見','出現','いた','居た','います','あり','あります','湧','わき','沸','出た','でた','見つけ','みつけ','確認'].some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
+	const hasReportVerb=CHAT_REPORT_VERBS.some(v=>compactMessage.includes(normalizeChatCandidateText(v)));
 	const sender=rawSender.toLowerCase();
 	return {rawMessage, compactMessage, sender, channel, location, locationRule, spawnMonsters, monster, explicitMonster, inferredMonster, hasGoldWord, hasSilverWord, hasBoarWord, hasNappoWord, hasCoords, hasReportVerb};
 }
@@ -2762,7 +2799,12 @@ function getChatCandidateScore(ev){
 	if((facts.inferredMonster==='金ナッポ' || facts.inferredMonster==='銀ナッポ') && facts.channel>0 && facts.location)score+=2;
 	if((facts.hasGoldWord || facts.hasSilverWord) && !facts.hasBoarWord)score+=1;
 	if(rules.senders.length && (facts.channel>0 || facts.location || facts.monster))score+=1;
-	return score;
+	const noiseCount=estimateChatMessageNoiseCount(facts);
+	if(noiseCount>0){
+		score-=Math.min(8, noiseCount*2);
+		if(facts.channel>0 && !facts.location && !facts.monster && noiseCount>=2)score-=2;
+	}
+	return Math.max(0, score);
 }
 function isChatCandidate(ev){
 	const facts=extractChatCandidateFacts(ev);
@@ -3141,6 +3183,8 @@ const CHAT_RULE_FIELDS=[
 	{k:'chat_report_location_rules',label:'地点別名ルール',type:'multiline-list',desc:'1行形式: 地点名|別名|モンスター1,モンスター2'},
 	{k:'chat_report_monster_alias_rules',label:'モンスター別名ルール',type:'multiline-list',desc:'1行形式: モンスター名|別名'},
 ];
+const CHAT_FILTER_MINIMIZED_KEY='settingsChatFilterMinimized';
+let chatFilterMinimized=localStorage.getItem(CHAT_FILTER_MINIMIZED_KEY)==='true';
 const CFG_FIELDS=[
   {k:'discord_webhook',label:'Discord Webhook URL (検知報告)',type:'text',desc:'空にするとDiscord通知無効',testBtn:true},
   {k:'discord_chat_report_webhook',label:'Discord Webhook URL (ワルチャ報告)',type:'text',desc:'チャット報告候補を別チャンネルに通知。空で無効',testBtn:true},
@@ -3197,6 +3241,17 @@ function renderChatRuleTableMarkup(headers, rows, emptyText){
 		+'</tr></thead><tbody>'
 		+rows.join('')
 		+'</tbody></table></div>';
+}
+function applyChatFilterMinimizeState(){
+	const card=document.querySelector('.chat-filter-card');
+	const btn=document.getElementById('chat-filter-toggle-btn');
+	if(card)card.classList.toggle('minimized',chatFilterMinimized);
+	if(btn)btn.textContent=chatFilterMinimized?'＋ 展開':'－ 最小化';
+}
+function toggleChatFilterMinimize(){
+	chatFilterMinimized=!chatFilterMinimized;
+	localStorage.setItem(CHAT_FILTER_MINIMIZED_KEY,String(chatFilterMinimized));
+	applyChatFilterMinimizeState();
 }
 function getCustomLocationRuleLines(){
 	return normalizeCsvList(cfgData.chat_report_location_rules);
@@ -3415,6 +3470,7 @@ async function loadConfig(){
 	renderConfigFields('cfg-form',CFG_FIELDS);
 	renderChatCandidatePanels();
 	renderConfigForm(cfgData);
+	applyChatFilterMinimizeState();
 }
 async function saveConfig(silent){
 	const updated={...cfgData};
