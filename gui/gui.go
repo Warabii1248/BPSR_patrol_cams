@@ -2621,7 +2621,7 @@ async function refreshDevices(){
     const checked=selectedDevices.has(d)?'checked':'';
     const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
     const eid='ch-'+encodeURIComponent(d);
-    return '<div class="device-entry'+(confirmed?' matched':'')+'">';
+    return '<div class="device-entry'+(confirmed?' matched':'')+'">'
       +'<label class="check-label"><input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)"><span class="serial">'+escHtml(d)+'</span>'+uidHtml+'</label>'
       +'<div style="display:flex;gap:6px;margin-top:4px"><input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px"><button style="padding:3px 8px;font-size:.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button></div></div>';
   }).join('');

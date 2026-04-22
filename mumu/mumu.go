@@ -110,10 +110,11 @@ func RestartServer(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("adb start-server: %w\n%s", err, string(out))
 	}
 	log.Println("[MuMu] ADBサーバー再起動完了")
+	// MuMu 独自 ADB では kill-server 後に全インスタンスが再登録するまで数秒かかる
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 	}
 	return nil
 }
@@ -163,21 +164,8 @@ func listDevicesOnce(ctx context.Context, cfg Config) ([]string, error) {
 }
 
 // SwitchChannel は指定デバイスを指定チャンネルに切り替える。
-// 失敗した場合は adb kill-server/start-server で復旧してリトライする。
 func SwitchChannel(ctx context.Context, serial string, channel uint32, cfg Config) error {
-	err := switchChannelOnce(ctx, serial, channel, cfg)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		log.Printf("[MuMu] switch_channel失敗(%v)、ADBサーバーを再起動してリトライ...", err)
-		if restartErr := RestartServer(ctx, cfg); restartErr != nil {
-			log.Printf("[MuMu] ADB再起動失敗: %v", restartErr)
-			return err // 再起動失敗なら元のエラーを返す
-		}
-		return switchChannelOnce(ctx, serial, channel, cfg)
-	}
-	return nil
+	return switchChannelOnce(ctx, serial, channel, cfg)
 }
 
 func switchChannelOnce(ctx context.Context, serial string, channel uint32, cfg Config) error {
