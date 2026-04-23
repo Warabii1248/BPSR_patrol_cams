@@ -671,10 +671,10 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 			log.Printf("[MuMu] 起動時デバイス: %v", devices)
 			return // デバイス確認完了
 		}
-		// 3回全て失敗 → ADB サーバーを再起動して再確認
-		log.Println("[MuMu] デバイスが見つからないため ADB サーバーを自動再起動します...")
-		if err := mumu.RestartServer(context.Background(), cfg); err != nil {
-			log.Printf("[MuMu] ADB 再起動失敗: %v", err)
+		// 3回全て失敗 → まず非破壊の ADB 復旧を試す
+		log.Println("[MuMu] デバイスが見つからないため ADB 復旧を試みます...")
+		if err := mumu.RecoverServer(context.Background(), cfg); err != nil {
+			log.Printf("[MuMu] ADB 復旧失敗: %v", err)
 			return
 		}
 		time.Sleep(1 * time.Second)
@@ -1184,6 +1184,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if savedData, rerr := s.getConfigFn(); rerr == nil {
 				var appCfg struct {
 					ADBPath                string  `json:"adb_path"`
+					MumuSerials            []string `json:"mumu_serials"`
 					MumuTapX               int     `json:"mumu_tap_x"`
 					MumuTapY               int     `json:"mumu_tap_y"`
 					MumuClearLength        int     `json:"mumu_clear_length"`
@@ -1202,6 +1203,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 						TapY:               appCfg.MumuTapY,
 						ClearLength:        appCfg.MumuClearLength,
 						PreKeycode:         appCfg.MumuPreKeycode,
+						ConnectSerials:     appCfg.MumuSerials,
 						GlobalDelay:        time.Duration(appCfg.MumuDelayMs) * time.Millisecond,
 						ParallelLimit:      appCfg.ParallelLimit,
 						ParallelGroupDelay: time.Duration(appCfg.ParallelGroupDelaySecs * float64(time.Second)),
@@ -1317,15 +1319,15 @@ func (s *Server) handlePatrolStop(w http.ResponseWriter, r *http.Request) {
 	writeOK(w)
 }
 
-// handleADBRestart は ADB サーバーを kill-server → start-server で再起動する。
-// 再起動完了を待ってからレスポンスを返すことで、呼び出し元がデバイス取得前に再起動が完了することを保証する。
+// handleADBRestart は ADB サーバーの復旧を行う。
+// 既存接続を維持する手順を優先し、必要時のみハード再起動へフォールバックする。
 func (s *Server) handleADBRestart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", 405)
 		return
 	}
-	if err := mumu.RestartServer(r.Context(), s.patroller.Config()); err != nil {
-		log.Printf("[MuMu] ADB再起動失敗: %v", err)
+	if err := mumu.RecoverServer(r.Context(), s.patroller.Config()); err != nil {
+		log.Printf("[MuMu] ADB復旧失敗: %v", err)
 	}
 	writeOK(w)
 }
@@ -2747,11 +2749,17 @@ function selectedSerials(){return[...selectedDevices];}
 async function refreshDevices(){
   const bar=document.getElementById('status-bar');if(bar)bar.textContent='ADB再起動中...';
   await fetch('/api/adb/restart',{method:'POST'});
-  if(bar)bar.textContent='デバイス取得中...';
-  const r=await fetch('/api/devices');const res=await r.json();
-  const devs=Array.isArray(res)?res:(res.devices||[]);
-  const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
-  const deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
+	let devs=[];
+	let deviceMap={};
+	for(let i=1;i<=6;i++){
+		if(bar)bar.textContent='デバイス取得中...('+i+'/6)';
+		const r=await fetch('/api/devices');const res=await r.json();
+		devs=Array.isArray(res)?res:(res.devices||[]);
+		const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
+		deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
+		if(devs&&devs.length>0)break;
+		if(i<6)await new Promise(r=>setTimeout(r,1500));
+	}
   if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
   renderDashDevices(devs,deviceMap);
   const el=document.getElementById('device-list');if(bar)bar.textContent='';

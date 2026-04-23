@@ -152,6 +152,7 @@ func main() {
 		TapY:               cfg.MumuTapY,
 		ClearLength:        cfg.MumuClearLength,
 		PreKeycode:         cfg.MumuPreKeycode,
+		ConnectSerials:     cfg.MumuSerials,
 		GlobalDelay:        time.Duration(cfg.MumuDelayMs) * time.Millisecond,
 		ParallelLimit:      cfg.ParallelLimit,
 		ParallelGroupDelay: time.Duration(cfg.ParallelGroupDelaySecs * float64(time.Second)),
