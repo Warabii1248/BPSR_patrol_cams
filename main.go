@@ -236,6 +236,8 @@ func main() {
 		guiServer.OnDetect(det)
 	}
 
+	guiServer.SetChatReportFn(onDetect)
+
 	capDevice := ncap.NewCapDevice(handle, selectedDesc)
 	capDevice.SetNotifier(onDetect)
 	if locStore != nil {

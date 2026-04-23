@@ -72,6 +72,10 @@ type Server struct {
 	pendingPortMaps   []PendingPortMapChange
 	pendingPortMapSeq int
 	portMapApplyFn    func(ch uint32, serverIP string)
+
+	chatReportFn      func(notifier.Detection)
+	chatReportDedupMu sync.Mutex
+	chatReportDedup   map[string]time.Time
 }
 
 // PortMapEntry はポートマップの1エントリ（GUI向け）
@@ -401,6 +405,11 @@ func (s *Server) SetMapAllFn(fn func() int) {
 	s.mapAllFn = fn
 }
 
+// SetChatReportFn はチャット候補確定時にDiscord通知を送るコールバックを設定する。
+func (s *Server) SetChatReportFn(fn func(notifier.Detection)) {
+	s.chatReportFn = fn
+}
+
 // AddPortMapPending はクォーラム成立した portMap 変更を確認待ちキューに追加し、SSE で通知する。
 // 同一 ch の既存エントリがあれば上書き（最新情報に差し替え）。
 func (s *Server) AddPortMapPending(ch uint32, newIP, oldIP string, voteCount int) {
@@ -590,6 +599,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/webhook/test", s.handleWebhookTest)
 	mux.HandleFunc("/api/chat-log", s.handleChatLog)
 	mux.HandleFunc("/api/chat-events", s.handleChatEvents)
+	mux.HandleFunc("/api/chat-report/notify", s.handleChatReportNotify)
 	mux.HandleFunc("/api/portmap/pending", s.handlePortMapPending)
 	mux.HandleFunc("/api/portmap/confirm", s.handlePortMapConfirm)
 	mux.HandleFunc("/api/portmap/entries", s.handlePortMapEntries)
@@ -1285,6 +1295,59 @@ func (s *Server) handleWebhookTest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSpawnLog(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, spawnLogHTML)
+}
+
+// handleChatReportNotify はフロントエンドのスコアリングで候補確定したチャットをDiscordに通知する。
+func (s *Server) handleChatReportNotify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	var req struct {
+		Channel  uint32 `json:"channel"`
+		Message  string `json:"message"`
+		Location string `json:"location"`
+		Monster  string `json:"monster"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Message == "" {
+		http.Error(w, "bad request", 400)
+		return
+	}
+	if s.chatReportFn == nil {
+		writeOK(w)
+		return
+	}
+	// 5分間のdedup（複数ブラウザタブや再描画での二重送信を防ぐ）
+	key := fmt.Sprintf("%d|%s", req.Channel, req.Message)
+	now := time.Now()
+	s.chatReportDedupMu.Lock()
+	if s.chatReportDedup == nil {
+		s.chatReportDedup = make(map[string]time.Time)
+	}
+	if t, seen := s.chatReportDedup[key]; seen && now.Sub(t) < 5*time.Minute {
+		s.chatReportDedupMu.Unlock()
+		writeOK(w)
+		return
+	}
+	s.chatReportDedup[key] = now
+	for k, t := range s.chatReportDedup {
+		if now.Sub(t) > 10*time.Minute {
+			delete(s.chatReportDedup, k)
+		}
+	}
+	s.chatReportDedupMu.Unlock()
+
+	det := notifier.Detection{
+		Source:      notifier.SourceChat,
+		ChatLineID:  req.Channel,
+		LineID:      req.Channel,
+		Location:    req.Location,
+		MonsterName: req.Monster,
+		Message:     req.Message,
+		Time:        now,
+	}
+	go s.chatReportFn(det)
+	writeOK(w)
 }
 
 // handleChatLog はチャットログ履歴をJSONで返す
@@ -2976,7 +3039,11 @@ function appendChatToPanel(ev){
   const isDup=chatEvents.slice(-50).some(e=>e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
   if(isDup)return;
   chatEvents.push(ev);if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
-  if(isChatCandidate(ev))playNotifyBeep();
+  if(isChatCandidate(ev)){
+    playNotifyBeep();
+    const facts=extractChatCandidateFacts(ev);
+    fetch('/api/chat-report/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:ev.channel,message:ev.message,location:facts.location,monster:facts.monster||''})}).catch(()=>{});
+  }
 	renderChatPanel();
 }
 function clearChatPanel(){chatEvents=[];const el=document.getElementById('chat-area');if(el)el.innerHTML='';renderDashChat([]);renderChatCandidatePanels([]);}
