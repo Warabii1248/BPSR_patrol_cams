@@ -45,6 +45,12 @@ type Detection struct {
 	// Message is the raw world-chat text (populated for SourceChat).
 	Message string
 
+	// PlayerName is the chat sender name (populated for SourceChat).
+	PlayerName string
+
+	// Score is the chat candidate score (populated for SourceChat).
+	Score int
+
 	// InstanceLabel identifies which emulator instance made the detection.
 	// E.g. "192.168.1.2:50011->1.2.3.4:5000"
 	InstanceLabel string
@@ -120,6 +126,33 @@ func postWebhook(url, content string) error {
 //	場所: テント裏
 //	時刻: 2026-03-01 20:00
 func Format(det Detection) string {
+	if det.Source == SourceChat {
+		title := det.MonsterName
+		if title == "" {
+			title = "ウリボ・ゴールド"
+		}
+		ch := "不明"
+		if det.ChatLineID > 0 {
+			ch = fmt.Sprintf("%d", det.ChatLineID)
+		} else if det.LineID > 0 {
+			ch = fmt.Sprintf("%d", det.LineID)
+		}
+		loc := det.Location
+		if loc == "" {
+			loc = "不明"
+		}
+		name := det.PlayerName
+		if name == "" {
+			name = "不明"
+		}
+		msg := det.Message
+		if msg == "" {
+			msg = "-"
+		}
+		ts := det.Time.Format("2006-01-02 15:04")
+		return fmt.Sprintf("【%s】\nch: %s\n場所: %s\n時刻: %s\nプレイヤー名: %s\nチャット: [%s]\nscore: %d", title, ch, loc, ts, name, msg, det.Score)
+	}
+
 	title := "ウリボ・ゴールド発見"
 	if det.MonsterName != "" {
 		if strings.Contains(det.MonsterName, "銀ナッポ") {

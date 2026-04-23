@@ -1367,6 +1367,8 @@ func (s *Server) handleChatReportNotify(w http.ResponseWriter, r *http.Request) 
 		Message  string `json:"message"`
 		Location string `json:"location"`
 		Monster  string `json:"monster"`
+		Sender   string `json:"sender"`
+		Score    int    `json:"score"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Message == "" {
 		http.Error(w, "bad request", 400)
@@ -1403,6 +1405,8 @@ func (s *Server) handleChatReportNotify(w http.ResponseWriter, r *http.Request) 
 		Location:    req.Location,
 		MonsterName: req.Monster,
 		Message:     req.Message,
+		PlayerName:  req.Sender,
+		Score:       req.Score,
 		Time:        now,
 	}
 	go s.chatReportFn(det)
@@ -3123,7 +3127,7 @@ function appendChatToPanel(ev){
   if(isChatCandidate(ev)){
     playNotifyBeep();
     const facts=extractChatCandidateFacts(ev);
-		fetch('/api/chat-report/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:facts.channel||0,message:ev.message,location:facts.location,monster:facts.monster||''})}).catch(()=>{});
+		fetch('/api/chat-report/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:facts.channel||0,message:ev.message,location:facts.location,monster:facts.monster||'',sender:ev.sender||'',score:getChatCandidateScore(ev)})}).catch(()=>{});
   }
 	renderChatPanel();
 }
