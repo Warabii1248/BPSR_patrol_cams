@@ -201,6 +201,26 @@ $env:CGO_LDFLAGS = "-LC:\npcap-sdk\Lib\x64 -lwpcap"
 go build -ldflags "-s -w -H windowsgui -X main.Version=dev" -o BPSR_patrol_cams.exe .
 ```
 
+### チャット報告専用アプリ（同期版）
+
+公開前にメインアプリと同じロジックを共有するため、専用エントリを `cmd/chat-reporter` に追加しています。
+
+- 既存の `build.ps1` には影響しません（メインアプリのビルド手順はそのまま）。
+- 設定ファイルは既存と同じ `config/config.json` と `config/filter.json` を利用します。
+- GUI は流用し、巡回開始/停止と巡回チャンネル編集機能は無効化されています。
+
+実行:
+
+```powershell
+go run ./cmd/chat-reporter
+```
+
+ビルド:
+
+```powershell
+go build -o bpsr-chat-reporter.exe ./cmd/chat-reporter
+```
+
 ---
 
 ## ライセンス

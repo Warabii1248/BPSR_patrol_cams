@@ -41,6 +41,7 @@ type DeviceSessionInfo struct {
 type Server struct {
 	port               int
 	patroller          *mumu.Patroller
+	patrolEnabled      bool
 	patrolChannels     []uint32 // 起動時に設定から読み込んだチャンネルリスト
 	patrolChannelsFile string   // channels.txt パス（ホットリロード用）
 	goldHistoryFile    string
@@ -116,15 +117,30 @@ type ChatEvent struct {
 
 const maxGoldHistoryEntries = 50
 
+// Options は GUI サーバーの挙動オプション。
+type Options struct {
+	PatrolEnabled bool
+}
+
 // New はGUIサーバーを作成する
 func New(port int, mumuCfg mumu.Config, patrolChannels []uint32, patrolChannelsFile string) *Server {
+	return NewWithOptions(port, mumuCfg, patrolChannels, patrolChannelsFile, Options{PatrolEnabled: true})
+}
+
+// NewWithOptions はGUIサーバーをオプション付きで作成する。
+func NewWithOptions(port int, mumuCfg mumu.Config, patrolChannels []uint32, patrolChannelsFile string, opts Options) *Server {
 	historyFile := filepath.Join("config", "gold_history.json")
 	if patrolChannelsFile != "" {
 		historyFile = filepath.Join(filepath.Dir(patrolChannelsFile), "gold_history.json")
 	}
+	patrolEnabled := true
+	if !opts.PatrolEnabled {
+		patrolEnabled = false
+	}
 	s := &Server{
 		port:               port,
 		patroller:          mumu.NewPatroller(mumuCfg),
+		patrolEnabled:      patrolEnabled,
 		patrolChannels:     patrolChannels,
 		patrolChannelsFile: patrolChannelsFile,
 		goldHistoryFile:    historyFile,
@@ -135,14 +151,18 @@ func New(port int, mumuCfg mumu.Config, patrolChannels []uint32, patrolChannelsF
 		log.Printf("[GUI] gold history load failed: %v", err)
 	}
 	// Patroller のチャンネル切替を channelNotifyFn に転送する
-	s.patroller.SetOnChannelSwitch(func(ch uint32) {
-		s.mu.RLock()
-		fn := s.channelNotifyFn
-		s.mu.RUnlock()
-		if fn != nil {
-			fn(ch)
+	if s.patrolEnabled {
+		s.patroller.SetOnChannelSwitch(func(ch uint32) {
+			s.mu.RLock()
+			fn := s.channelNotifyFn
+			s.mu.RUnlock()
+			if fn != nil {
+				fn(ch)
+			}
+		})
+	} else {
+		log.Printf("[GUI] patrol mode disabled")
 		}
-	})
 	return s
 }
 
@@ -310,11 +330,17 @@ func (s *Server) SetWindowStateFns(loadFn func() (*appconfig.WindowState, error)
 // NotifyChMovePacket は ncap が [0x2E] パケットを受信したとき main.go から呼ぶ。
 // label は "Instance-N" 形式のインスタンスラベル。巡回中であれば Patroller に転送する。
 func (s *Server) NotifyChMovePacket(label string) {
+	if !s.patrolEnabled {
+		return
+	}
 	s.patroller.NotifyChMovePacket(label)
 }
 
 // UpdatePatrollerCfg は Patroller の設定をリアルタイムで更新する。
 func (s *Server) UpdatePatrollerCfg(cfg mumu.Config) {
+	if !s.patrolEnabled {
+		return
+	}
 	s.patroller.UpdateConfig(cfg)
 }
 
@@ -493,7 +519,7 @@ func (w *guiWriter) Write(p []byte) (int, error) {
 			// - "[Instance-N][0x2E] UUID=..." は実パケット → カウント対象
 			// - "[Instance-N][0x2E] lineID補完: ..." は補助情報 → 二重カウント防止
 			// - "[MuMu] 巡回: Ch%d [0x2E] ..." は自ログ → フィードバックループ防止
-			if strings.Contains(line, "[0x2E] UUID=") {
+			if w.srv.patrolEnabled && strings.Contains(line, "[0x2E] UUID=") {
 				w.srv.patroller.NotifyChMovePacket(extractUID(line))
 			}
 		}
@@ -626,8 +652,9 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 		}
 	}()
 
-	// 起動時にデバイス一覧を最大3回取得し、全て失敗したら ADB を自動再起動する
-	go func() {
+	// 巡回モード時のみ、起動時にデバイス一覧を最大3回取得し失敗時は ADB を自動再起動する
+	if s.patrolEnabled {
+		go func() {
 		cfg := s.patroller.Config()
 		for attempt := 1; attempt <= 3; attempt++ {
 			time.Sleep(1 * time.Second)
@@ -661,7 +688,8 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 		} else {
 			log.Printf("[MuMu] ADB 再起動後にデバイスを検出: %v", devices)
 		}
-	}()
+		}()
+	}
 
 	url := fmt.Sprintf("http://%s", ln.Addr().String())
 	return url, nil
@@ -813,7 +841,14 @@ func openBrowser(url string) {
 // handleIndex はメインHTMLページを返す
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, processedIndexHTML)
+	fmt.Fprint(w, s.renderIndexHTML())
+}
+
+func (s *Server) renderIndexHTML() string {
+	if s.patrolEnabled {
+		return processedIndexHTML
+	}
+	return processedIndexHTML + patrolDisabledScript
 }
 
 // handleDeviceMap はADBデバイスのエミュレータIPを取得し、
@@ -969,6 +1004,14 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 // handlePatrolChannels はconfig読み込み済みのチャンネルリストを返す（GET）または保存する（POST）
 func (s *Server) handlePatrolChannels(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"channels": []uint32{}})
+			return
+		}
+		http.Error(w, "patrol disabled", http.StatusServiceUnavailable)
+		return
+	}
 	if r.Method == http.MethodPost {
 		var req struct {
 			Channels []uint32 `json:"channels"`
@@ -1007,6 +1050,10 @@ func (s *Server) handlePatrolChannels(w http.ResponseWriter, r *http.Request) {
 // handlePatrolChannelsGAS は Chrome拡張からエネミー名付きチャンネルを受信し、
 // GASTargetEnemy 設定でフィルタして巡回リストを更新する。
 func (s *Server) handlePatrolChannelsGAS(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		writeJSON(w, map[string]interface{}{"ok": true, "ignored": true})
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", 405)
 		return
@@ -1188,6 +1235,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 // handlePatrolStart は巡回を開始する
 func (s *Server) handlePatrolStart(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		http.Error(w, "patrol disabled", http.StatusServiceUnavailable)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", 405)
 		return
@@ -1240,6 +1291,10 @@ func (s *Server) handleTestDetect(w http.ResponseWriter, r *http.Request) {
 
 // handlePatrolClearFull は満員判定リストをクリアする
 func (s *Server) handlePatrolClearFull(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		http.Error(w, "patrol disabled", http.StatusServiceUnavailable)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", 405)
 		return
@@ -1250,6 +1305,10 @@ func (s *Server) handlePatrolClearFull(w http.ResponseWriter, r *http.Request) {
 
 // handlePatrolStop は巡回を停止する
 func (s *Server) handlePatrolStop(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		http.Error(w, "patrol disabled", http.StatusServiceUnavailable)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", 405)
 		return
@@ -1487,6 +1546,10 @@ func (s *Server) handleChatLogPage(w http.ResponseWriter, r *http.Request) {
 
 // handlePatrolStatus は現在の巡回状態を返す
 func (s *Server) handlePatrolStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		writeJSON(w, map[string]interface{}{"running": false, "last_channel": 0})
+		return
+	}
 	writeJSON(w, s.patroller.Status())
 }
 
@@ -1559,6 +1622,24 @@ var processedIndexHTML = func() string {
 	html = strings.ReplaceAll(html, "function switchView(id,navEl){", "function switchView(id,navEl){if(window.__disableAutoSwitchView)return;")
 	return html
 }()
+
+const patrolDisabledScript = `<script>
+(function(){
+	window.__patrolDisabled=true;
+	function hide(id){var el=document.getElementById(id);if(el)el.remove();}
+	hide('nav-patrol');
+	hide('view-patrol');
+	hide('card-dash-patrol');
+	hide('nav-data-management');
+	hide('view-data-management');
+	if(typeof loadPatrolChannels==='function'){loadPatrolChannels=async function(){window.patrolChannels=[];};}
+	if(typeof pollPatrolStatus==='function'){pollPatrolStatus=function(){};}
+	if(typeof patrolStart==='function'){patrolStart=async function(){alert('このアプリでは巡回機能は無効です');};}
+	if(typeof patrolStop==='function'){patrolStop=async function(){};}
+	if(typeof saveChannels==='function'){saveChannels=async function(){};}
+	if(typeof clearFullChannels==='function'){clearFullChannels=async function(){};}
+})();
+</script>`
 
 const indexHTML = `<!DOCTYPE html>
 <html lang="ja">
@@ -3042,7 +3123,7 @@ function appendChatToPanel(ev){
   if(isChatCandidate(ev)){
     playNotifyBeep();
     const facts=extractChatCandidateFacts(ev);
-    fetch('/api/chat-report/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:ev.channel,message:ev.message,location:facts.location,monster:facts.monster||''})}).catch(()=>{});
+		fetch('/api/chat-report/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:facts.channel||0,message:ev.message,location:facts.location,monster:facts.monster||''})}).catch(()=>{});
   }
 	renderChatPanel();
 }
