@@ -60,17 +60,21 @@ type DiscordWebhook struct {
 }
 
 // Send posts the detection as a text message to the configured webhook(s).
-// SourceChat detections are additionally sent to ChatReportURL when set.
+// SourceChat detections are sent to ChatReportURL when set.
+// If ChatReportURL is empty, SourceChat falls back to URL.
 func (d *DiscordWebhook) Send(det Detection) error {
 	if d == nil {
 		return nil
 	}
 	var urls []string
-	if d.URL != "" {
+	if det.Source == SourceChat {
+		if d.ChatReportURL != "" {
+			urls = append(urls, d.ChatReportURL)
+		} else if d.URL != "" {
+			urls = append(urls, d.URL)
+		}
+	} else if d.URL != "" {
 		urls = append(urls, d.URL)
-	}
-	if det.Source == SourceChat && d.ChatReportURL != "" && d.ChatReportURL != d.URL {
-		urls = append(urls, d.ChatReportURL)
 	}
 	if len(urls) == 0 {
 		return nil
