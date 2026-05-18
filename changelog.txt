@@ -1,6 +1,61 @@
-================================================================================
+﻿================================================================================
 BPSR Patrol Cams — 変更履歴
 ================================================================================
+
+--------------------------------------------------------------------------------
+[未リリース] バグ修正: goroutineリーク・巡回停止リセット・デバイス追跡改善
+--------------------------------------------------------------------------------
+
+■ GetDeviceIP goroutineリーク修正 (mumu/mumu.go, gui/gui.go)
+
+  問題:
+    - GetDeviceIP が context.Background() をハードコードしていたため、
+      /api/device-map のタイムアウト後も ADB プロセスが生き続けていた。
+  変更:
+    - GetDeviceIP(ctx, serial, cfg) にシグネチャ変更し ctx を伝播。
+    - gui.go の getDeviceIPCtx goroutineラッパーを削除し直接呼び出しに変更。
+
+■ 巡回停止後の stale currentChannel リセット (gui/gui.go)
+
+  問題:
+    - 巡回停止後も capDevice.currentChannel に最後のチャンネル値が残り、
+      停止後の検出パケットで誤った lineID フォールバックが行われていた。
+  変更:
+    - handlePatrolStop で patroller.Stop() 後に channelNotifyFn(0) を呼び出し、
+      currentChannel をリセットする。
+
+■ 手動チャンネル切替後の currentChannel 未更新 (gui/gui.go)
+
+  問題:
+    - /api/switch による手動切替は channelNotifyFn をバイパスしていたため、
+      capDevice.currentChannel が更新されず検出時の lineID が不正確だった。
+  変更:
+    - handleSwitch 完了後に channelNotifyFn(req.Channel) を呼び出す。
+
+■ 巡回中追加デバイスの非認識修正 (mumu/mumu.go)
+
+  問題:
+    - Patroller.Start でデバイスリストが起動時に固定されるため、
+      巡回中に接続・切断されたデバイスが反映されなかった。
+  変更:
+    - 毎サイクル ListDevices を再呼び出し（10秒タイムアウト）。
+    - serials 指定時はオンラインデバイスとの共通部分のみ使用。
+      全台一時オフラインの場合は指定リストにフォールバック。
+
+■ device-map NAT衝突によるセッション欠落修正 (gui/gui.go)
+
+  問題:
+    - NAT環境で複数エミュレーターが同一IPを返す場合、
+      ipToSess で後着きのセッションが前のものを上書きしていた。
+  変更:
+    - ipToSess を map[string][]DeviceSessionInfo に変更し全セッションを保持。
+    - 衝突検出時はログに警告を出力し先頭セッションを使用。
+
+■ AddPortMapPending ロック範囲の最適化 (gui/gui.go)
+
+  変更:
+    - pendingPortMapMu.Unlock() を s.mu.RLock() より前に移動し、
+      clients コピー中に不要なロックを保持しないよう修正。
 
 --------------------------------------------------------------------------------
 [未リリース] ADB操作改善・GUI整理・チャット重複排除修正

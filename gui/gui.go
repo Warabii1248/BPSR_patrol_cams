@@ -463,11 +463,12 @@ func (s *Server) AddPortMapPending(ch uint32, newIP, oldIP string, voteCount int
 	if !found {
 		s.pendingPortMaps = append(s.pendingPortMaps, change)
 	}
+	s.pendingPortMapMu.Unlock()
+
 	s.mu.RLock()
 	clients := make([]chan string, len(s.clients))
 	copy(clients, s.clients)
 	s.mu.RUnlock()
-	s.pendingPortMapMu.Unlock()
 
 	broadcastSSE(clients, "[PORTMAP_PENDING]")
 }
@@ -549,25 +550,6 @@ func extractUID(line string) string {
 	return uid
 }
 
-// getDeviceIPCtx は mumu.GetDeviceIP をコンテキストのキャンセルに対応させるラッパー。
-// GetDeviceIP 自体はコンテキストを受け取らないため、内部ゴルーチンで実行し ctx 終了時に空文字を返す。
-func getDeviceIPCtx(ctx context.Context, serial string, cfg mumu.Config) string {
-	ch := make(chan string, 1)
-	go func() {
-		ip, err := mumu.GetDeviceIP(serial, cfg)
-		if err != nil {
-			log.Printf("[MuMu] GetDeviceIP %s: %v", serial, err)
-			ip = ""
-		}
-		ch <- ip
-	}()
-	select {
-	case ip := <-ch:
-		return ip
-	case <-ctx.Done():
-		return ""
-	}
-}
 
 // LogWriter は log.SetOutput() に渡す io.Writer を返す。
 func (s *Server) LogWriter(base io.Writer) io.Writer {
@@ -872,11 +854,12 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ipToSess := make(map[string]DeviceSessionInfo)
+	// 同一 IP を持つセッションが複数ある場合（NAT環境）に備えてスライスで保持
+	ipToSess := make(map[string][]DeviceSessionInfo)
 	if s.getSessions != nil {
 		for _, sess := range s.getSessions() {
 			if sess.ClientIP != "" {
-				ipToSess[sess.ClientIP] = sess
+				ipToSess[sess.ClientIP] = append(ipToSess[sess.ClientIP], sess)
 			}
 		}
 	}
@@ -899,10 +882,17 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(idx int, ser string) {
 			defer wg.Done()
-			devIP := getDeviceIPCtx(ctx, ser, cfg)
+			devIP, ipErr := mumu.GetDeviceIP(ctx, ser, cfg)
+			if ipErr != nil {
+				log.Printf("[MuMu] GetDeviceIP %s: %v", ser, ipErr)
+			}
 			entries[idx].DeviceIP = devIP
 			if devIP != "" {
-				if sess, ok := ipToSess[devIP]; ok {
+				if sessions, ok := ipToSess[devIP]; ok && len(sessions) > 0 {
+					if len(sessions) > 1 {
+						log.Printf("[MuMu] device-map: IP %s が %d セッションと衝突 (NAT環境?) — 先頭セッションを使用", devIP, len(sessions))
+					}
+					sess := sessions[0]
 					entries[idx].UserUID = sess.UserUID
 					entries[idx].Label = sess.Label
 					entries[idx].MapID = sess.MapID
@@ -1004,6 +994,16 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 			res.Error = err.Error()
 		}
 		results = append(results, res)
+	}
+
+	// 手動切替後も capDevice の currentChannel を更新する
+	if req.Channel > 0 {
+		s.mu.RLock()
+		fn := s.channelNotifyFn
+		s.mu.RUnlock()
+		if fn != nil {
+			fn(req.Channel)
+		}
 	}
 
 	writeJSON(w, map[string]interface{}{"results": results})
@@ -1333,6 +1333,13 @@ func (s *Server) handlePatrolStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.patroller.Stop()
+	// 巡回停止後に capDevice の currentChannel をリセットし stale 値での lineID 解決を防ぐ
+	s.mu.RLock()
+	fn := s.channelNotifyFn
+	s.mu.RUnlock()
+	if fn != nil {
+		fn(0)
+	}
 	writeOK(w)
 }
 

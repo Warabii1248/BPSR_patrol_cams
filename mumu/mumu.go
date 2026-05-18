@@ -539,8 +539,8 @@ func SwitchGroup(ctx context.Context, serials []string, start, end int, channel 
 
 // GetDeviceIP は指定デバイスの仮想NWインターフェースIPを返す。
 // "adb -s <serial> shell ip route get 1" の出力から src フィールドをパースする。
-func GetDeviceIP(serial string, cfg Config) (string, error) {
-	cmd := newCmd(context.Background(), cfg.ADBPath, "-s", serial, "shell", "ip", "route", "get", "1")
+func GetDeviceIP(ctx context.Context, serial string, cfg Config) (string, error) {
+	cmd := newCmd(ctx, cfg.ADBPath, "-s", serial, "shell", "ip", "route", "get", "1")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("ip route get: %w", err)
@@ -1009,18 +1009,35 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			}
 			p.mu.Unlock()
 
-			// デバイス一覧を取得（空なら自動検出）
-			targets := serials
-			if len(targets) == 0 {
-				var devErr error
-				targets, devErr = ListDevices(ctx, currentCfg)
-				if devErr != nil {
-					log.Printf("[MuMu] 巡回: デバイス取得失敗: %v", devErr)
+			// 毎サイクルデバイスを再取得し、接続/切断・巡回中追加に追随する
+			listCtx, listCancel := context.WithTimeout(ctx, 10*time.Second)
+			allOnline, devErr := ListDevices(listCtx, currentCfg)
+			listCancel()
+			if devErr != nil {
+				log.Printf("[MuMu] 巡回: デバイス取得失敗: %v", devErr)
+			}
+			var targets []string
+			if len(serials) > 0 {
+				// 初期指定シリアルとオンラインデバイスの共通部分のみ使用
+				serialSet := make(map[string]bool, len(serials))
+				for _, s := range serials {
+					serialSet[s] = true
+				}
+				for _, s := range allOnline {
+					if serialSet[s] {
+						targets = append(targets, s)
+					}
 				}
 				if len(targets) == 0 {
-					log.Println("[MuMu] 巡回: デバイスが見つかりません。巡回を停止します。手動でスキャンしてください")
-					return
+					// 全台一時オフライン: 指定リストにフォールバック（次サイクルで再確認）
+					targets = serials
 				}
+			} else {
+				targets = allOnline
+			}
+			if len(targets) == 0 {
+				log.Println("[MuMu] 巡回: デバイスが見つかりません。巡回を停止します。手動でスキャンしてください")
+				return
 			}
 
 			p.mu.Lock()
