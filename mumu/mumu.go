@@ -73,41 +73,31 @@ func adb(ctx context.Context, serial string, cfg Config, args ...string) (string
 }
 
 func discoverLocalEmulatorADBTargets() []string {
-	// 代表的な emulator ADB ポート帯をスキャン（偶数ポート）。並列試行で ~100ms に収める。
-	const (
-		startPort = 5554
-		endPort   = 5610
-	)
-	type result struct {
-		addr string
-		port int
+	type scanRange struct {
+		start, end, step int
 	}
-	ch := make(chan result, (endPort-startPort)/2+1)
-	var wg sync.WaitGroup
-	for port := startPort; port <= endPort; port += 2 {
-		wg.Add(1)
-		go func(p int) {
-			defer wg.Done()
-			addr := fmt.Sprintf("127.0.0.1:%d", p)
-			conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+	// 偶数・奇数両方をスキャンして MuMu Player 12 / 標準エミュレーターに対応する。
+	// localhost の場合、閉じているポートは ECONNREFUSED で即時返るため遅延は最小限。
+	// 5554-5680: 標準エミュレーター最大64台分の全ポートをカバー。
+	ranges := []scanRange{
+		{5554, 5680, 1},
+	}
+	var targets []string
+	for _, r := range ranges {
+		for port := r.start; port <= r.end; port += r.step {
+			addr := fmt.Sprintf("127.0.0.1:%d", port)
+			conn, err := net.DialTimeout("tcp", addr, 150*time.Millisecond)
 			if err != nil {
-				return
+				continue
 			}
 			_ = conn.Close()
-			ch <- result{addr: addr, port: p}
-		}(port)
+			targets = append(targets, addr)
+		}
 	}
-	wg.Wait()
-	close(ch)
-	var targets []string
-	for r := range ch {
-		targets = append(targets, r.addr)
-	}
-	sort.Strings(targets)
 	return targets
 }
 
-func connectConfiguredSerials(ctx context.Context, cfg Config) {
+func ConnectConfiguredSerials(ctx context.Context, cfg Config) {
 	targets := make([]string, 0, len(cfg.ConnectSerials))
 	for _, s := range cfg.ConnectSerials {
 		t := strings.TrimSpace(s)
@@ -124,59 +114,61 @@ func connectConfiguredSerials(ctx context.Context, cfg Config) {
 	if len(targets) == 0 {
 		return
 	}
-	// adb connect を並列実行して合計待ち時間を短縮する。
-	var wg sync.WaitGroup
-	for _, raw := range targets {
-		serial := strings.TrimSpace(raw)
-		if serial == "" || !strings.Contains(serial, ":") {
-			continue
-		}
-		wg.Add(1)
-		go func(s string) {
-			defer wg.Done()
-			out, err := newCmd(ctx, cfg.ADBPath, "connect", s).CombinedOutput()
-			if ctx.Err() != nil {
-				return
-			}
-			msg := strings.TrimSpace(string(out))
-			if err != nil {
-				if msg != "" {
-					log.Printf("[MuMu] adb connect %s 失敗: %s", s, msg)
-				} else {
-					log.Printf("[MuMu] adb connect %s 失敗: %v", s, err)
-				}
-				return
-			}
-			if msg != "" {
-				log.Printf("[MuMu] adb connect %s: %s", s, msg)
-			}
-		}(serial)
+	workerCount := len(targets)
+	if workerCount > 4 {
+		workerCount = 4
 	}
-	wg.Wait()
-}
 
-// InitServer はアプリ起動時専用の ADB 初期化を行う。
-// kill-server → 500ms 待機 → start-server → connectConfiguredSerials の順に実行する。
-// デバイス待機は行わない（呼び出し元が WaitForDevices で別途行う）。
-func InitServer(ctx context.Context, cfg Config) error {
-	log.Println("[MuMu] adb kill-server...")
-	_ = newCmd(ctx, cfg.ADBPath, "kill-server").Run()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(500 * time.Millisecond):
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for raw := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				serial := strings.TrimSpace(raw)
+				if serial == "" {
+					continue
+				}
+				// adb connect は host:port 形式のみ対象にする。
+				if !strings.Contains(serial, ":") {
+					continue
+				}
+				out, err := newCmd(ctx, cfg.ADBPath, "connect", serial).CombinedOutput()
+				msg := strings.TrimSpace(string(out))
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					if msg != "" {
+						log.Printf("[MuMu] adb connect %s 失敗: %s", serial, msg)
+					} else {
+						log.Printf("[MuMu] adb connect %s 失敗: %v", serial, err)
+					}
+					continue
+				}
+				if msg != "" {
+					log.Printf("[MuMu] adb connect %s: %s", serial, msg)
+				}
+			}
+		}()
 	}
-	log.Println("[MuMu] adb start-server...")
-	out, err := newCmd(ctx, cfg.ADBPath, "start-server").CombinedOutput()
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
+
+	for _, raw := range targets {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		case jobs <- raw:
 		}
-		return fmt.Errorf("adb start-server: %w\n%s", err, string(out))
 	}
-	log.Println("[MuMu] ADB初期化完了")
-	connectConfiguredSerials(ctx, cfg)
-	return nil
+	close(jobs)
+	wg.Wait()
 }
 
 // EnsureServer は ADB サーバーが起動していることを確認し、未起動なら起動する。
@@ -191,11 +183,15 @@ func EnsureServer(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("adb start-server: %w\n%s", err, string(out))
 	}
 	log.Println("[MuMu] ADB サーバー起動確認完了")
-	connectConfiguredSerials(ctx, cfg)
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(500 * time.Millisecond):
+	ConnectConfiguredSerials(ctx, cfg)
+	devices, waitErr := waitForDevices(ctx, cfg, 5*time.Second)
+	if waitErr != nil {
+		return waitErr
+	}
+	if len(devices) > 0 {
+		log.Printf("[MuMu] ADB サーバー起動後デバイス確認: %d台", len(devices))
+	} else {
+		log.Println("[MuMu] ADB サーバー起動後デバイス未検出（MuMu Playerが未起動の可能性）")
 	}
 	return nil
 }
@@ -221,7 +217,7 @@ func RestartServer(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("adb start-server: %w\n%s", err, string(out))
 	}
 	log.Println("[MuMu] ADBサーバー再起動完了")
-	connectConfiguredSerials(ctx, cfg)
+	ConnectConfiguredSerials(ctx, cfg)
 	// MuMu 独自 ADB では kill-server 後に全インスタンスが再登録するまで数秒かかる。
 	// 再起動後もしばらくポーリングして 1 台以上を確認する。
 	devices, waitErr := WaitForDevices(ctx, cfg, 15*time.Second)
@@ -258,8 +254,8 @@ func RecoverServer(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	connectConfiguredSerials(ctx, cfg)
-	devices, waitErr := WaitForDevices(ctx, cfg, 20*time.Second)
+	ConnectConfiguredSerials(ctx, cfg)
+	devices, waitErr := waitForDevices(ctx, cfg, 20*time.Second)
 	if waitErr == nil && len(devices) > 0 {
 		log.Printf("[MuMu] ADB復旧成功（非破壊）: %d台", len(devices))
 		return nil
@@ -308,6 +304,24 @@ func listDevicesOnce(ctx context.Context, cfg Config) ([]string, error) {
 	}
 	if len(offline) > 0 {
 		log.Printf("[MuMu] 接続不可デバイス: %v", offline)
+	}
+
+	// emulator-* エントリが存在するとき、対応する emulator-* を持たない
+	// TCP デバイス（ゴースト接続）を除外する。
+	emulatorCanonicals := map[string]bool{}
+	for _, d := range devices {
+		if strings.HasPrefix(d, "emulator-") {
+			emulatorCanonicals[canonicalADBSerial(d)] = true
+		}
+	}
+	if len(emulatorCanonicals) > 0 {
+		filtered := devices[:0]
+		for _, d := range devices {
+			if strings.HasPrefix(d, "emulator-") || emulatorCanonicals[canonicalADBSerial(d)] {
+				filtered = append(filtered, d)
+			}
+		}
+		devices = filtered
 	}
 
 	normalized := normalizeDeviceList(devices)
@@ -579,6 +593,108 @@ func LoadChannels(path string) ([]uint32, error) {
 		}
 	}
 	return channels, scanner.Err()
+}
+
+// ───── タップループ ─────
+
+// TapLoopStatus はタップループの現在状態
+type TapLoopStatus struct {
+	Running    bool     `json:"running"`
+	TapX       int      `json:"tap_x"`
+	TapY       int      `json:"tap_y"`
+	IntervalMs int      `json:"interval_ms"`
+	Serials    []string `json:"serials"`
+	TickCount  int64    `json:"tick_count"`
+}
+
+// TapLooper は指定座標への定期タップをADB経由でループ実行する。
+type TapLooper struct {
+	mu     sync.RWMutex
+	status TapLoopStatus
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+// NewTapLooper は TapLooper を生成する。
+func NewTapLooper() *TapLooper {
+	return &TapLooper{}
+}
+
+// Status は現在の状態をスレッドセーフに返す。
+func (t *TapLooper) Status() TapLoopStatus {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.status
+}
+
+// Stop はループを停止し、goroutine の終了を待つ。
+func (t *TapLooper) Stop() {
+	t.mu.Lock()
+	cancel := t.cancel
+	t.cancel = nil
+	t.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	t.wg.Wait()
+}
+
+// Start は指定シリアル群に対して tapX,tapY を intervalMs ミリ秒おきにタップし続ける。
+// 既に実行中の場合は停止してから再起動する。intervalMs の最小値は 100ms。
+func (t *TapLooper) Start(cfg Config, serials []string, tapX, tapY, intervalMs int) {
+	t.Stop()
+	if intervalMs < 100 {
+		intervalMs = 100
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.mu.Lock()
+	t.cancel = cancel
+	t.status = TapLoopStatus{
+		Running:    true,
+		TapX:       tapX,
+		TapY:       tapY,
+		IntervalMs: intervalMs,
+		Serials:    append([]string(nil), serials...),
+	}
+	t.mu.Unlock()
+
+	t.wg.Add(1)
+	go func() {
+		defer func() {
+			t.mu.Lock()
+			t.status.Running = false
+			t.mu.Unlock()
+			t.wg.Done()
+			log.Println("[TapLoop] 終了")
+		}()
+		log.Printf("[TapLoop] 開始: serials=%v tap=(%d,%d) interval=%dms", serials, tapX, tapY, intervalMs)
+		ticker := time.NewTicker(time.Duration(intervalMs) * time.Millisecond)
+		defer ticker.Stop()
+		xStr := fmt.Sprintf("%d", tapX)
+		yStr := fmt.Sprintf("%d", tapY)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				var wg sync.WaitGroup
+				for _, s := range serials {
+					wg.Add(1)
+					serial := s
+					go func() {
+						defer wg.Done()
+						if _, err := adb(ctx, serial, cfg, "shell", "input", "tap", xStr, yStr); err != nil && ctx.Err() == nil {
+							log.Printf("[TapLoop] adb tap %s (%d,%d): %v", serial, tapX, tapY, err)
+						}
+					}()
+				}
+				wg.Wait()
+				t.mu.Lock()
+				t.status.TickCount++
+				t.mu.Unlock()
+			}
+		}
+	}()
 }
 
 // SaveChannels は channels を 1行1番号のテキストとして path に上書き保存する。

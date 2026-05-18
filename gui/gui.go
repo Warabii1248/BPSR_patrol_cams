@@ -41,6 +41,7 @@ type DeviceSessionInfo struct {
 type Server struct {
 	port               int
 	patroller          *mumu.Patroller
+	tapLooper          *mumu.TapLooper
 	patrolEnabled      bool
 	patrolChannels     []uint32 // 起動時に設定から読み込んだチャンネルリスト
 	patrolChannelsFile string   // channels.txt パス（ホットリロード用）
@@ -141,6 +142,7 @@ func NewWithOptions(port int, mumuCfg mumu.Config, patrolChannels []uint32, patr
 	s := &Server{
 		port:               port,
 		patroller:          mumu.NewPatroller(mumuCfg),
+		tapLooper:          mumu.NewTapLooper(),
 		patrolEnabled:      patrolEnabled,
 		patrolChannels:     patrolChannels,
 		patrolChannelsFile: patrolChannelsFile,
@@ -164,7 +166,7 @@ func NewWithOptions(port int, mumuCfg mumu.Config, patrolChannels []uint32, patr
 		})
 	} else {
 		log.Printf("[GUI] patrol mode disabled")
-		}
+	}
 	return s
 }
 
@@ -624,11 +626,9 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/gold-history/delete", s.handleDeleteGoldHistory)
 	mux.HandleFunc("/api/gold-history/clear", s.handleClearGoldHistory)
 	mux.HandleFunc("/api/adb/restart", s.handleADBRestart)
-	mux.HandleFunc("/api/adb/scan", s.handleADBScan)
-	mux.HandleFunc("/api/adb/connect", s.handleADBConnect)
-	mux.HandleFunc("/api/adb/device", s.handleADBDevice)
-	mux.HandleFunc("/api/adb/kill", s.handleADBKill)
-	mux.HandleFunc("/api/adb/tap", s.handleADBTap)
+	mux.HandleFunc("/api/adb/tap-loop/start", s.handleTapLoopStart)
+	mux.HandleFunc("/api/adb/tap-loop/stop", s.handleTapLoopStop)
+	mux.HandleFunc("/api/adb/tap-loop/status", s.handleTapLoopStatus)
 	mux.HandleFunc("/api/webhook/test", s.handleWebhookTest)
 	mux.HandleFunc("/api/chat-log", s.handleChatLog)
 	mux.HandleFunc("/api/chat-events", s.handleChatEvents)
@@ -663,16 +663,38 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	if s.patrolEnabled {
 		go func() {
 			cfg := s.patroller.Config()
-			log.Println("[MuMu] 起動時デバイスサーチ開始（最大15秒）...")
-			devices, err := mumu.WaitForDevices(context.Background(), cfg, 15*time.Second)
+			for attempt := 1; attempt <= 3; attempt++ {
+				time.Sleep(1 * time.Second)
+				log.Printf("[MuMu] 起動時デバイス確認 (%d/3)...", attempt)
+				mumu.ConnectConfiguredSerials(context.Background(), cfg)
+				devices, err := mumu.ListDevices(context.Background(), cfg)
+				if err != nil {
+					log.Printf("[MuMu] 起動時デバイス取得失敗 (%d/3): %v", attempt, err)
+					continue
+				}
+				if len(devices) == 0 {
+					log.Printf("[MuMu] 起動時デバイスが見つかりません (%d/3)。MuMu Playerを起動してadb connectで接続してください", attempt)
+					continue
+				}
+				log.Printf("[MuMu] 起動時デバイス: %v", devices)
+				return // デバイス確認完了
+			}
+			// 3回全て失敗 → まず非破壊の ADB 復旧を試す
+			log.Println("[MuMu] デバイスが見つからないため ADB 復旧を試みます...")
+			if err := mumu.RecoverServer(context.Background(), cfg); err != nil {
+				log.Printf("[MuMu] ADB 復旧失敗: %v", err)
+				return
+			}
+			time.Sleep(1 * time.Second)
+			devices, err := mumu.ListDevices(context.Background(), cfg)
 			if err != nil {
-				log.Printf("[MuMu] 起動時デバイスサーチ失敗: %v", err)
+				log.Printf("[MuMu] ADB 再起動後のデバイス取得失敗: %v", err)
 				return
 			}
 			if len(devices) == 0 {
-				log.Println("[MuMu] デバイスが見つかりません。MuMu Playerを起動して手動スキャンしてください")
+				log.Println("[MuMu] ADB 再起動後もデバイスが見つかりません。MuMu Player が起動しているか確認してください")
 			} else {
-				log.Printf("[MuMu] 起動時デバイス検出: %v", devices)
+				log.Printf("[MuMu] ADB 再起動後にデバイスを検出: %v", devices)
 			}
 		}()
 	}
@@ -897,9 +919,18 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 
 // handleDevices はADB接続デバイス一覧をJSONで返す
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
-	devices, err := mumu.ListDevices(r.Context(), s.patroller.Config())
+	cfg := s.patroller.Config()
+	devices, err := mumu.ListDevices(r.Context(), cfg)
 	if err != nil {
 		log.Printf("[MuMu] adb devices エラー: %v", err)
+	}
+	if err == nil && len(devices) == 0 {
+		// 接続試行してから再確認
+		mumu.ConnectConfiguredSerials(r.Context(), cfg)
+		devices, err = mumu.ListDevices(r.Context(), cfg)
+		if err != nil {
+			log.Printf("[MuMu] adb devices 再試行エラー: %v", err)
+		}
 	}
 	if devices == nil {
 		devices = []string{}
@@ -1169,18 +1200,18 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if s.getConfigFn != nil {
 			if savedData, rerr := s.getConfigFn(); rerr == nil {
 				var appCfg struct {
-					ADBPath                string  `json:"adb_path"`
+					ADBPath                string   `json:"adb_path"`
 					MumuSerials            []string `json:"mumu_serials"`
-					MumuTapX               int     `json:"mumu_tap_x"`
-					MumuTapY               int     `json:"mumu_tap_y"`
-					MumuClearLength        int     `json:"mumu_clear_length"`
-					MumuPreKeycode         string  `json:"mumu_pre_keycode"`
-					MumuDelayMs            int     `json:"mumu_delay_ms"`
-					ParallelLimit          int     `json:"parallel_limit"`
-					ParallelGroupDelaySecs float64 `json:"parallel_group_delay_secs"`
-					PatrolMoveTimeoutSecs  float64 `json:"patrol_move_timeout_secs"`
-					PatrolMergeTimeoutSecs float64 `json:"patrol_merge_timeout_secs"`
-					PatrolDwellSecs        float64 `json:"patrol_dwell_secs"`
+					MumuTapX               int      `json:"mumu_tap_x"`
+					MumuTapY               int      `json:"mumu_tap_y"`
+					MumuClearLength        int      `json:"mumu_clear_length"`
+					MumuPreKeycode         string   `json:"mumu_pre_keycode"`
+					MumuDelayMs            int      `json:"mumu_delay_ms"`
+					ParallelLimit          int      `json:"parallel_limit"`
+					ParallelGroupDelaySecs float64  `json:"parallel_group_delay_secs"`
+					PatrolMoveTimeoutSecs  float64  `json:"patrol_move_timeout_secs"`
+					PatrolMergeTimeoutSecs float64  `json:"patrol_merge_timeout_secs"`
+					PatrolDwellSecs        float64  `json:"patrol_dwell_secs"`
 				}
 				if json.Unmarshal(savedData, &appCfg) == nil {
 					newCfg := mumu.Config{
@@ -1318,185 +1349,53 @@ func (s *Server) handleADBRestart(w http.ResponseWriter, r *http.Request) {
 	writeOK(w)
 }
 
-// handleADBScan はデバイス一覧を取得して返す（ADB再起動なし）
-func (s *Server) handleADBScan(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", 405)
-		return
-	}
-	devices, err := mumu.ListDevices(r.Context(), s.patroller.Config())
-	if err != nil {
-		log.Printf("[MuMu] scan: ListDevices error: %v", err)
-		writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "devices": []string{}})
-		return
-	}
-	if devices == nil {
-		devices = []string{}
-	}
-	log.Printf("[MuMu] 手動スキャン: %d台検出 %v", len(devices), devices)
-	writeJSON(w, map[string]any{"ok": true, "devices": devices})
-}
 
-// handleADBConnect は指定シリアルに adb connect を実行し mumu_serials に永続保存する
-func (s *Server) handleADBConnect(w http.ResponseWriter, r *http.Request) {
+// handleTapLoopStart はタップループを開始する。
+func (s *Server) handleTapLoopStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", 405)
 		return
 	}
 	var req struct {
-		Serial string `json:"serial"`
+		TapX       int      `json:"tap_x"`
+		TapY       int      `json:"tap_y"`
+		IntervalMs int      `json:"interval_ms"`
+		Serials    []string `json:"serials"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Serial == "" {
-		writeJSON(w, map[string]any{"ok": false, "error": "serial必須"})
-		return
-	}
-	serial := strings.TrimSpace(req.Serial)
-	cfg := s.patroller.Config()
-	out, err := exec.Command(cfg.ADBPath, "connect", serial).CombinedOutput()
-	msg := strings.TrimSpace(string(out))
-	log.Printf("[MuMu] adb connect %s: %s", serial, msg)
-	if err != nil {
-		writeJSON(w, map[string]any{"ok": false, "error": msg})
-		return
-	}
-	// mumu_serials に追記して config.json に保存
-	if s.getConfigFn != nil && s.saveConfigFn != nil {
-		if data, rerr := s.getConfigFn(); rerr == nil {
-			var raw map[string]any
-			if json.Unmarshal(data, &raw) == nil {
-				serials := []string{}
-				if v, ok := raw["mumu_serials"]; ok {
-					if arr, ok2 := v.([]any); ok2 {
-						for _, x := range arr {
-							if s, ok3 := x.(string); ok3 && strings.TrimSpace(s) != "" {
-								serials = append(serials, strings.TrimSpace(s))
-							}
-						}
-					}
-				}
-				already := false
-				for _, s := range serials {
-					if s == serial {
-						already = true
-						break
-					}
-				}
-				if !already {
-					serials = append(serials, serial)
-					raw["mumu_serials"] = serials
-					if buf, merr := json.MarshalIndent(raw, "", "  "); merr == nil {
-						_ = s.saveConfigFn(buf)
-						cfg.ConnectSerials = serials
-						s.UpdatePatrollerCfg(cfg)
-						log.Printf("[MuMu] mumu_serials に %s を追加して保存", serial)
-					}
-				}
-			}
-		}
-	}
-	writeJSON(w, map[string]any{"ok": true, "message": msg})
-}
-
-// handleADBDevice はデバイスの削除（DELETE）を処理する
-func (s *Server) handleADBDevice(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, "DELETE only", 405)
-		return
-	}
-	var req struct {
-		Serial string `json:"serial"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Serial == "" {
-		writeJSON(w, map[string]any{"ok": false, "error": "serial必須"})
-		return
-	}
-	serial := strings.TrimSpace(req.Serial)
-	if s.getConfigFn != nil && s.saveConfigFn != nil {
-		if data, rerr := s.getConfigFn(); rerr == nil {
-			var raw map[string]any
-			if json.Unmarshal(data, &raw) == nil {
-				serials := []string{}
-				if v, ok := raw["mumu_serials"]; ok {
-					if arr, ok2 := v.([]any); ok2 {
-						for _, x := range arr {
-							if s, ok3 := x.(string); ok3 && strings.TrimSpace(s) != serial {
-								serials = append(serials, strings.TrimSpace(s))
-							}
-						}
-					}
-				}
-				raw["mumu_serials"] = serials
-				if buf, merr := json.MarshalIndent(raw, "", "  "); merr == nil {
-					_ = s.saveConfigFn(buf)
-					cfg := s.patroller.Config()
-					cfg.ConnectSerials = serials
-					s.UpdatePatrollerCfg(cfg)
-					log.Printf("[MuMu] mumu_serials から %s を削除して保存", serial)
-				}
-			}
-		}
-	}
-	writeJSON(w, map[string]any{"ok": true})
-}
-
-// handleADBKill は adb kill-server を実行する
-func (s *Server) handleADBKill(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", 405)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", 400)
 		return
 	}
 	cfg := s.patroller.Config()
-	log.Println("[MuMu] adb kill-server（手動）...")
-	out, err := exec.Command(cfg.ADBPath, "kill-server").CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		log.Printf("[MuMu] adb kill-server 失敗: %v %s", err, msg)
-		writeJSON(w, map[string]any{"ok": false, "error": msg})
-		return
+	serials := req.Serials
+	if len(serials) == 0 {
+		var err error
+		serials, err = mumu.ListDevices(r.Context(), cfg)
+		if err != nil || len(serials) == 0 {
+			writeJSON(w, map[string]any{"ok": false, "error": "デバイスが見つかりません"})
+			return
+		}
 	}
-	log.Println("[MuMu] adb kill-server 完了")
+	if req.IntervalMs <= 0 {
+		req.IntervalMs = 1000
+	}
+	s.tapLooper.Start(cfg, serials, req.TapX, req.TapY, req.IntervalMs)
 	writeOK(w)
 }
 
-// handleADBTap は連続タップの開始・停止・状態取得を行う。
-// GET: {"running": bool}
-// POST {"action":"start","x":N,"y":N,"interval_ms":N} / {"action":"stop"}
-func (s *Server) handleADBTap(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		writeJSON(w, map[string]bool{"running": s.tapper.IsRunning()})
-	case http.MethodPost:
-		var req struct {
-			Action     string `json:"action"`
-			X          int    `json:"x"`
-			Y          int    `json:"y"`
-			IntervalMs int    `json:"interval_ms"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		switch req.Action {
-		case "start":
-			cfg := s.patroller.Config()
-			interval := time.Duration(req.IntervalMs) * time.Millisecond
-			if interval < 100*time.Millisecond {
-				interval = 100 * time.Millisecond
-			}
-			if err := s.tapper.Start(context.Background(), cfg, req.X, req.Y, interval); err != nil {
-				writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
-				return
-			}
-			writeOK(w)
-		case "stop":
-			s.tapper.Stop()
-			writeOK(w)
-		default:
-			http.Error(w, "unknown action", 400)
-		}
-	default:
-		http.Error(w, "method not allowed", 405)
+// handleTapLoopStop はタップループを停止する。
+func (s *Server) handleTapLoopStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
 	}
+	s.tapLooper.Stop()
+	writeOK(w)
+}
+
+// handleTapLoopStatus はタップループの現在状態をJSONで返す。
+func (s *Server) handleTapLoopStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.tapLooper.Status())
 }
 
 // handleWebhookTest は指定URLにDiscordテスト通知を送る
@@ -1821,40 +1720,101 @@ const indexHTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BPSR patrol cams</title>
 <style>
+/* === BPSR patrol cams — Design Refresh === */
 *{box-sizing:border-box;margin:0;padding:0}
+
+/* ── Themes ── */
 :root{
-  --bg0:#0d1018;--bg1:#141926;--bg2:#1b2232;--bg3:#222a3d;
-  --accent:#5b9cf6;--accent2:#3dd68c;--warn:#f5a623;--danger:#e94b4b;
-  --text1:#eef0f6;--text2:#c0cbdf;--text3:#8a96b4;
-  --border:#283044;--radius:8px;--radius-lg:12px;
+  /* Dark Blue — GitHub-inspired navy */
+  --bg0:#0d1117;--bg1:#161b22;--bg2:#1c2128;--bg3:#262d3a;
+  --accent:#58a6ff;--accent2:#3fb950;--warn:#d29922;--danger:#f85149;
+  --text1:#e6edf3;--text2:#8b949e;--text3:#6e7781;
+  --border:rgba(48,54,61,1);
+  --radius:6px;--radius-lg:10px;
+  /* Font size scale — XL is default (center). 5 steps: S M XL 2X 3X */
+  --fs-base:17px;
+  --fs-xs:11px;
+  --fs-sm:13px;
+  --fs-md:17px;
+  --fs-lg:20px;
+  --fs-xl:23px;
+  --fs-2xl:26px;
 }
-body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;font-size:13px;line-height:1.5;height:100vh;overflow:hidden}
-.app{display:grid;grid-template-rows:6px 1fr;grid-template-columns:210px 1fr;height:100vh}
-/* Titlebar */
-.titlebar{grid-column:1/-1;background:#555;transition:background .4s}
+/* Black — OLED pure black + electric cyan, high contrast */
+[data-theme="black"]{
+  --bg0:#000000;--bg1:#0c0c0c;--bg2:#181818;--bg3:#242424;
+  --accent:#00e5ff;--accent2:#00e676;--warn:#ffca28;--danger:#ff5252;
+  --text1:#ffffff;--text2:#cccccc;--text3:#888888;
+  --border:rgba(62,62,62,1);
+}
+/* Light — GitHub-light style */
+[data-theme="light"]{
+  --bg0:#f6f8fa;--bg1:#ffffff;--bg2:#f0f2f5;--bg3:#e1e4e8;
+  --accent:#0969da;--accent2:#1a7f37;--warn:#7a4500;--danger:#cf222e;
+  --text1:#1f2328;--text2:#57606a;--text3:#8c959f;
+  --border:rgba(208,215,222,1);
+}
+/* Gold + Black — luxury dark with gold accents */
+[data-theme="warm"]{
+  --bg0:#000000;--bg1:#0d0b00;--bg2:#1a1600;--bg3:#262000;
+  --accent:#ffd700;--accent2:#4caf50;--warn:#ffa000;--danger:#ff4444;
+  --text1:#ffffff;--text2:#d4bc6a;--text3:#8a7538;
+  --border:rgba(100,78,0,1);
+}
+[data-fs="s"] {--fs-base:11px;--fs-xs:7px; --fs-sm:9px; --fs-md:11px;--fs-lg:14px;--fs-xl:17px;--fs-2xl:20px}
+[data-fs="m"] {--fs-base:14px;--fs-xs:9px; --fs-sm:11px;--fs-md:14px;--fs-lg:17px;--fs-xl:20px;--fs-2xl:23px}
+[data-fs="xl"]{--fs-base:17px;--fs-xs:11px;--fs-sm:13px;--fs-md:17px;--fs-lg:20px;--fs-xl:23px;--fs-2xl:26px}
+[data-fs="2x"]{--fs-base:20px;--fs-xs:14px;--fs-sm:16px;--fs-md:20px;--fs-lg:23px;--fs-xl:26px;--fs-2xl:29px}
+[data-fs="3x"]{--fs-base:23px;--fs-xs:17px;--fs-sm:19px;--fs-md:23px;--fs-lg:26px;--fs-xl:29px;--fs-2xl:32px}
+
+body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',system-ui,sans-serif;font-size:var(--fs-base);line-height:1.5;height:100vh;overflow:hidden}
+.app{display:grid;grid-template-rows:3px 1fr;grid-template-columns:220px 1fr;height:100vh}
+
+/* ── Titlebar ── */
+.titlebar{grid-column:1/-1;background:var(--border);transition:background .4s}
 @keyframes status-flow{0%{background-position:0% 50%}100%{background-position:200% 50%}}
-.titlebar.running{background:linear-gradient(90deg,#1a6b35,#43c46a,#86efac,#43c46a,#1a6b35);background-size:200% 100%;animation:status-flow 2.5s linear infinite}
-/* Sidebar */
-.sidebar{background:var(--bg1);border-right:1px solid var(--border);padding:10px 0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;}
-.nav-section{padding:8px 14px 3px;font-size:10px;font-weight:500;color:var(--text3);letter-spacing:.8px;text-transform:uppercase}
-.nav-item{display:flex;align-items:center;gap:9px;padding:7px 14px;cursor:pointer;color:var(--text1);border-left:2px solid transparent;transition:all .15s;font-size:13px;user-select:none;}
-.nav-item:hover{background:var(--bg2);color:var(--text1)}
-.nav-item.active{background:var(--bg2);color:var(--accent);border-left-color:var(--accent)}
-.nav-item.layout-edit-disabled{color:var(--text3);opacity:.5;cursor:not-allowed;pointer-events:none}
+.titlebar.running{background:linear-gradient(90deg,#1a5c30,#3fb950,#7ee898,#3fb950,#1a5c30);background-size:200% 100%;animation:status-flow 3s linear infinite}
+
+/* ── Sidebar ── */
+.sidebar{background:var(--bg1);border-right:1px solid var(--border);overflow-y:auto;display:flex;flex-direction:column}
+
+/* Brand header */
+.sidebar-brand{padding:14px 16px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+.brand-row{display:flex;align-items:center;gap:8px}
+.brand-icon{width:26px;height:26px;border-radius:7px;background:var(--bg3);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:var(--fs-sm);font-weight:700;color:var(--accent);letter-spacing:-.01em;font-family:monospace}
+.brand-text{flex:1;min-width:0}
+.brand-name{font-size:var(--fs-md);font-weight:600;color:var(--text1);letter-spacing:.01em;line-height:1.2}
+.brand-sub{font-size:var(--fs-xs);color:var(--text3);letter-spacing:.02em;margin-top:1px}
+.brand-status{display:flex;align-items:center;gap:5px;margin-top:8px;padding:4px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);font-size:var(--fs-xs);color:var(--text3)}
+.brand-dot{width:6px;height:6px;border-radius:50%;background:var(--text3);flex-shrink:0;transition:background .3s}
+.brand-dot.running{background:var(--accent2);animation:pulse-dot 2s ease-in-out infinite}
+@keyframes pulse-dot{0%,100%{box-shadow:0 0 0 0 rgba(63,185,80,.5)}50%{box-shadow:0 0 0 5px rgba(63,185,80,0)}}
+#brand-status-text{flex:1}
+
+/* Nav */
+.sidebar-nav{flex:1;padding:8px 0 4px;display:flex;flex-direction:column}
+.nav-section{padding:10px 14px 3px;font-size:var(--fs-xs);font-weight:600;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;user-select:none}
+.nav-item{display:flex;align-items:center;gap:9px;padding:6px 14px;cursor:pointer;color:var(--text2);border-left:2px solid transparent;transition:color .12s,background .12s,border-color .12s;font-size:calc(var(--fs-base) - 1px);user-select:none}
+.nav-item:hover{background:rgba(255,255,255,.04);color:var(--text1)}
+.nav-item.active{background:rgba(88,166,255,.07);color:var(--accent);border-left-color:var(--accent);font-weight:500}
+.nav-item.layout-edit-disabled{color:var(--text3);opacity:.4;cursor:not-allowed;pointer-events:none}
 .nav-item.layout-edit-disabled:hover{background:transparent;color:var(--text3)}
-.nav-icon{width:14px;height:14px;flex-shrink:0;opacity:.9}
-.nav-badge{margin-left:auto;background:var(--danger);color:#fff;font-size:9px;padding:1px 5px;border-radius:9px;font-weight:600}
+.nav-icon{width:14px;height:14px;flex-shrink:0;opacity:.75}
+.nav-item.active .nav-icon{opacity:1}
+.nav-badge{margin-left:auto;background:var(--danger);color:#fff;font-size:var(--fs-xs);padding:1px 5px;border-radius:9px;font-weight:600}
 .nav-badge.ok{background:var(--accent2)}
-/* PortMap 確認モーダル */
-.pm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:9999;display:flex;align-items:center;justify-content:center}
-.pm-modal{background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;min-width:340px;max-width:480px;box-shadow:0 8px 32px rgba(0,0,0,.6)}
-.pm-modal-title{font-size:13px;font-weight:600;color:var(--warn);margin-bottom:12px;display:flex;align-items:center;gap:7px}
-.pm-change-row{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin-bottom:6px;font-size:12px;line-height:1.6}
+
+/* PortMap modal */
+.pm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;display:flex;align-items:center;justify-content:center}
+.pm-modal{background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px 22px;min-width:340px;max-width:480px;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.pm-modal-title{font-size:var(--fs-md);font-weight:600;color:var(--warn);margin-bottom:12px;display:flex;align-items:center;gap:7px}
+.pm-change-row{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin-bottom:6px;font-size:var(--fs-sm);line-height:1.6}
 .pm-ch{color:var(--accent);font-weight:700}
-.pm-ip{font-family:monospace;color:var(--text2);font-size:11px;word-break:break-all}
+.pm-ip{font-family:monospace;color:var(--text2);font-size:var(--fs-sm);word-break:break-all}
 .pm-arrow{color:var(--text3);margin:0 5px}
-.pm-votes{font-size:10px;color:var(--text3);margin-top:2px}
+.pm-votes{font-size:var(--fs-xs);color:var(--text3);margin-top:2px}
 .pm-btns{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
+
 /* Main */
 .main{background:var(--bg0);overflow:hidden;padding:12px;display:flex;flex-direction:column;min-height:0}
 .view{display:none;flex-direction:column;gap:10px;flex:1;min-height:0}
@@ -1863,110 +1823,115 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;
 #view-patrol{overflow-y:auto;padding-right:4px}
 #view-settings{overflow-y:auto;padding-right:4px}
 #view-data-management{overflow-y:auto;padding-right:4px}
+
 /* Card */
-.card{background:linear-gradient(180deg, rgba(20,25,38,.98) 0%, rgba(19,22,33,.96) 100%);border:1px solid rgba(88,103,142,.25);border-radius:var(--radius-lg);padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.12)}
-.card-title{font-size:10px;font-weight:600;color:var(--text2);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:7px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.06);cursor:default}
-.card.dragging{opacity:.58;transform:scale(0.98);box-shadow:0 14px 30px rgba(0,0,0,.22)}
-.card-placeholder{border-color:rgba(79,142,247,.6);background:rgba(79,142,247,.08)}
+.card{background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px;position:relative}
+.card-title{font-size:var(--fs-xs);font-weight:600;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:7px;padding-bottom:8px;border-bottom:1px solid var(--border);cursor:default}
+.card.dragging{opacity:.5;transform:scale(.98);box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.card-placeholder{border-color:rgba(88,166,255,.4);background:rgba(88,166,255,.05)}
 .card-title .title-actions{display:flex;gap:6px;align-items:center;margin-left:auto}
 .panel-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}
+
 /* Stats */
 .status-grid{display:grid;gap:8px}
 .stat{background:var(--bg2);border-radius:var(--radius);padding:10px 12px;border:1px solid var(--border)}
-.stat-label{font-size:10px;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
-.stat-value{font-size:20px;font-weight:500;color:var(--text1)}
-.stat-sub{font-size:10px;color:var(--text3);margin-top:2px}
+.stat-label{font-size:var(--fs-xs);color:var(--text3);margin-bottom:3px;text-transform:uppercase;letter-spacing:.06em;font-weight:500}
+.stat-value{font-size:var(--fs-2xl);font-weight:600;color:var(--text1);letter-spacing:-.01em}
+.stat-sub{font-size:var(--fs-xs);color:var(--text3);margin-top:2px}
 .stat-value.ok{color:var(--accent2)}
 .stat-value.warn{color:var(--warn)}
+
 /* Layout helpers */
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .col{display:flex;flex-direction:column;gap:10px}
 .flex-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-/* Device row (dashboard summary) */
-.device-row{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg2);border-radius:var(--radius);border:1px solid var(--border);margin-bottom:6px}
-.device-icon{width:28px;height:28px;border-radius:6px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+
+/* Device row */
+.device-row{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg2);border-radius:var(--radius);border:1px solid var(--border);margin-bottom:5px}
+.device-icon{width:28px;height:28px;border-radius:6px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:var(--fs-md);flex-shrink:0}
 .device-info{flex:1;min-width:0}
-.device-name{font-size:12px;font-weight:500;color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.device-sub{font-size:10px;color:var(--text2)}
-.device-badge{font-size:10px;padding:2px 8px;border-radius:9px;font-weight:500;flex-shrink:0}
-.device-badge.connected{background:rgba(56,201,122,.15);color:var(--accent2);border:1px solid rgba(56,201,122,.3)}
-.device-badge.offline{background:rgba(233,75,75,.15);color:var(--danger);border:1px solid rgba(233,75,75,.3)}
-/* Device list (full view) */
+.device-name{font-size:var(--fs-sm);font-weight:500;color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.device-sub{font-size:var(--fs-xs);color:var(--text2)}
+.device-badge{font-size:var(--fs-xs);padding:2px 8px;border-radius:9px;font-weight:500;flex-shrink:0}
+.device-badge.connected{background:rgba(63,185,80,.1);color:var(--accent2);border:1px solid rgba(63,185,80,.25)}
+.device-badge.offline{background:rgba(248,81,73,.08);color:var(--danger);border:1px solid rgba(248,81,73,.2)}
+
+/* Device list */
 .device-list{display:flex;flex-direction:column;gap:5px;margin-top:6px}
-.device-entry{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:7px 9px;transition:border-color .15s}
+.device-entry{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:7px 9px;transition:border-color .12s}
 .device-entry:hover{border-color:var(--text3)}
 .device-entry .serial{color:var(--accent);font-family:monospace;font-size:.88em}
 .device-entry .uid{color:var(--text3);font-size:.82em}
 .device-entry.matched .uid{color:var(--warn)}
 .no-devices{color:var(--text2);font-size:.85em;padding:4px 0}
+
 /* Buttons */
-button,.btn{background:var(--bg2);border:1px solid var(--border);color:var(--text1);border-radius:var(--radius);padding:5px 10px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .15s;white-space:nowrap;font-family:inherit;}
-button:hover,.btn:hover{background:var(--bg3);color:var(--text1);border-color:var(--text3)}
-button:disabled,.btn:disabled{opacity:.35;cursor:default}
-button.green,.btn.success{background:rgba(56,201,122,.15);border-color:rgba(56,201,122,.3);color:var(--accent2)}
-button.green:hover,.btn.success:hover{background:rgba(56,201,122,.25)}
-.btn.primary{background:rgba(79,142,247,.15);border-color:rgba(79,142,247,.4);color:var(--accent)}
-.btn.primary:hover{background:rgba(79,142,247,.25)}
-.btn.danger{background:rgba(233,75,75,.1);border-color:rgba(233,75,75,.3);color:var(--danger)}
-.btn.danger:hover{background:rgba(233,75,75,.2)}
-button.toggle-btn,.btn.toggle-btn{padding:4px 10px;font-size:11px}
-button.toggle-btn.active,.btn.toggle-btn.active,.btn.active{background:rgba(79,142,247,.15);border-color:rgba(79,142,247,.4);color:var(--accent)}
+button,.btn{background:var(--bg2);border:1px solid var(--border);color:var(--text1);border-radius:var(--radius);padding:5px 11px;font-size:var(--fs-sm);cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:background .12s,border-color .12s,color .12s;white-space:nowrap;font-family:inherit;font-weight:450;line-height:1.4}
+button:hover,.btn:hover{background:var(--bg3);border-color:var(--text3);color:var(--text1)}
+button:disabled,.btn:disabled{opacity:.3;cursor:default}
+button.green,.btn.success{background:rgba(63,185,80,.08);border-color:rgba(63,185,80,.25);color:var(--accent2)}
+button.green:hover,.btn.success:hover{background:rgba(63,185,80,.16);border-color:rgba(63,185,80,.4)}
+.btn.primary{background:rgba(88,166,255,.08);border-color:rgba(88,166,255,.3);color:var(--accent)}
+.btn.primary:hover{background:rgba(88,166,255,.16);border-color:rgba(88,166,255,.5)}
+.btn.danger{background:rgba(248,81,73,.06);border-color:rgba(248,81,73,.22);color:var(--danger)}
+.btn.danger:hover{background:rgba(248,81,73,.14)}
+button.toggle-btn,.btn.toggle-btn{padding:4px 10px;font-size:var(--fs-sm)}
+button.toggle-btn.active,.btn.toggle-btn.active,.btn.active{background:rgba(88,166,255,.1);border-color:rgba(88,166,255,.35);color:var(--accent)}
 .btn-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-input[type=text],input[type=number],textarea,select{
-  background:var(--bg2);color:var(--text1);
-  border:1px solid var(--border);border-radius:var(--radius);
-  padding:4px 8px;font-size:11px;font-family:inherit;outline:none;transition:border-color .15s;
-}
-input[type=text]:focus,input[type=number]:focus,textarea:focus,select:focus{
-  border-color:rgba(79,142,247,.5);box-shadow:0 0 0 2px rgba(79,142,247,.12);
-}
+input[type=text],input[type=number],textarea,select{background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;font-size:var(--fs-sm);font-family:inherit;outline:none;transition:border-color .12s,box-shadow .12s}
+input[type=text]:focus,input[type=number]:focus,textarea:focus,select:focus{border-color:rgba(88,166,255,.5);box-shadow:0 0 0 2px rgba(88,166,255,.1)}
 input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
+
 /* Log */
-.log-area{background:var(--bg0);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;padding:6px 8px;font-family:'Consolas',monospace;font-size:11px;display:flex;flex-direction:column;gap:1px;min-height:0}
+.log-area{background:var(--bg0);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;padding:6px 8px;font-family:'Consolas','Cascadia Code',monospace;font-size:var(--fs-sm);display:flex;flex-direction:column;gap:1px;min-height:0}
 .log-area.full{flex:1;max-height:none}
-.log-line{display:flex;gap:7px;align-items:flex-start;padding:2px 2px;border-radius:3px}
-.log-line:hover{background:var(--bg2)}
-.log-time{color:var(--text3);flex-shrink:0;min-width:52px;font-size:10px;padding-top:2px}
-.log-tag{flex-shrink:0;font-size:9px;padding:2px 5px;border-radius:3px;font-weight:600;min-width:42px;text-align:center;margin-top:1px}
-.log-tag.info{background:rgba(79,142,247,.15);color:var(--accent)}
-.log-tag.ok{background:rgba(56,201,122,.15);color:var(--accent2)}
-.log-tag.warn{background:rgba(245,166,35,.15);color:var(--warn)}
-.log-tag.err{background:rgba(233,75,75,.15);color:var(--danger)}
+.log-line{display:flex;gap:7px;align-items:flex-start;padding:2px 3px;border-radius:4px}
+.log-line:hover{background:rgba(255,255,255,.04)}
+.log-time{color:var(--text3);flex-shrink:0;min-width:52px;font-size:var(--fs-xs);padding-top:2px}
+.log-tag{flex-shrink:0;font-size:var(--fs-xs);padding:1px 5px;border-radius:3px;font-weight:600;min-width:42px;text-align:center;margin-top:1px}
+.log-tag.info{background:rgba(88,166,255,.12);color:var(--accent)}
+.log-tag.ok{background:rgba(63,185,80,.12);color:var(--accent2)}
+.log-tag.warn{background:rgba(210,153,34,.12);color:var(--warn)}
+.log-tag.err{background:rgba(248,81,73,.12);color:var(--danger)}
 .log-msg{color:var(--text1);flex:1;word-break:break-all;line-height:1.5;white-space:pre-wrap}
 .log-line.detect .log-msg{color:var(--warn);font-weight:500}
-/* Log filter chips */
+
+/* Chips */
 .chip-row{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
-.chip{background:var(--bg2);border:1px solid var(--border);border-radius:99px;padding:3px 9px;font-size:10px;color:var(--text2);cursor:pointer;transition:all .15s;}
-.chip.active{background:rgba(79,142,247,.15);border-color:rgba(79,142,247,.4);color:var(--accent)}
+.chip{background:var(--bg2);border:1px solid var(--border);border-radius:99px;padding:3px 10px;font-size:var(--fs-xs);color:var(--text2);cursor:pointer;transition:all .12s}
+.chip.active{background:rgba(88,166,255,.1);border-color:rgba(88,166,255,.35);color:var(--accent)}
 .chip:hover{color:var(--text1);border-color:var(--text3)}
+
 /* Patrol */
-.patrol-status{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:.82em;margin-bottom:8px}
+.patrol-status{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:var(--fs-sm);margin-bottom:8px}
 .patrol-status span{margin-right:10px}
-.patrol-status .running{color:var(--accent2);font-weight:bold}
+.patrol-status .running{color:var(--accent2);font-weight:600}
 .patrol-status .stopped{color:var(--text3)}
 .ch-editor{display:flex;flex-direction:column;gap:3px;max-height:180px;overflow-y:auto;margin:6px 0}
-.ch-row{display:flex;gap:5px;align-items:center;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;transition:border-color .15s}
+.ch-row{display:flex;gap:5px;align-items:center;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;transition:border-color .12s}
 .ch-row:hover{border-color:var(--text3)}
 .ch-row .ch-num{color:var(--accent);font-family:monospace;font-size:.9em;min-width:24px;text-align:right}
+
 /* Gold table */
 .gold-table{width:100%;border-collapse:collapse;font-size:.82em;table-layout:fixed}
-.gold-table th{color:var(--warn);text-align:left;padding:4px 8px;border-bottom:1px solid rgba(245,166,35,.2);white-space:nowrap;position:sticky;top:0;background:var(--bg1);z-index:1;font-size:.88em;font-weight:500}
+.gold-table th{color:var(--text2);text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0;background:var(--bg1);z-index:1;font-size:.88em;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
 .gold-table col.col-time{width:90px}.gold-table col.col-ch{width:46px}.gold-table col.col-name{width:110px}.gold-table col.col-action{width:38px}
-.gold-table td{padding:4px 8px;border-bottom:1px solid var(--border);vertical-align:middle;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gold-table td{padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:middle;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gold-table .action-cell{padding:0;white-space:normal;text-align:center}
 .gold-table .action-cell button{background:transparent;border:none;color:var(--danger);font-size:1em;cursor:pointer;padding:0 4px;line-height:1.5}
 .gold-table .action-cell button:hover{color:#ff8a8a}
-.gold-table tr:hover td{background:var(--bg2)}
-.gold-table .ch-cell{color:var(--accent);font-family:monospace;font-weight:bold}
+.gold-table tr:hover td{background:rgba(255,255,255,.03)}
+.gold-table .ch-cell{color:var(--accent);font-family:monospace;font-weight:600}
 .gold-table .time-cell{color:var(--text3);font-size:.85em}
-.gold-table .name-cell{color:var(--warn)}
-.gold-table .name-cell.silver{color:#b8b8b8}
+.gold-table .name-cell{color:var(--warn);font-weight:500}
+.gold-table .name-cell.silver{color:var(--text2)}
 .no-history{color:var(--text2);font-size:.85em;padding:8px 0}
 #gold-history-container{flex:1;min-height:0;max-height:none;overflow-y:auto}
+
 /* Config */
 .cfg-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px}
-.cfg-stack{display:flex;flex-direction:column;gap:12px}
-.cfg-card{border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--bg1)}
+.cfg-stack{display:flex;flex-direction:column;gap:10px}
+.cfg-card{border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px;background:var(--bg1)}
 .cfg-card.chat-filter-card{min-height:0}
 .chat-filter-card #cfg-chat-form{grid-template-columns:1fr}
 .cfg-rule-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
@@ -2002,46 +1967,47 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .section-title{font-size:.78em;color:var(--accent);font-weight:500;margin:10px 0 5px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:4px}
 .cfg-card-title{font-size:.86em;color:var(--text1);font-weight:600;margin-bottom:10px}
 .cfg-card-title-collapsible{display:flex;align-items:center;gap:8px}
-.cfg-card-title-collapsible .btn{margin-left:auto;padding:2px 8px;font-size:10px}
+.cfg-card-title-collapsible .btn{margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)}
 .chat-filter-card.minimized #chat-filter-content{display:none}
 .chat-score-threshold-box{padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg2);margin-bottom:10px}
-.chat-score-threshold-title{font-size:12px;font-weight:600;color:var(--text1);margin-bottom:8px}
+.chat-score-threshold-title{font-size:var(--fs-sm);font-weight:600;color:var(--text1);margin-bottom:8px}
 .chat-score-threshold-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .chat-score-threshold-controls input[type=range]{flex:1;min-width:180px}
 .chat-score-threshold-controls input[type=number]{width:72px}
-.chat-score-threshold-value{font-size:12px;color:var(--text2);min-width:120px}
+.chat-score-threshold-value{font-size:var(--fs-sm);color:var(--text2);min-width:120px}
 .check-label{display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text1)}
+
 /* Chat */
-.chat-toolbar{padding:5px 10px;border-bottom:1px solid var(--border);background:var(--bg1);display:flex;align-items:center;gap:8px;font-size:12px;flex-shrink:0;}
-.chat-msg{padding:5px 10px;border-bottom:1px solid var(--border);line-height:1.5;transition:background .15s;font-size:.82em}
-.chat-msg:hover{background:var(--bg2)}
-.chat-msg.report{border-left:3px solid rgba(245,166,35,.5);padding-left:7px}
+.chat-toolbar{padding:5px 10px;border-bottom:1px solid var(--border);background:var(--bg1);display:flex;align-items:center;gap:8px;font-size:var(--fs-sm);flex-shrink:0}
+.chat-msg{padding:5px 10px;border-bottom:1px solid var(--border);line-height:1.5;transition:background .12s;font-size:.82em}
+.chat-msg:hover{background:rgba(255,255,255,.03)}
+.chat-msg.report{border-left:3px solid rgba(210,153,34,.4);padding-left:7px}
 .chat-msg-main{display:flex;gap:8px;align-items:flex-start}
 .chat-msg-body{flex:1;min-width:0;word-break:break-word}
 .chat-msg-text{color:var(--text1);user-select:text}
-.chat-msg-actions{display:flex;gap:4px;flex-wrap:wrap;opacity:0;transition:opacity .15s;align-items:center;pointer-events:none}
+.chat-msg-actions{display:flex;gap:4px;flex-wrap:wrap;opacity:0;transition:opacity .12s;align-items:center;pointer-events:none}
 .chat-msg:hover .chat-msg-actions{opacity:1;pointer-events:auto}
-.chat-action-btn{padding:2px 6px;font-size:10px;border-radius:999px;background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.28);color:var(--accent)}
-.chat-action-btn.exclude{background:rgba(233,75,75,.08);border-color:rgba(233,75,75,.24);color:var(--danger)}
+.chat-action-btn{padding:2px 6px;font-size:var(--fs-xs);border-radius:999px;background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.22);color:var(--accent)}
+.chat-action-btn.exclude{background:rgba(248,81,73,.06);border-color:rgba(248,81,73,.18);color:var(--danger)}
 .chat-split{display:flex;flex-direction:column;gap:10px;min-height:0;flex:1}
 .chat-report-list{display:flex;flex-direction:column;gap:0;background:var(--bg0);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;flex:1;min-height:0}
 .chat-report-empty{color:var(--text3);padding:10px;font-size:.82em}
 .chat-report-summary{color:var(--text3);font-size:.76em;line-height:1.5;margin-bottom:8px}
-.chat-report-score{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.24);color:#f5a623;font-size:10px;vertical-align:middle}
+.chat-report-score{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.2);color:var(--warn);font-size:var(--fs-xs);vertical-align:middle}
+
 /* Crash warning */
-.crash-warning{display:none;background:rgba(233,75,75,.1);border:1px solid rgba(233,75,75,.3);border-radius:var(--radius);padding:6px 10px;font-size:.8em;color:var(--danger);margin-bottom:6px}
+.crash-warning{display:none;background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.22);border-radius:var(--radius);padding:6px 10px;font-size:.8em;color:var(--danger);margin-bottom:6px}
 .patrol-progress{margin-top:10px}
-.patrol-progress .progress-line{height:10px;border-radius:999px;background:var(--bg2);overflow:hidden}
-.patrol-progress .progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s ease}
-.patrol-progress .progress-text{display:flex;justify-content:space-between;gap:10px;font-size:.82em;color:var(--text3);margin-top:6px}
+.patrol-progress .progress-line{height:4px;border-radius:999px;background:var(--bg3);overflow:hidden}
+.patrol-progress .progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .3s ease}
+.patrol-progress .progress-text{display:flex;justify-content:space-between;gap:10px;font-size:.82em;color:var(--text3);margin-top:5px}
+
 /* Scrollbar */
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
 ::-webkit-scrollbar-thumb:hover{background:var(--text3)}
-input[type=text],input[type=number],textarea,select{background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;font-size:11px;font-family:inherit;outline:none;transition:border-color .15s;}
-input[type=text]:focus,input[type=number]:focus,textarea:focus,select:focus{border-color:rgba(79,142,247,.5);box-shadow:0 0 0 2px rgba(79,142,247,.12);}
-input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
+
 /* Dashboard grid */
 .dashboard-grid{--dash-grid-row-unit:8px;--dash-grid-gap:10px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:var(--dash-grid-row-unit);gap:var(--dash-grid-gap)}
 .dashboard-grid > .card{position:relative;min-width:0;min-height:0;overflow:auto;grid-row:span var(--panel-rows,28)}
@@ -2056,16 +2022,17 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 #card-dash-gold{display:flex;flex-direction:column;min-height:0}
 #dash-chat-area{height:420px;overflow-y:auto;flex-shrink:0}
 #dash-chat-report-area{flex:1;min-height:0;overflow-y:auto}
+
 /* Edit mode */
-.layout-edit-surface.edit-mode .card{outline:2px dashed rgba(245,166,35,.35);outline-offset:1px}
+.layout-edit-surface.edit-mode .card{outline:1px dashed rgba(210,153,34,.4);outline-offset:1px}
 .layout-edit-surface.edit-mode .card-title{cursor:grab}
 .layout-edit-surface.edit-mode .card.dragging{cursor:grabbing}
-.dashboard-grid.edit-mode .card{outline:2px dashed rgba(245,166,35,.35);outline-offset:1px;cursor:grab}
+.dashboard-grid.edit-mode .card{outline:1px dashed rgba(210,153,34,.35);outline-offset:1px;cursor:grab}
 .dashboard-grid.edit-mode .card > :not(.panel-resize-handle-x):not(.panel-resize-handle-y){pointer-events:none}
 .dashboard-grid:not(.edit-mode) .card .card-title{cursor:default}
-.panel-resize-handle-y,.panel-resize-handle-x{display:none;position:absolute;opacity:.72;box-shadow:0 0 0 1px rgba(245,166,35,.2)}
-.panel-resize-handle-y{left:50%;bottom:4px;transform:translateX(-50%);width:52px;height:12px;border-radius:999px;cursor:ns-resize;background:repeating-linear-gradient(90deg,rgba(245,166,35,.78) 0 6px,transparent 6px 10px)}
-.panel-resize-handle-x{top:50%;width:12px;height:52px;border-radius:999px;cursor:ew-resize;background:repeating-linear-gradient(180deg,rgba(245,166,35,.78) 0 6px,transparent 6px 10px)}
+.panel-resize-handle-y,.panel-resize-handle-x{display:none;position:absolute;opacity:.6;box-shadow:0 0 0 1px rgba(210,153,34,.2)}
+.panel-resize-handle-y{left:50%;bottom:4px;transform:translateX(-50%);width:52px;height:10px;border-radius:999px;cursor:ns-resize;background:repeating-linear-gradient(90deg,rgba(210,153,34,.7) 0 6px,transparent 6px 10px)}
+.panel-resize-handle-x{top:50%;width:10px;height:52px;border-radius:999px;cursor:ew-resize;background:repeating-linear-gradient(180deg,rgba(210,153,34,.7) 0 6px,transparent 6px 10px)}
 .panel-resize-handle-x.handle-right{right:4px;transform:translateY(-50%)}
 .panel-resize-handle-x.handle-left{left:4px;transform:translateY(-50%)}
 .dashboard-grid.edit-mode .panel-resize-handle-y,.dashboard-grid.edit-mode .panel-resize-handle-x{display:block}
@@ -2073,27 +2040,90 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .dashboard-grid.edit-mode .card.resizing-y{user-select:none;cursor:ns-resize}
 .dashboard-grid.edit-mode .card.resizing-x{user-select:none;cursor:ew-resize}
 .dashboard-grid.edit-mode .card.dragging{cursor:grabbing}
-/* Layout edit sidebar button */
-.sidebar-bottom{margin-top:auto;border-top:1px solid var(--border);padding-top:6px}
-.nav-item.layout-edit-active{background:rgba(245,166,35,.1);color:var(--warn);border-left-color:var(--warn)}
-/* Chat log layout edit */
+
+/* Sidebar bottom */
+.sidebar-bottom{margin-top:auto;border-top:1px solid var(--border);padding:0}
+.nav-item.layout-edit-active{background:rgba(210,153,34,.08);color:var(--warn);border-left-color:var(--warn)}
+
+/* Appearance panel */
+.appearance-panel{padding:10px 14px;border-bottom:1px solid var(--border)}
+.appearance-row{display:flex;align-items:center;gap:6px;margin-bottom:7px}
+.appearance-row:last-child{margin-bottom:0}
+.ap-label{font-size:var(--fs-xs);font-weight:600;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;min-width:38px;flex-shrink:0}
+.theme-swatches{display:flex;gap:4px;flex:1}
+.theme-swatch{
+  width:18px;height:18px;border-radius:4px;cursor:pointer;
+  border:2px solid transparent;transition:border-color .12s,transform .12s;
+  position:relative;flex-shrink:0;
+}
+.theme-swatch:hover{transform:scale(1.15)}
+.theme-swatch.active{border-color:var(--accent)}
+.theme-swatch[data-t="dark-blue"]{background:linear-gradient(135deg,#161b22 50%,#58a6ff 50%);border:2px solid transparent}
+.theme-swatch[data-t="black"]{background:linear-gradient(135deg,#0c0c0c 50%,#00e5ff 50%)}
+.theme-swatch[data-t="light"]{background:linear-gradient(135deg,#ffffff 50%,#0969da 50%);border:1px solid var(--border)}
+.theme-swatch[data-t="warm"]{background:linear-gradient(135deg,#0d0b00 50%,#ffd700 50%)}
+.fs-btns{display:flex;gap:3px;flex:1}
+.fs-btn{background:var(--bg2);border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 0;font-size:var(--fs-xs);cursor:pointer;transition:all .12s;font-family:inherit;flex:1;text-align:center}
+.fs-btn:hover{color:var(--text1);background:var(--bg3)}
+.fs-btn.active{background:rgba(88,166,255,.1);border-color:rgba(88,166,255,.35);color:var(--accent)}
+
+/* Chat log */
 #card-chat-log{flex:1;min-width:0;min-height:0}
 #card-chat-report-col{flex:1;min-width:0;min-height:0}
-.chat-swap-handle{display:none;align-items:center;justify-content:center;height:28px;flex:none;cursor:pointer;border-radius:var(--radius);border:1px dashed rgba(245,166,35,.5);color:var(--warn);font-size:11px;gap:6px;background:rgba(245,166,35,.06)}
-.chat-swap-handle:hover{background:rgba(245,166,35,.14)}
-#view-chat-log.edit-mode .card{outline:2px dashed rgba(245,166,35,.35);outline-offset:1px}
+.chat-swap-handle{display:none;align-items:center;justify-content:center;height:28px;flex:none;cursor:pointer;border-radius:var(--radius);border:1px dashed rgba(210,153,34,.4);color:var(--warn);font-size:var(--fs-sm);gap:6px;background:rgba(210,153,34,.04)}
+.chat-swap-handle:hover{background:rgba(210,153,34,.1)}
+#view-chat-log.edit-mode .card{outline:1px dashed rgba(210,153,34,.4);outline-offset:1px}
 #view-chat-log.edit-mode .chat-swap-handle{display:flex}
-/* Grid drag drop indicator */
-.grid-drop-indicator{background:rgba(79,142,247,.08);border:2px dashed rgba(79,142,247,.45);border-radius:var(--radius-lg);pointer-events:none;min-height:60px}
+.grid-drop-indicator{background:rgba(88,166,255,.05);border:1px dashed rgba(88,166,255,.3);border-radius:var(--radius-lg);pointer-events:none;min-height:60px}
+
+/* ── Light theme overrides ── */
+[data-theme="light"] .nav-item:hover{background:rgba(0,0,0,.05)}
+[data-theme="light"] .nav-item.active{background:rgba(9,105,218,.08);color:#0969da;border-left-color:#0969da}
+[data-theme="light"] .log-line:hover{background:rgba(0,0,0,.04)}
+[data-theme="light"] .chat-msg:hover{background:rgba(0,0,0,.03)}
+[data-theme="light"] .gold-table tr:hover td{background:rgba(0,0,0,.03)}
+[data-theme="light"] .device-entry:hover{border-color:#8c959f}
+[data-theme="light"] .card{box-shadow:0 1px 3px rgba(0,0,0,.08)}
+[data-theme="light"] .titlebar{background:rgba(208,215,222,1)}
+[data-theme="light"] button:hover,[data-theme="light"] .btn:hover{background:rgba(0,0,0,.06);border-color:#8c959f}
+[data-theme="light"] .brand-icon{background:#e1e4e8;color:#0969da}
+[data-theme="light"] .btn.success{background:rgba(26,127,55,.08);border-color:rgba(26,127,55,.25);color:#1a7f37}
+[data-theme="light"] .btn.primary{background:rgba(9,105,218,.08);border-color:rgba(9,105,218,.25);color:#0969da}
+[data-theme="light"] .btn.danger{background:rgba(207,34,46,.06);border-color:rgba(207,34,46,.22);color:#cf222e}
+[data-theme="light"] .chip.active{background:rgba(9,105,218,.1);border-color:rgba(9,105,218,.35);color:#0969da}
+[data-theme="light"] .nav-item.layout-edit-active{background:rgba(122,69,0,.08);color:#7a4500;border-left-color:#7a4500}
 </style>
 </head>
-<body>
+<body data-theme="dark-blue" data-fs="xl">
 <div class="app">
 <!-- Titlebar -->
 <div class="titlebar" id="hdr-bar"></div>
 <!-- Sidebar -->
 <div class="sidebar">
-  <div class="nav-item active" id="nav-dashboard" onclick="switchView('dashboard',this)">
+  
+<div class="sidebar-brand">
+  <div class="brand-row">
+    <div class="brand-icon">BP</div>
+    <div class="brand-text">
+      <div class="brand-name">BPSR patrol cams</div>
+      <div class="brand-sub">Blue Protocol Star Resonance</div>
+    </div>
+  </div>
+	<div class="brand-status" id="brand-status-bar">
+		<span class="brand-dot" id="brand-dot"></span>
+		<span id="brand-status-text">待機中</span>
+	</div>
+	<div class="brand-status" id="brand-uptime-box" style="margin-top:6px; display:flex; align-items:center; gap:5px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); font-size:var(--fs-xs); color:var(--text3);">
+		<span style="font-weight:600; color:var(--accent2);">稼働:</span>
+		<span id="brand-uptime-small" style="font-family:monospace; font-size:var(--fs-xs); color:var(--text3);"></span>
+	</div>
+	<div class="brand-status" id="brand-time-box" style="margin-top:4px; display:flex; align-items:center; gap:5px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); font-size:var(--fs-xs); color:var(--text3);">
+		<span style="font-weight:600; color:var(--accent);">時刻:</span>
+		<span id="brand-current-time-small" style="font-family:monospace; font-size:var(--fs-xs); color:var(--text3);"></span>
+	</div>
+</div>
+<div class="sidebar-nav">
+<div class="nav-item active" id="nav-dashboard" onclick="switchView('dashboard',this)">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
     ダッシュボード
   </div>
@@ -2121,7 +2151,29 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="8" cy="4.5" rx="5.5" ry="2"/><path d="M2.5 4.5v3c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-3"/><path d="M2.5 7.5v3c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-3"/></svg>
     データ管理
   </div>
-  <div class="sidebar-bottom">
+  </div><!-- /sidebar-nav -->
+<div class="sidebar-bottom"><div class="appearance-panel">
+  <div class="appearance-row">
+    <span class="ap-label">テーマ</span>
+    <div class="theme-swatches">
+      <div class="theme-swatch active" data-t="dark-blue" title="Dark Blue" onclick="setTheme('dark-blue',this)"></div>
+      <div class="theme-swatch" data-t="black" title="Black" onclick="setTheme('black',this)"></div>
+      <div class="theme-swatch" data-t="light" title="Light" onclick="setTheme('light',this)"></div>
+      <div class="theme-swatch" data-t="warm" title="Warm" onclick="setTheme('warm',this)"></div>
+    </div>
+  </div>
+  <div class="appearance-row">
+    <span class="ap-label">文字</span>
+    <div class="fs-btns">
+      <button class="fs-btn" data-fs="s"  onclick="setFontSize('s', this)">SS</button>
+      <button class="fs-btn" data-fs="m"  onclick="setFontSize('m', this)">S</button>
+      <button class="fs-btn active" data-fs="xl" onclick="setFontSize('xl',this)">M</button>
+      <button class="fs-btn" data-fs="2x" onclick="setFontSize('2x',this)">L</button>
+      <button class="fs-btn" data-fs="3x" onclick="setFontSize('3x',this)">XL</button>
+    </div>
+  </div>
+</div>
+
     <div class="nav-item" id="nav-layout-edit" onclick="toggleLayoutEdit()">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>
       レイアウト編集
@@ -2134,7 +2186,11 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 <div class="view active" id="view-dashboard">
   <div class="status-grid" style="grid-template-columns:repeat(2,1fr)">
     <div class="stat"><div class="stat-label">検知イベント</div><div class="stat-value warn" id="dash-detect-count">0</div><div class="stat-sub" id="dash-detect-meta">0/hour · --</div></div>
-    <div class="stat"><div class="stat-label">稼働時間</div><div class="stat-value ok" id="dash-uptime">00:00:00</div></div>
+    <div class="stat" style="position:relative">
+      <div class="stat-label" style="display:flex;align-items:center">稼働時間<button onclick="resetUptime()" title="リセット" style="margin-left:auto;background:transparent;border:none;color:var(--text3);cursor:pointer;padding:0 2px;font-size:var(--fs-sm);line-height:1;transition:color .12s" onmouseover="this.style.color='var(--text1)'" onmouseout="this.style.color='var(--text3)'">&#8635;</button></div>
+      <div class="stat-value ok" id="dash-uptime">00:00:00</div>
+      <div class="stat-sub" id="dash-current-time" style="font-family:monospace;letter-spacing:.04em">--:--:--</div>
+    </div>
   </div>
   <div class="dashboard-grid" id="dashboard-grid">
     <!-- 接続デバイス -->
@@ -2160,7 +2216,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         <button id="btn-dash-clear-full" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearFullChannels()">✕ クリア</button>
       </div>
 			<div class="flex-row" style="margin-bottom:8px">
-				<label style="font-size:11px">開始Ch:</label>
+				<label style="font-size:var(--fs-sm)">開始Ch:</label>
 				<select id="dash-patrol-start-ch-select" style="width:80px"></select>
 				<input type="number" id="dash-patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
 				<button class="btn toggle-btn" id="dash-btn-reversed" onclick="toggleReversed()">⬆ 正順</button>
@@ -2184,7 +2240,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     </div>
     <!-- レアエネミー検知履歴 -->
 		<div class="card panel-size-1x1" id="card-dash-gold">
-		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
+		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:var(--fs-xs)" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
       <div id="gold-history-container"><div class="no-history">検知履歴なし</div></div>
     </div>
     <!-- チャットログ -->
@@ -2192,7 +2248,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
         チャットログ
-        <button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="switchView('chat-log',document.getElementById('nav-chat-log'))">展開 →</button>
+        <button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="switchView('chat-log',document.getElementById('nav-chat-log'))">展開 →</button>
       </div>
 	<div id="dash-chat-area"></div>
     </div>
@@ -2200,7 +2256,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		<div class="card panel-size-1x1" id="card-dash-report" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
       <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
         発見報告候補
-        <span style="margin-left:auto;font-size:10px;color:var(--text3)">自動抽出</span>
+        <span style="margin-left:auto;font-size:var(--fs-xs);color:var(--text3)">自動抽出</span>
       </div>
       <div id="dash-chat-report-area" class="chat-report-list"></div>
     </div>
@@ -2228,9 +2284,9 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		<div class="card" id="card-chat-log" style="display:flex;flex-direction:column;padding:0;overflow:hidden;min-height:0">
 			<div class="chat-toolbar">
 				<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
-				<span style="font-weight:500;color:var(--text2);text-transform:uppercase;font-size:10px;letter-spacing:.6px">チャットログ</span>
-				<select id="chat-device-select" onchange="renderChatPanel()" style="font-size:11px;padding:2px 6px;max-width:140px"><option value="">すべて</option></select>
-				<input type="text" id="chat-search" placeholder="キーワード検索..." style="width:130px;font-size:11px" oninput="renderChatPanel()">
+				<span style="font-weight:500;color:var(--text2);text-transform:uppercase;font-size:var(--fs-xs);letter-spacing:.6px">チャットログ</span>
+				<select id="chat-device-select" onchange="renderChatPanel()" style="font-size:var(--fs-sm);padding:2px 6px;max-width:140px"><option value="">すべて</option></select>
+				<input type="text" id="chat-search" placeholder="キーワード検索..." style="width:130px;font-size:var(--fs-sm)" oninput="renderChatPanel()">
 				<button class="btn" style="margin-left:auto" onclick="window.open('/chat-log','chat-log','width=700,height=500')">⧉ 別ウィンドウ</button>
 				<button class="btn" onclick="clearChatPanel()">クリア</button>
 			</div>
@@ -2238,7 +2294,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		</div>
 		<div class="chat-swap-handle" id="chat-swap-handle" onclick="swapChatPanels()" title="上下を入れ替え">⇅ 上下入れ替え</div>
 		<div class="card" id="card-chat-report-col" style="display:flex;flex-direction:column;padding:14px;overflow:hidden;min-height:0">
-			<div class="card-title" style="display:flex;align-items:center;gap:8px"><span>発見報告候補</span><button id="notify-sound-toggle" class="btn" style="margin-left:auto;font-size:12px;padding:2px 8px" onclick="toggleNotifySound()" title="通知音ON/OFF">🔔</button><input type="range" id="notify-sound-volume" min="0" max="1" step="0.05" style="width:70px" title="通知音量" oninput="setNotifyVolume(this.value)"></div>
+			<div class="card-title" style="display:flex;align-items:center;gap:8px"><span>発見報告候補</span><button id="notify-sound-toggle" class="btn" style="margin-left:auto;font-size:var(--fs-sm);padding:2px 8px" onclick="toggleNotifySound()" title="通知音ON/OFF">🔔</button><input type="range" id="notify-sound-volume" min="0" max="1" step="0.05" style="width:70px" title="通知音量" oninput="setNotifyVolume(this.value)"></div>
 			<div class="chat-report-summary" id="chat-report-summary">発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。</div>
 			<div id="chat-report-area" class="chat-report-list"></div>
 		</div>
@@ -2278,12 +2334,26 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
   <div class="card">
     <div class="card-title">接続デバイス一覧</div>
     <div class="flex-row" style="margin-bottom:10px">
-      <label style="font-size:11px;color:var(--text2)">一括 Ch:</label>
+      <label style="font-size:var(--fs-sm);color:var(--text2)">一括 Ch:</label>
       <input type="number" id="allch" min="1" max="999" value="1" style="width:65px">
       <button class="btn primary" onclick="switchAll()">▶ 全切替</button>
       <span id="status-bar" style="font-size:.82em;color:var(--accent2)"></span>
     </div>
     <div class="device-list" id="device-list"><div class="no-devices">読み込み中...</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">タップループ</div>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+      <label style="font-size:var(--fs-sm)">X: <input type="number" id="tap-x" value="0" min="0" style="width:70px"></label>
+      <label style="font-size:var(--fs-sm)">Y: <input type="number" id="tap-y" value="0" min="0" style="width:70px"></label>
+      <label style="font-size:var(--fs-sm)">間隔: <input type="number" id="tap-interval" value="1000" min="100" step="100" style="width:80px"> ms</label>
+    </div>
+    <p style="font-size:var(--fs-xs);color:var(--text3);margin:0 0 8px">デバイス一覧でチェックしたシリアルが対象（未選択時は全台）</p>
+    <div class="flex-row">
+      <button class="btn success" id="btn-tap-start" onclick="tapLoopStart()">▶ 開始</button>
+      <button class="btn danger" id="btn-tap-stop" onclick="tapLoopStop()" disabled>■ 停止</button>
+      <span id="tap-status" style="font-size:.82em;color:var(--text2)"></span>
+    </div>
   </div>
 </div>
 <!-- ===== チャンネル巡回 ===== -->
@@ -2302,7 +2372,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
           <button id="btn-clear-full" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearFullChannels()">✕ クリア</button>
         </div>
         <div class="flex-row" style="margin-bottom:8px">
-          <label style="font-size:11px">開始Ch:</label>
+          <label style="font-size:var(--fs-sm)">開始Ch:</label>
           <input type="number" id="patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
           <button class="btn toggle-btn" id="btn-reversed" onclick="toggleReversed()">⬆ 正順</button>
           <button class="btn toggle-btn" id="btn-loop" onclick="toggleLoop()">🔁 ループ</button>
@@ -2338,7 +2408,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         </div>
       </div>
 		<div class="card panel-size-1x2 panel-col-2" id="card-patrol-gold">
-		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:10px" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
+		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:var(--fs-xs)" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
         <div id="gold-history-container-patrol"><div class="no-history">検知履歴なし</div></div>
       </div>
   </div>
@@ -2354,8 +2424,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 			<div class="cfg-card-title">システム設定</div>
 			<div id="cfg-form" class="cfg-grid"></div>
 			<div style="margin:12px 0 0 0">
-				<label style="font-size:13px;font-weight:500;">通知するエネミー</label>
-				<div id="cfg-enemy-checkboxes" style="margin-top:6px;display:flex;gap:18px;font-size:13px">
+				<label style="font-size:var(--fs-md);font-weight:500;">通知するエネミー</label>
+				<div id="cfg-enemy-checkboxes" style="margin-top:6px;display:flex;gap:18px;font-size:var(--fs-md)">
 					<label><input type="checkbox" class="cfg-enemy" value="ウリボ・ゴールド">ウリボ・ゴールド</label>
 					<label><input type="checkbox" class="cfg-enemy" value="金ナッポ">金ナッポ</label>
 					<label><input type="checkbox" class="cfg-enemy" value="銀ナッポ">銀ナッポ</label>
@@ -2377,13 +2447,13 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       <!-- 操作パネル -->
       <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
         <div>
-          <div style="font-size:12px;color:var(--text2);margin-bottom:4px">全chマッピング（現在セッションのLineIDを自動登録）</div>
+          <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:4px">全chマッピング（現在セッションのLineIDを自動登録）</div>
           <button class="btn primary" onclick="portmapMapAll()">⚡ 全chマッピング</button>
         </div>
         <div style="border-left:1px solid var(--border);padding-left:12px">
-          <div style="font-size:12px;color:var(--text2);margin-bottom:4px">指定chマッピング（現在セッションを指定chに登録）</div>
+          <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:4px">指定chマッピング（現在セッションを指定chに登録）</div>
           <div style="display:flex;gap:6px;align-items:center">
-            <label style="font-size:12px">Ch:</label>
+            <label style="font-size:var(--fs-sm)">Ch:</label>
             <input type="number" id="portmap-ch-input" min="1" max="9999" placeholder="例: 40" style="width:80px">
             <button class="btn success" onclick="portmapMapCh()">📌 マッピング</button>
           </div>
@@ -2392,10 +2462,10 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
           <button class="btn" onclick="loadPortMapEntries()">🔄 更新</button>
         </div>
       </div>
-      <div id="portmap-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;min-height:1.4em"></div>
+      <div id="portmap-status" style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:8px;min-height:1.4em"></div>
       <!-- エントリ一覧テーブル -->
       <div style="overflow-x:auto">
-        <table id="portmap-table" style="width:100%;border-collapse:collapse;font-size:13px">
+        <table id="portmap-table" style="width:100%;border-collapse:collapse;font-size:var(--fs-md)">
           <thead>
             <tr style="border-bottom:1px solid var(--border)">
               <th style="text-align:left;padding:6px 10px;color:var(--text2);font-weight:500;white-space:nowrap">Ch</th>
@@ -2408,7 +2478,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
           </tbody>
         </table>
       </div>
-      <div id="portmap-count" style="font-size:11px;color:var(--text3);margin-top:6px"></div>
+      <div id="portmap-count" style="font-size:var(--fs-sm);color:var(--text3);margin-top:6px"></div>
     </div>
   </div>
 </div>
@@ -2431,8 +2501,8 @@ function loadPortMapEntries() {
       const dt = e.updated_at ? new Date(e.updated_at).toLocaleString('ja-JP') : '--';
       return '<tr style="border-bottom:1px solid var(--border)">' +
         '<td style="padding:5px 10px;font-weight:600;color:var(--accent)">'+e.ch+'</td>' +
-        '<td style="padding:5px 10px;font-family:monospace;font-size:12px">'+e.server_ip+'</td>' +
-        '<td style="padding:5px 10px;color:var(--text2);font-size:12px">'+dt+'</td>' +
+        '<td style="padding:5px 10px;font-family:monospace;font-size:var(--fs-sm)">'+e.server_ip+'</td>' +
+        '<td style="padding:5px 10px;color:var(--text2);font-size:var(--fs-sm)">'+dt+'</td>' +
         '</tr>';
     }).join('');
     if (count) count.textContent = '合計 '+entries.length+' 件';
@@ -3285,7 +3355,7 @@ function chatCandidateMetaHtml(ev){
 	if(facts.monster)parts.push(facts.monster);
 	if(!parts.length)return '';
 	const label=facts.explicitMonster?'判定':'推定';
-	return '<div style="margin-top:4px;font-size:10px;color:var(--text3)">'+label+': '+escHtml(parts.join(' / '))+'</div>';
+	return '<div style="margin-top:4px;font-size:var(--fs-xs);color:var(--text3)">'+label+': '+escHtml(parts.join(' / '))+'</div>';
 }
 function chatMsgHtml(ev,opts){
 	opts=opts||{};
@@ -3462,6 +3532,62 @@ async function switchOne(serial){
   if(bar)bar.textContent=res&&res.ok?'✓ 完了':'✗ '+(res&&res.error||d.error||'失敗');
   setTimeout(()=>{if(bar)bar.textContent='';},3000);
 }
+// ── Tap Loop ──
+let tapLoopPollTimer=null;
+async function tapLoopStart(){
+  const x=parseInt(document.getElementById('tap-x').value)||0;
+  const y=parseInt(document.getElementById('tap-y').value)||0;
+  const interval=parseInt(document.getElementById('tap-interval').value)||1000;
+  const serials=selectedSerials();
+  const r=await fetch('/api/adb/tap-loop/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tap_x:x,tap_y:y,interval_ms:interval,serials})});
+  const d=await r.json();
+  const st=document.getElementById('tap-status');
+  if(d.ok){
+    document.getElementById('btn-tap-start').disabled=true;
+    document.getElementById('btn-tap-stop').disabled=false;
+    if(st)st.textContent='実行中...';
+    startTapLoopPoll();
+  } else {
+    if(st)st.textContent='✗ '+(d.error||'失敗');
+  }
+}
+async function tapLoopStop(){
+  await fetch('/api/adb/tap-loop/stop',{method:'POST'});
+  stopTapLoopPoll();
+  document.getElementById('btn-tap-start').disabled=false;
+  document.getElementById('btn-tap-stop').disabled=true;
+  const st=document.getElementById('tap-status');if(st)st.textContent='停止';
+}
+function startTapLoopPoll(){
+  if(tapLoopPollTimer)return;
+  tapLoopPollTimer=setInterval(async()=>{
+    const d=await fetch('/api/adb/tap-loop/status').then(r=>r.json()).catch(()=>null);
+    if(!d)return;
+    const st=document.getElementById('tap-status');
+    if(d.running){
+      if(st)st.textContent='実行中 | タップ数: '+d.tick_count;
+    } else {
+      if(st)st.textContent='停止';
+      document.getElementById('btn-tap-start').disabled=false;
+      document.getElementById('btn-tap-stop').disabled=true;
+      stopTapLoopPoll();
+    }
+  },1000);
+}
+function stopTapLoopPoll(){
+  if(tapLoopPollTimer){clearInterval(tapLoopPollTimer);tapLoopPollTimer=null;}
+}
+(async function(){
+  const d=await fetch('/api/adb/tap-loop/status').then(r=>r.json()).catch(()=>null);
+  if(d&&d.running){
+    document.getElementById('btn-tap-start').disabled=true;
+    document.getElementById('btn-tap-stop').disabled=false;
+    const xi=document.getElementById('tap-x'),yi=document.getElementById('tap-y'),ii=document.getElementById('tap-interval');
+    if(xi)xi.value=d.tap_x;if(yi)yi.value=d.tap_y;if(ii)ii.value=d.interval_ms;
+    const st=document.getElementById('tap-status');if(st)st.textContent='実行中 | タップ数: '+d.tick_count;
+    startTapLoopPoll();
+  }
+})();
 // ── Patrol ──
 let patrolChannels=[],patrolReversed=localStorage.getItem('patrolReversed')==='true',patrolLoopMode=localStorage.getItem('patrolLoopMode')!=='false';
 function applyReversedUI(){['btn-reversed','dash-btn-reversed'].forEach(id=>{const b=document.getElementById(id);if(!b)return;b.textContent=patrolReversed?'⬇ 逆順':'⬆ 正順';b.classList.toggle('active',patrolReversed);});}
@@ -3688,7 +3814,7 @@ function renderConfigFields(containerId, fields){
 			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><select id="cfg-'+f.k+'">'+opts+'</select>'+noteHtml+'</div>';
 		}
 		var inputType=f.type==='csv'?'text':f.type;
-		var testBtnHtml=f.testBtn?('<div style="margin-top:4px"><button type="button" class="btn" onclick="testWebhook(\'cfg-'+f.k+'\')">📨 テスト送信</button><span id="cfg-'+f.k+'-test-result" style="margin-left:8px;font-size:11px;opacity:.8"></span></div>'):'';
+		var testBtnHtml=f.testBtn?('<div style="margin-top:4px"><button type="button" class="btn" onclick="testWebhook(\'cfg-'+f.k+'\')">📨 テスト送信</button><span id="cfg-'+f.k+'-test-result" style="margin-left:8px;font-size:var(--fs-sm);opacity:.8"></span></div>'):'';
 		return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><input type="'+inputType+'" id="cfg-'+f.k+'" value="'+escHtml(String(val))+'" placeholder="'+escHtml(f.desc||'')+'">'+noteHtml+testBtnHtml+'</div>';
 	}).join('');
 }
@@ -4026,13 +4152,24 @@ function renderConfigForm(cfg){
 		chk.checked=entry?entry.enabled:true;
 	});
 }
-// ── Uptime counter ──
-const _startTime=Date.now();
+// ── Uptime counter + current time ──
+let _startTime=parseInt(localStorage.getItem('uptimeStart')||'0')||Date.now();
+localStorage.setItem('uptimeStart',_startTime);
+function resetUptime(){_startTime=Date.now();localStorage.setItem('uptimeStart',_startTime);}
 setInterval(()=>{
-  const s=Math.floor((Date.now()-_startTime)/1000);
-  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;
-  const el=document.getElementById('dash-uptime');
-  if(el)el.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
+	const now=Date.now();
+	const s=Math.floor((now-_startTime)/1000);
+	const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;
+	const el=document.getElementById('dash-uptime');
+	if(el)el.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
+	const ct=document.getElementById('dash-current-time');
+	if(ct){const d=new Date(now),hh=d.getHours(),mm=d.getMinutes(),sc=d.getSeconds();ct.textContent=(hh<10?'0':'')+hh+':'+(mm<10?'0':'')+mm+':'+(sc<10?'0':'')+sc;}
+	// Sidebar uptime
+	const sm=document.getElementById('brand-uptime-small');
+	if(sm)sm.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
+	// Sidebar current time
+	const cts=document.getElementById('brand-current-time-small');
+	if(cts){const d=new Date(now),hh=d.getHours(),mm=d.getMinutes(),sc=d.getSeconds();cts.textContent=(hh<10?'0':'')+hh+':'+(mm<10?'0':'')+mm+':'+(sc<10?'0':'')+sc;}
 },1000);
 // ── Dashboard layout ──
 const DASH_PANEL_IDS=['card-dash-devices','card-dash-patrol','card-dash-gold','card-dash-chat','card-dash-report'];
@@ -4438,6 +4575,51 @@ syncLayoutEditState();
     return true;
   }
   for(let i=1;i<=3;i++){const found=await fetchDevicesOnly();if(found)return;if(i<3)await new Promise(r=>setTimeout(r,3000));}
+})();
+
+// ── Appearance: theme + font size ──
+(function(){
+  function setTheme(t,el){
+    document.body.setAttribute('data-theme',t);
+    localStorage.setItem('uiTheme',t);
+    document.querySelectorAll('.theme-swatch').forEach(s=>s.classList.toggle('active',s.dataset.t===t));
+  }
+  function setFontSize(fs,el){
+    document.body.setAttribute('data-fs',fs);
+    localStorage.setItem('uiFontSize',fs);
+    document.querySelectorAll('.fs-btn').forEach(b=>b.classList.toggle('active',b.dataset.fs===fs));
+  }
+  window.setTheme=setTheme;
+  window.setFontSize=setFontSize;
+  // restore persisted prefs
+  const savedTheme=localStorage.getItem('uiTheme')||'dark-blue'; localStorage.getItem('uiTheme')==='grey'&&localStorage.setItem('uiTheme','light');
+
+  // Migrate old font size keys
+  (function(){const m={'sm':'s','md':'m','lg':'m'};const v=localStorage.getItem('uiFontSize');if(v&&m[v])localStorage.setItem('uiFontSize',m[v]);})();
+  const savedFs=localStorage.getItem('uiFontSize')||'xl';
+  document.body.setAttribute('data-theme',savedTheme);
+  document.body.setAttribute('data-fs',savedFs);
+  document.querySelectorAll('.theme-swatch').forEach(s=>s.classList.toggle('active',s.dataset.t===savedTheme));
+  document.querySelectorAll('.fs-btn').forEach(b=>b.classList.toggle('active',b.dataset.fs===savedFs));
+
+  // brand status sync
+  function syncBrandStatus(){
+    const bar=document.getElementById('hdr-bar');
+    const dot=document.getElementById('brand-dot');
+    const txt=document.getElementById('brand-status-text');
+    const upt=document.getElementById('brand-uptime-small');
+    const running=bar&&bar.classList.contains('running');
+    if(dot)dot.classList.toggle('running',running);
+    if(txt){
+      const psState=document.getElementById('ps-state')||document.getElementById('dash-ps-state');
+      if(running&&psState)txt.textContent='巡回中';
+      else if(running)txt.textContent='稼働中';
+      else txt.textContent='待機中';
+    }
+    const uptimeEl=document.getElementById('dash-uptime');
+    if(upt&&uptimeEl)upt.textContent=uptimeEl.textContent||'';
+  }
+  setInterval(syncBrandStatus,1000);
 })();
 </script>
 
