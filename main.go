@@ -427,7 +427,6 @@ func main() {
 	log.Println("shutting down...")
 }
 
-
 // runChMapCollector はターミナルからch番号を受け取り、
 // 現在のセッションのサーバーポートをch番号と対応付けてJSONファイルに保存する。
 // 使い方: エミュレーターをch Xに移動後、ターミナルに "X" と入力してEnter。

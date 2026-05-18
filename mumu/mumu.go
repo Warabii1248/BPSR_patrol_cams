@@ -27,7 +27,7 @@ type Config struct {
 	PreKeycode  string
 	// ConnectSerials は start-server 後に adb connect を試行するシリアル一覧（host:port）。
 	ConnectSerials []string
-	GlobalDelay time.Duration
+	GlobalDelay    time.Duration
 	// ParallelLimit は同時切替の最大台数。0=無制限（グループディレイも無効）。
 	ParallelLimit int
 	// ParallelGroupDelay はグループ間の待機時間。ParallelLimit>0のとき有効。
