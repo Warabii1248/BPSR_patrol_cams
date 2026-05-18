@@ -2333,6 +2333,11 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
   </div>
   <div class="card">
     <div class="card-title">接続デバイス一覧</div>
+    <div class="flex-row" style="margin-bottom:6px">
+      <button class="btn" onclick="selectAllDevices()">☑ 全選択</button>
+      <button class="btn" onclick="deselectAllDevices()">☐ 全解除</button>
+      <button class="btn" style="margin-left:auto" onclick="refreshDevices()">🔄 再スキャン / ADB再起動</button>
+    </div>
     <div class="flex-row" style="margin-bottom:10px">
       <label style="font-size:var(--fs-sm);color:var(--text2)">一括 Ch:</label>
       <input type="number" id="allch" min="1" max="999" value="1" style="width:65px">
@@ -3010,104 +3015,39 @@ function renderDashDevices(devs,deviceMap){
 }
 // ── Devices ──
 let selectedDevices=new Set();
+let currentDevices=[];
 function selectedSerials(){return[...selectedDevices];}
-async function _fetchAndRenderDevices(){
-	let devs=[];
-	let deviceMap={};
-	const r=await fetch('/api/devices');const res=await r.json();
-	devs=Array.isArray(res)?res:(res.devices||[]);
-	const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
-	deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
-	if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
-	renderDashDevices(devs,deviceMap);
-	const el=document.getElementById('device-list');
-	if(!devs||devs.length===0){if(el)el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return devs;}
-	if(el)el.innerHTML=devs.map(d=>{
-		const info=deviceMap[d]||{};const uid=info.user_uid||'',ch=info.line_id||'',confirmed=info.confirmed||false;
-		const checked=selectedDevices.has(d)?'checked':'';
-		const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
-		const eid='ch-'+encodeURIComponent(d);
-		return '<div class="device-entry'+(confirmed?' matched':'')+'">'
-			+'<label class="check-label"><input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)"><span class="serial">'+escHtml(d)+'</span>'+uidHtml+'</label>'
-			+'<div style="display:flex;gap:6px;margin-top:4px"><input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px"><button style="padding:3px 8px;font-size:.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button>'
-			+'<button style="padding:3px 8px;font-size:.8em;color:var(--danger)" onclick="removeADBDevice('+escAttrJs(d)+')">✕</button></div></div>';
-	}).join('');
-	return devs;
+function selectAllDevices(){currentDevices.forEach(d=>selectedDevices.add(d));renderDeviceList();}
+function deselectAllDevices(){selectedDevices.clear();renderDeviceList();}
+function renderDeviceList(){
+  const el=document.getElementById('device-list');if(!el)return;
+  if(!currentDevices||currentDevices.length===0){el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return;}
+  el.innerHTML=currentDevices.map(d=>{
+    const info=currentDeviceMap[d]||{};const uid=info.user_uid||'',ch=info.line_id||'',confirmed=info.confirmed||false;
+    const checked=selectedDevices.has(d)?'checked':'';
+    const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
+    const eid='ch-'+encodeURIComponent(d);
+    return '<div class="device-entry'+(confirmed?' matched':'')+'">'
+      +'<label class="check-label"><input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)"><span class="serial">'+escHtml(d)+'</span>'+uidHtml+'</label>'
+      +'<div style="display:flex;gap:6px;margin-top:4px"><input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px"><button style="padding:3px 8px;font-size:.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button></div></div>';
+  }).join('');
 }
+let currentDeviceMap={};
 async function refreshDevices(){
-	const st=document.getElementById('adb-op-status');
-	if(st)st.textContent='スキャン中...';
-	await _fetchAndRenderDevices();
-	if(st)st.textContent='';
+  const bar=document.getElementById('status-bar');if(bar)bar.textContent='ADB再起動中...';
+  await fetch('/api/adb/restart',{method:'POST'});
+  let devs=[];
+  let deviceMap={};
+  const r=await fetch('/api/devices');const res=await r.json();
+  devs=Array.isArray(res)?res:(res.devices||[]);
+  const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
+  deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
+  if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
+  renderDashDevices(devs,deviceMap);
+  if(bar)bar.textContent='';
+  currentDevices=devs||[];currentDeviceMap=deviceMap;
+  renderDeviceList();
 }
-async function scanDevices(){
-	const btn=document.getElementById('btn-adb-scan');
-	const st=document.getElementById('adb-op-status');
-	if(btn)btn.disabled=true;
-	if(st)st.textContent='スキャン中...';
-	try{
-		const res=await fetch('/api/adb/scan',{method:'POST'}).then(r=>r.json()).catch(()=>({}));
-		await _fetchAndRenderDevices();
-		const n=(res.devices||[]).length;
-		if(st)st.textContent=n>0?n+'台検出':'デバイスが見つかりません';
-	}finally{
-		if(btn)btn.disabled=false;
-		setTimeout(()=>{if(st)st.textContent='';},3000);
-	}
-}
-async function restartADB(){
-	const btn=document.getElementById('btn-adb-restart');
-	const st=document.getElementById('adb-op-status');
-	if(btn)btn.disabled=true;
-	if(st)st.textContent='ADB再起動中...';
-	try{
-		await fetch('/api/adb/restart',{method:'POST'});
-		await _fetchAndRenderDevices();
-		if(st)st.textContent='ADB再起動完了';
-	}finally{
-		if(btn)btn.disabled=false;
-		setTimeout(()=>{if(st)st.textContent='';},3000);
-	}
-}
-async function killADB(){
-	const patrolRunning=document.getElementById('ps-state')&&document.getElementById('ps-state').classList.contains('running');
-	if(patrolRunning){
-		if(!confirm('巡回を停止しますか？'))return;
-		await fetch('/api/patrol/stop',{method:'POST'});
-	}
-	const st=document.getElementById('adb-op-status');
-	if(st)st.textContent='ADB停止中...';
-	const res=await fetch('/api/adb/kill',{method:'POST'}).then(r=>r.json()).catch(()=>({ok:false}));
-	if(st)st.textContent=res.ok?'ADB停止完了':'ADB停止失敗: '+(res.error||'');
-	await _fetchAndRenderDevices();
-	setTimeout(()=>{if(st)st.textContent='';},3000);
-}
-async function addADBDevice(){
-	const input=document.getElementById('adb-add-serial');
-	const serial=(input&&input.value||'').trim();
-	if(!serial){alert('host:port を入力してください');return;}
-	const st=document.getElementById('adb-op-status');
-	if(st)st.textContent='接続中...';
-	const res=await fetch('/api/adb/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial})}).then(r=>r.json()).catch(()=>({ok:false}));
-	if(res.ok){
-		if(input)input.value='';
-		if(st)st.textContent='接続完了: '+(res.message||serial);
-		await _fetchAndRenderDevices();
-	}else{
-		if(st)st.textContent='接続失敗: '+(res.error||'');
-	}
-	setTimeout(()=>{if(st)st.textContent='';},4000);
-}
-async function removeADBDevice(serial){
-	const st=document.getElementById('adb-op-status');
-	const res=await fetch('/api/adb/device',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial})}).then(r=>r.json()).catch(()=>({ok:false}));
-	if(res.ok){
-		if(st)st.textContent=serial+' を削除しました';
-		await _fetchAndRenderDevices();
-	}else{
-		if(st)st.textContent='削除失敗: '+(res.error||'');
-	}
-	setTimeout(()=>{if(st)st.textContent='';},3000);
 }
 function toggleDevice(s,c){c?selectedDevices.add(s):selectedDevices.delete(s);}
 // ── Continuous Tap ──
@@ -4561,18 +4501,9 @@ syncLayoutEditState();
     const deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
     if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
     renderDashDevices(devs,deviceMap);
-    const el=document.getElementById('device-list');
-    if(!devs||devs.length===0){if(el)el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return false;}
-    if(el)el.innerHTML=devs.map(d=>{
-      const info=deviceMap[d]||{};const uid=info.user_uid||'',ch=info.line_id||'',confirmed=info.confirmed||false;
-      const checked=selectedDevices.has(d)?'checked':'';
-      const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
-      const eid='ch-'+encodeURIComponent(d);
-      return '<div class="device-entry'+(confirmed?' matched':'')+'">'
-        +'<label class="check-label"><input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)"><span class="serial">'+escHtml(d)+'</span>'+uidHtml+'</label>'
-        +'<div style="display:flex;gap:6px;margin-top:4px"><input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px"><button style="padding:3px 8px;font-size:.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button></div></div>';
-    }).join('');
-    return true;
+    currentDevices=devs||[];currentDeviceMap=deviceMap;
+    renderDeviceList();
+    return devs&&devs.length>0;
   }
   for(let i=1;i<=3;i++){const found=await fetchDevicesOnly();if(found)return;if(i<3)await new Promise(r=>setTimeout(r,3000));}
 })();
