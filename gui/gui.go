@@ -1,4 +1,4 @@
-// Package gui はローカルHTTPサーバーとして動作するWebベースGUIを提供する。
+﻿// Package gui はローカルHTTPサーバーとして動作するWebベースGUIを提供する。
 // Edge WebView2を使った専用ウィンドウで表示する。
 package gui
 
@@ -77,6 +77,7 @@ type Server struct {
 	chatReportFn      func(notifier.Detection)
 	chatReportDedupMu sync.Mutex
 	chatReportDedup   map[string]time.Time
+	tapper            *mumu.Tapper
 }
 
 // PortMapEntry はポートマップの1エントリ（GUI向け）
@@ -146,6 +147,7 @@ func NewWithOptions(port int, mumuCfg mumu.Config, patrolChannels []uint32, patr
 		goldHistoryFile:    historyFile,
 		cooldownChs:        make(map[uint32]time.Time),
 		gasTargetEnemy:     "金ウリボ",
+		tapper:             mumu.NewTapper(),
 	}
 	if err := s.loadGoldHistoryFromDisk(); err != nil {
 		log.Printf("[GUI] gold history load failed: %v", err)
@@ -622,6 +624,11 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/gold-history/delete", s.handleDeleteGoldHistory)
 	mux.HandleFunc("/api/gold-history/clear", s.handleClearGoldHistory)
 	mux.HandleFunc("/api/adb/restart", s.handleADBRestart)
+	mux.HandleFunc("/api/adb/scan", s.handleADBScan)
+	mux.HandleFunc("/api/adb/connect", s.handleADBConnect)
+	mux.HandleFunc("/api/adb/device", s.handleADBDevice)
+	mux.HandleFunc("/api/adb/kill", s.handleADBKill)
+	mux.HandleFunc("/api/adb/tap", s.handleADBTap)
 	mux.HandleFunc("/api/webhook/test", s.handleWebhookTest)
 	mux.HandleFunc("/api/chat-log", s.handleChatLog)
 	mux.HandleFunc("/api/chat-events", s.handleChatEvents)
@@ -652,42 +659,21 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 		}
 	}()
 
-	// 巡回モード時のみ、起動時にデバイス一覧を最大3回取得し失敗時は ADB を自動再起動する
+	// 巡回モード時のみ、起動後15秒間デバイスを1回だけ待機する
 	if s.patrolEnabled {
 		go func() {
-		cfg := s.patroller.Config()
-		for attempt := 1; attempt <= 3; attempt++ {
-			time.Sleep(1 * time.Second)
-			log.Printf("[MuMu] 起動時デバイス確認 (%d/3)...", attempt)
-			devices, err := mumu.ListDevices(context.Background(), cfg)
+			cfg := s.patroller.Config()
+			log.Println("[MuMu] 起動時デバイスサーチ開始（最大15秒）...")
+			devices, err := mumu.WaitForDevices(context.Background(), cfg, 15*time.Second)
 			if err != nil {
-				log.Printf("[MuMu] 起動時デバイス取得失敗 (%d/3): %v", attempt, err)
-				continue
+				log.Printf("[MuMu] 起動時デバイスサーチ失敗: %v", err)
+				return
 			}
 			if len(devices) == 0 {
-				log.Printf("[MuMu] 起動時デバイスが見つかりません (%d/3)。MuMu Playerを起動してadb connectで接続してください", attempt)
-				continue
+				log.Println("[MuMu] デバイスが見つかりません。MuMu Playerを起動して手動スキャンしてください")
+			} else {
+				log.Printf("[MuMu] 起動時デバイス検出: %v", devices)
 			}
-			log.Printf("[MuMu] 起動時デバイス: %v", devices)
-			return // デバイス確認完了
-		}
-		// 3回全て失敗 → まず非破壊の ADB 復旧を試す
-		log.Println("[MuMu] デバイスが見つからないため ADB 復旧を試みます...")
-		if err := mumu.RecoverServer(context.Background(), cfg); err != nil {
-			log.Printf("[MuMu] ADB 復旧失敗: %v", err)
-			return
-		}
-		time.Sleep(1 * time.Second)
-		devices, err := mumu.ListDevices(context.Background(), cfg)
-		if err != nil {
-			log.Printf("[MuMu] ADB 再起動後のデバイス取得失敗: %v", err)
-			return
-		}
-		if len(devices) == 0 {
-			log.Println("[MuMu] ADB 再起動後もデバイスが見つかりません。MuMu Player が起動しているか確認してください")
-		} else {
-			log.Printf("[MuMu] ADB 再起動後にデバイスを検出: %v", devices)
-		}
 		}()
 	}
 
@@ -1332,6 +1318,187 @@ func (s *Server) handleADBRestart(w http.ResponseWriter, r *http.Request) {
 	writeOK(w)
 }
 
+// handleADBScan はデバイス一覧を取得して返す（ADB再起動なし）
+func (s *Server) handleADBScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	devices, err := mumu.ListDevices(r.Context(), s.patroller.Config())
+	if err != nil {
+		log.Printf("[MuMu] scan: ListDevices error: %v", err)
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "devices": []string{}})
+		return
+	}
+	if devices == nil {
+		devices = []string{}
+	}
+	log.Printf("[MuMu] 手動スキャン: %d台検出 %v", len(devices), devices)
+	writeJSON(w, map[string]any{"ok": true, "devices": devices})
+}
+
+// handleADBConnect は指定シリアルに adb connect を実行し mumu_serials に永続保存する
+func (s *Server) handleADBConnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	var req struct {
+		Serial string `json:"serial"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Serial == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "serial必須"})
+		return
+	}
+	serial := strings.TrimSpace(req.Serial)
+	cfg := s.patroller.Config()
+	out, err := exec.Command(cfg.ADBPath, "connect", serial).CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	log.Printf("[MuMu] adb connect %s: %s", serial, msg)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": msg})
+		return
+	}
+	// mumu_serials に追記して config.json に保存
+	if s.getConfigFn != nil && s.saveConfigFn != nil {
+		if data, rerr := s.getConfigFn(); rerr == nil {
+			var raw map[string]any
+			if json.Unmarshal(data, &raw) == nil {
+				serials := []string{}
+				if v, ok := raw["mumu_serials"]; ok {
+					if arr, ok2 := v.([]any); ok2 {
+						for _, x := range arr {
+							if s, ok3 := x.(string); ok3 && strings.TrimSpace(s) != "" {
+								serials = append(serials, strings.TrimSpace(s))
+							}
+						}
+					}
+				}
+				already := false
+				for _, s := range serials {
+					if s == serial {
+						already = true
+						break
+					}
+				}
+				if !already {
+					serials = append(serials, serial)
+					raw["mumu_serials"] = serials
+					if buf, merr := json.MarshalIndent(raw, "", "  "); merr == nil {
+						_ = s.saveConfigFn(buf)
+						cfg.ConnectSerials = serials
+						s.UpdatePatrollerCfg(cfg)
+						log.Printf("[MuMu] mumu_serials に %s を追加して保存", serial)
+					}
+				}
+			}
+		}
+	}
+	writeJSON(w, map[string]any{"ok": true, "message": msg})
+}
+
+// handleADBDevice はデバイスの削除（DELETE）を処理する
+func (s *Server) handleADBDevice(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "DELETE only", 405)
+		return
+	}
+	var req struct {
+		Serial string `json:"serial"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Serial == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "serial必須"})
+		return
+	}
+	serial := strings.TrimSpace(req.Serial)
+	if s.getConfigFn != nil && s.saveConfigFn != nil {
+		if data, rerr := s.getConfigFn(); rerr == nil {
+			var raw map[string]any
+			if json.Unmarshal(data, &raw) == nil {
+				serials := []string{}
+				if v, ok := raw["mumu_serials"]; ok {
+					if arr, ok2 := v.([]any); ok2 {
+						for _, x := range arr {
+							if s, ok3 := x.(string); ok3 && strings.TrimSpace(s) != serial {
+								serials = append(serials, strings.TrimSpace(s))
+							}
+						}
+					}
+				}
+				raw["mumu_serials"] = serials
+				if buf, merr := json.MarshalIndent(raw, "", "  "); merr == nil {
+					_ = s.saveConfigFn(buf)
+					cfg := s.patroller.Config()
+					cfg.ConnectSerials = serials
+					s.UpdatePatrollerCfg(cfg)
+					log.Printf("[MuMu] mumu_serials から %s を削除して保存", serial)
+				}
+			}
+		}
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handleADBKill は adb kill-server を実行する
+func (s *Server) handleADBKill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	cfg := s.patroller.Config()
+	log.Println("[MuMu] adb kill-server（手動）...")
+	out, err := exec.Command(cfg.ADBPath, "kill-server").CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		log.Printf("[MuMu] adb kill-server 失敗: %v %s", err, msg)
+		writeJSON(w, map[string]any{"ok": false, "error": msg})
+		return
+	}
+	log.Println("[MuMu] adb kill-server 完了")
+	writeOK(w)
+}
+
+// handleADBTap は連続タップの開始・停止・状態取得を行う。
+// GET: {"running": bool}
+// POST {"action":"start","x":N,"y":N,"interval_ms":N} / {"action":"stop"}
+func (s *Server) handleADBTap(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, map[string]bool{"running": s.tapper.IsRunning()})
+	case http.MethodPost:
+		var req struct {
+			Action     string `json:"action"`
+			X          int    `json:"x"`
+			Y          int    `json:"y"`
+			IntervalMs int    `json:"interval_ms"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		switch req.Action {
+		case "start":
+			cfg := s.patroller.Config()
+			interval := time.Duration(req.IntervalMs) * time.Millisecond
+			if interval < 100*time.Millisecond {
+				interval = 100 * time.Millisecond
+			}
+			if err := s.tapper.Start(context.Background(), cfg, req.X, req.Y, interval); err != nil {
+				writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+				return
+			}
+			writeOK(w)
+		case "stop":
+			s.tapper.Stop()
+			writeOK(w)
+		default:
+			http.Error(w, "unknown action", 400)
+		}
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
+}
+
 // handleWebhookTest は指定URLにDiscordテスト通知を送る
 func (s *Server) handleWebhookTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1938,7 +2105,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
     チャットログ
   </div>
-  <div class="nav-item" id="nav-devices" onclick="switchView('devices',this)">
+  <div class="nav-item" id="nav-devices" onclick="switchView('devices',this);loadTapConfig()">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>
     デバイス管理
   </div>
@@ -1975,7 +2142,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>接続デバイス</div>
       <div id="dash-device-list"><div class="no-devices">読み込み中...</div></div>
       <div class="btn-row">
-        <button class="btn primary" onclick="refreshDevices();switchView('devices',document.getElementById('nav-devices'))">🔄 再スキャン</button>
+        <button class="btn primary" onclick="scanDevices();switchView('devices',document.getElementById('nav-devices'))">🔍 再スキャン</button>
         <button class="btn" onclick="switchView('devices',document.getElementById('nav-devices'))">管理 →</button>
       </div>
     </div>
@@ -2079,6 +2246,35 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 </div>
 <!-- ===== デバイス管理 ===== -->
 <div class="view" id="view-devices">
+  <div class="card" style="margin-bottom:10px">
+    <div class="card-title">デバイス操作</div>
+    <div class="flex-row" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">
+      <button class="btn primary" id="btn-adb-scan" onclick="scanDevices()">🔍 再スキャン</button>
+      <button class="btn" id="btn-adb-restart" onclick="restartADB()">🔄 ADB再起動</button>
+      <button class="btn danger" id="btn-adb-kill" onclick="killADB()" style="margin-left:auto">⏹ ADB停止</button>
+    </div>
+    <div class="flex-row" style="gap:6px">
+      <input type="text" id="adb-add-serial" placeholder="host:port を入力（例: 127.0.0.1:16384）" style="flex:1;font-size:.85em">
+      <button class="btn" onclick="addADBDevice()" style="white-space:nowrap">＋ 追加接続</button>
+    </div>
+    <div id="adb-op-status" style="font-size:.82em;color:var(--accent2);margin-top:6px;min-height:1.2em"></div>
+  </div>
+  <div class="card" style="margin-bottom:10px">
+    <div class="card-title">連続タップ</div>
+    <div class="flex-row" style="margin-bottom:8px;gap:8px;flex-wrap:wrap;align-items:center">
+      <label style="font-size:.85em;white-space:nowrap">X:</label>
+      <input type="number" id="tap-x" min="0" max="9999" value="0" style="width:70px">
+      <label style="font-size:.85em;white-space:nowrap">Y:</label>
+      <input type="number" id="tap-y" min="0" max="9999" value="0" style="width:70px">
+      <label style="font-size:.85em;white-space:nowrap">間隔(ms):</label>
+      <input type="number" id="tap-interval" min="100" max="60000" value="1000" style="width:90px">
+    </div>
+    <div class="flex-row" style="gap:6px;align-items:center">
+      <button class="btn success" id="btn-tap-start" onclick="startTap()">▶ タップ開始</button>
+      <button class="btn danger" id="btn-tap-stop" onclick="stopTap()" disabled>■ 停止</button>
+      <span id="tap-status" style="font-size:.82em;color:var(--accent2);margin-left:4px"></span>
+    </div>
+  </div>
   <div class="card">
     <div class="card-title">接続デバイス一覧</div>
     <div class="flex-row" style="margin-bottom:10px">
@@ -2086,7 +2282,6 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       <input type="number" id="allch" min="1" max="999" value="1" style="width:65px">
       <button class="btn primary" onclick="switchAll()">▶ 全切替</button>
       <span id="status-bar" style="font-size:.82em;color:var(--accent2)"></span>
-      <button class="btn" style="margin-left:auto" onclick="refreshDevices()">🔄 再スキャン / ADB再起動</button>
     </div>
     <div class="device-list" id="device-list"><div class="no-devices">読み込み中...</div></div>
   </div>
@@ -2632,7 +2827,7 @@ async function testDetect(monster){
   const src=new EventSource('/events');
   src.onmessage=e=>{
     appendLog(e.data);
-    if(e.data.includes('[GUI] 金ウリボ')||e.data.includes('[DETECTION]')){loadGoldHistory();loadPatrolChannels();}
+    if(e.data.includes('[GUI] 金ウリボ')||e.data.includes('[DETECTION]')){loadGoldHistory();loadPatrolChannels();playNotifyBeep();}
     if(e.data.includes('channels.txt')){loadPatrolChannels();}
     if(e.data.includes('[PORTMAP_PENDING]')){pmCheckPending();}
   };
@@ -2746,35 +2941,136 @@ function renderDashDevices(devs,deviceMap){
 // ── Devices ──
 let selectedDevices=new Set();
 function selectedSerials(){return[...selectedDevices];}
-async function refreshDevices(){
-  const bar=document.getElementById('status-bar');if(bar)bar.textContent='ADB再起動中...';
-  await fetch('/api/adb/restart',{method:'POST'});
+async function _fetchAndRenderDevices(){
 	let devs=[];
 	let deviceMap={};
-	for(let i=1;i<=6;i++){
-		if(bar)bar.textContent='デバイス取得中...('+i+'/6)';
-		const r=await fetch('/api/devices');const res=await r.json();
-		devs=Array.isArray(res)?res:(res.devices||[]);
-		const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
-		deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
-		if(devs&&devs.length>0)break;
-		if(i<6)await new Promise(r=>setTimeout(r,1500));
+	const r=await fetch('/api/devices');const res=await r.json();
+	devs=Array.isArray(res)?res:(res.devices||[]);
+	const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
+	deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
+	if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
+	renderDashDevices(devs,deviceMap);
+	const el=document.getElementById('device-list');
+	if(!devs||devs.length===0){if(el)el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return devs;}
+	if(el)el.innerHTML=devs.map(d=>{
+		const info=deviceMap[d]||{};const uid=info.user_uid||'',ch=info.line_id||'',confirmed=info.confirmed||false;
+		const checked=selectedDevices.has(d)?'checked':'';
+		const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
+		const eid='ch-'+encodeURIComponent(d);
+		return '<div class="device-entry'+(confirmed?' matched':'')+'">'
+			+'<label class="check-label"><input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)"><span class="serial">'+escHtml(d)+'</span>'+uidHtml+'</label>'
+			+'<div style="display:flex;gap:6px;margin-top:4px"><input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px"><button style="padding:3px 8px;font-size:.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button>'
+			+'<button style="padding:3px 8px;font-size:.8em;color:var(--danger)" onclick="removeADBDevice('+escAttrJs(d)+')">✕</button></div></div>';
+	}).join('');
+	return devs;
+}
+async function refreshDevices(){
+	const st=document.getElementById('adb-op-status');
+	if(st)st.textContent='スキャン中...';
+	await _fetchAndRenderDevices();
+	if(st)st.textContent='';
+}
+async function scanDevices(){
+	const btn=document.getElementById('btn-adb-scan');
+	const st=document.getElementById('adb-op-status');
+	if(btn)btn.disabled=true;
+	if(st)st.textContent='スキャン中...';
+	try{
+		const res=await fetch('/api/adb/scan',{method:'POST'}).then(r=>r.json()).catch(()=>({}));
+		await _fetchAndRenderDevices();
+		const n=(res.devices||[]).length;
+		if(st)st.textContent=n>0?n+'台検出':'デバイスが見つかりません';
+	}finally{
+		if(btn)btn.disabled=false;
+		setTimeout(()=>{if(st)st.textContent='';},3000);
 	}
-  if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
-  renderDashDevices(devs,deviceMap);
-  const el=document.getElementById('device-list');if(bar)bar.textContent='';
-  if(!devs||devs.length===0){if(el)el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return;}
-  if(el)el.innerHTML=devs.map(d=>{
-    const info=deviceMap[d]||{};const uid=info.user_uid||'',ch=info.line_id||'',confirmed=info.confirmed||false;
-    const checked=selectedDevices.has(d)?'checked':'';
-    const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
-    const eid='ch-'+encodeURIComponent(d);
-    return '<div class="device-entry'+(confirmed?' matched':'')+'">'
-      +'<label class="check-label"><input type="checkbox" '+checked+' onchange="toggleDevice('+escAttrJs(d)+',this.checked)"><span class="serial">'+escHtml(d)+'</span>'+uidHtml+'</label>'
-      +'<div style="display:flex;gap:6px;margin-top:4px"><input type="number" id="'+escHtml(eid)+'" min="1" max="999" value="1" style="width:65px"><button style="padding:3px 8px;font-size:.8em" onclick="switchOne('+escAttrJs(d)+')">切替</button></div></div>';
-  }).join('');
+}
+async function restartADB(){
+	const btn=document.getElementById('btn-adb-restart');
+	const st=document.getElementById('adb-op-status');
+	if(btn)btn.disabled=true;
+	if(st)st.textContent='ADB再起動中...';
+	try{
+		await fetch('/api/adb/restart',{method:'POST'});
+		await _fetchAndRenderDevices();
+		if(st)st.textContent='ADB再起動完了';
+	}finally{
+		if(btn)btn.disabled=false;
+		setTimeout(()=>{if(st)st.textContent='';},3000);
+	}
+}
+async function killADB(){
+	const patrolRunning=document.getElementById('ps-state')&&document.getElementById('ps-state').classList.contains('running');
+	if(patrolRunning){
+		if(!confirm('巡回を停止しますか？'))return;
+		await fetch('/api/patrol/stop',{method:'POST'});
+	}
+	const st=document.getElementById('adb-op-status');
+	if(st)st.textContent='ADB停止中...';
+	const res=await fetch('/api/adb/kill',{method:'POST'}).then(r=>r.json()).catch(()=>({ok:false}));
+	if(st)st.textContent=res.ok?'ADB停止完了':'ADB停止失敗: '+(res.error||'');
+	await _fetchAndRenderDevices();
+	setTimeout(()=>{if(st)st.textContent='';},3000);
+}
+async function addADBDevice(){
+	const input=document.getElementById('adb-add-serial');
+	const serial=(input&&input.value||'').trim();
+	if(!serial){alert('host:port を入力してください');return;}
+	const st=document.getElementById('adb-op-status');
+	if(st)st.textContent='接続中...';
+	const res=await fetch('/api/adb/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial})}).then(r=>r.json()).catch(()=>({ok:false}));
+	if(res.ok){
+		if(input)input.value='';
+		if(st)st.textContent='接続完了: '+(res.message||serial);
+		await _fetchAndRenderDevices();
+	}else{
+		if(st)st.textContent='接続失敗: '+(res.error||'');
+	}
+	setTimeout(()=>{if(st)st.textContent='';},4000);
+}
+async function removeADBDevice(serial){
+	const st=document.getElementById('adb-op-status');
+	const res=await fetch('/api/adb/device',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial})}).then(r=>r.json()).catch(()=>({ok:false}));
+	if(res.ok){
+		if(st)st.textContent=serial+' を削除しました';
+		await _fetchAndRenderDevices();
+	}else{
+		if(st)st.textContent='削除失敗: '+(res.error||'');
+	}
+	setTimeout(()=>{if(st)st.textContent='';},3000);
 }
 function toggleDevice(s,c){c?selectedDevices.add(s):selectedDevices.delete(s);}
+// ── Continuous Tap ──
+function loadTapConfig(){
+  const x=localStorage.getItem('tapX'),y=localStorage.getItem('tapY'),iv=localStorage.getItem('tapInterval');
+  if(x!==null){const el=document.getElementById('tap-x');if(el)el.value=x;}
+  if(y!==null){const el=document.getElementById('tap-y');if(el)el.value=y;}
+  if(iv!==null){const el=document.getElementById('tap-interval');if(el)el.value=iv;}
+  fetch('/api/adb/tap').then(r=>r.json()).then(res=>{setTapRunning(!!res.running);}).catch(()=>{});
+}
+function setTapRunning(running){
+  const btnStart=document.getElementById('btn-tap-start');
+  const btnStop=document.getElementById('btn-tap-stop');
+  const lbl=document.getElementById('tap-status');
+  if(btnStart)btnStart.disabled=running;
+  if(btnStop)btnStop.disabled=!running;
+  if(lbl)lbl.textContent=running?'タップ中...':'';
+}
+async function startTap(){
+  const x=parseInt(document.getElementById('tap-x').value)||0;
+  const y=parseInt(document.getElementById('tap-y').value)||0;
+  const iv=parseInt(document.getElementById('tap-interval').value)||1000;
+  localStorage.setItem('tapX',x);localStorage.setItem('tapY',y);localStorage.setItem('tapInterval',iv);
+  const lbl=document.getElementById('tap-status');
+  if(lbl)lbl.textContent='開始中...';
+  const res=await fetch('/api/adb/tap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'start',x,y,interval_ms:iv})}).then(r=>r.json()).catch(()=>({ok:false}));
+  if(res.ok){setTapRunning(true);}
+  else{if(lbl)lbl.textContent='エラー: '+(res.error||'');setTimeout(()=>{if(lbl)lbl.textContent='';},3000);}
+}
+async function stopTap(){
+  const res=await fetch('/api/adb/tap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'stop'})}).then(r=>r.json()).catch(()=>({ok:false}));
+  if(res.ok)setTapRunning(false);
+}
 // ── Chat Panel ──
 let chatEvents=[],chatIPToSerial={},chatKnownSerials=[];
 let notifySoundEnabled=localStorage.getItem('notifySoundEnabled')!=='false';
@@ -3133,7 +3429,6 @@ function appendChatToPanel(ev){
   if(isDup)return;
   chatEvents.push(ev);if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
   if(isChatCandidate(ev)){
-    playNotifyBeep();
     const facts=extractChatCandidateFacts(ev);
 		fetch('/api/chat-report/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:facts.channel||0,message:ev.message,location:facts.location,monster:facts.monster||'',sender:ev.sender||'',score:getChatCandidateScore(ev)})}).catch(()=>{});
   }

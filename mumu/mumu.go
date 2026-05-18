@@ -1,4 +1,4 @@
-// Package mumu はMuMu Playerエミュレーターに対してADB経由でチャンネル切替を行う。
+﻿// Package mumu はMuMu Playerエミュレーターに対してADB経由でチャンネル切替を行う。
 // uribo-discord-watcher/src/mumu.rs をGo移植したもの。
 package mumu
 
@@ -73,21 +73,37 @@ func adb(ctx context.Context, serial string, cfg Config, args ...string) (string
 }
 
 func discoverLocalEmulatorADBTargets() []string {
-	// 代表的な emulator ADB ポート帯をスキャン（偶数ポート）。
+	// 代表的な emulator ADB ポート帯をスキャン（偶数ポート）。並列試行で ~100ms に収める。
 	const (
 		startPort = 5554
 		endPort   = 5610
 	)
-	var targets []string
-	for port := startPort; port <= endPort; port += 2 {
-		addr := fmt.Sprintf("127.0.0.1:%d", port)
-		conn, err := net.DialTimeout("tcp", addr, 150*time.Millisecond)
-		if err != nil {
-			continue
-		}
-		_ = conn.Close()
-		targets = append(targets, addr)
+	type result struct {
+		addr string
+		port int
 	}
+	ch := make(chan result, (endPort-startPort)/2+1)
+	var wg sync.WaitGroup
+	for port := startPort; port <= endPort; port += 2 {
+		wg.Add(1)
+		go func(p int) {
+			defer wg.Done()
+			addr := fmt.Sprintf("127.0.0.1:%d", p)
+			conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+			ch <- result{addr: addr, port: p}
+		}(port)
+	}
+	wg.Wait()
+	close(ch)
+	var targets []string
+	for r := range ch {
+		targets = append(targets, r.addr)
+	}
+	sort.Strings(targets)
 	return targets
 }
 
@@ -108,32 +124,59 @@ func connectConfiguredSerials(ctx context.Context, cfg Config) {
 	if len(targets) == 0 {
 		return
 	}
+	// adb connect を並列実行して合計待ち時間を短縮する。
+	var wg sync.WaitGroup
 	for _, raw := range targets {
 		serial := strings.TrimSpace(raw)
-		if serial == "" {
+		if serial == "" || !strings.Contains(serial, ":") {
 			continue
 		}
-		// adb connect は host:port 形式のみ対象にする。
-		if !strings.Contains(serial, ":") {
-			continue
-		}
-		out, err := newCmd(ctx, cfg.ADBPath, "connect", serial).CombinedOutput()
-		msg := strings.TrimSpace(string(out))
-		if err != nil {
+		wg.Add(1)
+		go func(s string) {
+			defer wg.Done()
+			out, err := newCmd(ctx, cfg.ADBPath, "connect", s).CombinedOutput()
 			if ctx.Err() != nil {
 				return
 			}
-			if msg != "" {
-				log.Printf("[MuMu] adb connect %s 失敗: %s", serial, msg)
-			} else {
-				log.Printf("[MuMu] adb connect %s 失敗: %v", serial, err)
+			msg := strings.TrimSpace(string(out))
+			if err != nil {
+				if msg != "" {
+					log.Printf("[MuMu] adb connect %s 失敗: %s", s, msg)
+				} else {
+					log.Printf("[MuMu] adb connect %s 失敗: %v", s, err)
+				}
+				return
 			}
-			continue
-		}
-		if msg != "" {
-			log.Printf("[MuMu] adb connect %s: %s", serial, msg)
-		}
+			if msg != "" {
+				log.Printf("[MuMu] adb connect %s: %s", s, msg)
+			}
+		}(serial)
 	}
+	wg.Wait()
+}
+
+// InitServer はアプリ起動時専用の ADB 初期化を行う。
+// kill-server → 500ms 待機 → start-server → connectConfiguredSerials の順に実行する。
+// デバイス待機は行わない（呼び出し元が WaitForDevices で別途行う）。
+func InitServer(ctx context.Context, cfg Config) error {
+	log.Println("[MuMu] adb kill-server...")
+	_ = newCmd(ctx, cfg.ADBPath, "kill-server").Run()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+	}
+	log.Println("[MuMu] adb start-server...")
+	out, err := newCmd(ctx, cfg.ADBPath, "start-server").CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("adb start-server: %w\n%s", err, string(out))
+	}
+	log.Println("[MuMu] ADB初期化完了")
+	connectConfiguredSerials(ctx, cfg)
+	return nil
 }
 
 // EnsureServer は ADB サーバーが起動していることを確認し、未起動なら起動する。
@@ -181,7 +224,7 @@ func RestartServer(ctx context.Context, cfg Config) error {
 	connectConfiguredSerials(ctx, cfg)
 	// MuMu 独自 ADB では kill-server 後に全インスタンスが再登録するまで数秒かかる。
 	// 再起動後もしばらくポーリングして 1 台以上を確認する。
-	devices, waitErr := waitForDevices(ctx, cfg, 15*time.Second)
+	devices, waitErr := WaitForDevices(ctx, cfg, 15*time.Second)
 	if waitErr != nil {
 		return waitErr
 	}
@@ -216,7 +259,7 @@ func RecoverServer(ctx context.Context, cfg Config) error {
 	}
 
 	connectConfiguredSerials(ctx, cfg)
-	devices, waitErr := waitForDevices(ctx, cfg, 20*time.Second)
+	devices, waitErr := WaitForDevices(ctx, cfg, 20*time.Second)
 	if waitErr == nil && len(devices) > 0 {
 		log.Printf("[MuMu] ADB復旧成功（非破壊）: %d台", len(devices))
 		return nil
@@ -362,9 +405,9 @@ func selectDevicesForPatrol(devices []string, configured []string) []string {
 	return out
 }
 
-// waitForDevices は adb devices を一定時間ポーリングし、1台以上検出できたら返す。
+// WaitForDevices は adb devices を一定時間ポーリングし、1台以上検出できたら返す。
 // waitFor 内に検出できない場合は空スライスを返す。
-func waitForDevices(ctx context.Context, cfg Config, waitFor time.Duration) ([]string, error) {
+func WaitForDevices(ctx context.Context, cfg Config, waitFor time.Duration) ([]string, error) {
 	if waitFor <= 0 {
 		return listDevicesOnce(ctx, cfg)
 	}
@@ -855,36 +898,12 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			if len(targets) == 0 {
 				var devErr error
 				targets, devErr = ListDevices(ctx, currentCfg)
-				if devErr == nil && len(targets) == 0 {
-					// 起動直後やADB直後は一時的に0台になり得るため、まずは待機して再取得する。
-					log.Printf("[MuMu] 巡回: デバイス0台。8秒待機して再取得します...")
-					targets, devErr = waitForDevices(ctx, currentCfg, 8*time.Second)
-				}
-				if devErr != nil || len(targets) == 0 {
-					// 待機後も復帰しない場合のみ再起動を試行する。
-					log.Printf("[MuMu] 巡回: デバイス未検出が続くためADB復旧を試みます...")
-					if restartErr := RecoverServer(ctx, currentCfg); restartErr != nil {
-						log.Printf("[MuMu] ADB再起動失敗: %v", restartErr)
-					}
-					targets, devErr = waitForDevices(ctx, currentCfg, 5*time.Second)
-					if devErr != nil {
-						log.Printf("[MuMu] 巡回: デバイス再取得失敗: %v", devErr)
-						select {
-						case <-ctx.Done():
-							return
-						case <-time.After(5 * time.Second):
-						}
-						continue
-					}
+				if devErr != nil {
+					log.Printf("[MuMu] 巡回: デバイス取得失敗: %v", devErr)
 				}
 				if len(targets) == 0 {
-					log.Println("[MuMu] 巡回: 対象デバイスが0台。MuMu Playerが起動しているか確認してください")
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(5 * time.Second):
-					}
-					continue
+					log.Println("[MuMu] 巡回: デバイスが見つかりません。巡回を停止します。手動でスキャンしてください")
+					return
 				}
 			}
 
@@ -1176,4 +1195,86 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			idx += step
 		}
 	}()
+}
+
+// Tapper は指定座標への連続タップを管理する。
+type Tapper struct {
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+func NewTapper() *Tapper { return &Tapper{} }
+
+func (t *Tapper) IsRunning() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.cancel != nil
+}
+
+// Start は全接続デバイスに対して interval ごとに (x, y) をタップし続けるゴルーチンを起動する。
+// 既に実行中の場合はエラーを返す。
+func (t *Tapper) Start(ctx context.Context, cfg Config, x, y int, interval time.Duration) error {
+	t.mu.Lock()
+	if t.cancel != nil {
+		t.mu.Unlock()
+		return fmt.Errorf("既に実行中")
+	}
+	ctx2, cancel := context.WithCancel(ctx)
+	t.cancel = cancel
+	t.mu.Unlock()
+
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
+		defer func() {
+			t.mu.Lock()
+			t.cancel = nil
+			t.mu.Unlock()
+		}()
+
+		devs, err := listDevicesOnce(ctx2, cfg)
+		if err != nil || len(devs) == 0 {
+			log.Println("[MuMu] 連続タップ: デバイスが見つかりません")
+			return
+		}
+		log.Printf("[MuMu] 連続タップ開始: (%d,%d) 間隔%v デバイス:%v", x, y, interval, devs)
+
+		xs, ys := strconv.Itoa(x), strconv.Itoa(y)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx2.Done():
+				log.Println("[MuMu] 連続タップ停止")
+				return
+			case <-ticker.C:
+				var wg sync.WaitGroup
+				for _, serial := range devs {
+					wg.Add(1)
+					go func(s string) {
+						defer wg.Done()
+						if _, err := adb(ctx2, s, cfg, "shell", "input", "tap", xs, ys); err != nil {
+							if ctx2.Err() == nil {
+								log.Printf("[MuMu] タップ失敗 %s: %v", s, err)
+							}
+						}
+					}(serial)
+				}
+				wg.Wait()
+			}
+		}
+	}()
+	return nil
+}
+
+func (t *Tapper) Stop() {
+	t.mu.Lock()
+	cancel := t.cancel
+	t.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		t.wg.Wait()
+	}
 }

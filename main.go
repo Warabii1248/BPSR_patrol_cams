@@ -171,9 +171,9 @@ func main() {
 		}
 	}
 
-	// 起動時に ADB サーバーを確実に起動する（未起動の場合の検知失敗を防ぐ）
-	if err := mumu.EnsureServer(context.Background(), mumuCfg); err != nil {
-		log.Printf("warn: ADB サーバー起動失敗（検知に影響する可能性あり）: %v", err)
+	// 起動時に ADB サーバーを再起動する（kill → start → connect）
+	if err := mumu.InitServer(context.Background(), mumuCfg); err != nil {
+		log.Printf("warn: ADB 初期化失敗（検知に影響する可能性あり）: %v", err)
 	}
 
 	// GUI サーバーを作成
@@ -190,7 +190,7 @@ func main() {
 		}
 		if ch > 100 {
 			// ch=0 は「チャンネル不明」（テスト通知含む）のためスキップしない
-			log.Printf("[DETECTION] 通知対象外ch: %d (通知スキップ)", ch)
+			log.Printf("[SKIP] 通知対象外ch: %d", ch)
 			return
 		}
 		// 通知対象エネミーのみ通知（テンプレートIDまたはモンスター名で判定）
@@ -225,7 +225,7 @@ func main() {
 					}
 				}
 				if !allowed {
-					log.Printf("[DETECTION] 通知対象外エネミー: %s (通知スキップ)", configName)
+					log.Printf("[SKIP] 通知対象外エネミー: %s", configName)
 					return
 				}
 			}
