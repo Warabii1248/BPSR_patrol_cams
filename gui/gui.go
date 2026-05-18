@@ -2386,6 +2386,14 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
           <button class="btn success" id="btn-patrol-start" onclick="patrolStart()">▶ 巡回開始</button>
           <button class="btn" id="btn-patrol-stop" onclick="patrolStop()" disabled>■ 停止</button>
         </div>
+        <hr style="border:none;border-top:1px solid var(--border);margin:10px 0 8px">
+        <div class="flex-row" style="margin-bottom:6px;flex-wrap:wrap;gap:6px">
+          <label style="font-size:var(--fs-sm)">開始ch:</label>
+          <input type="number" id="patrol-all-start-ch" min="1" max="999" value="1" style="width:58px">
+          <label style="font-size:var(--fs-sm)">終了ch:</label>
+          <input type="number" id="patrol-all-end-ch" min="1" max="999" value="100" style="width:58px">
+          <button class="btn primary" onclick="patrolAllOnce()">⏵ 全Ch1巡</button>
+        </div>
 				<div class="status-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-top:10px">
 					<div class="stat">
 						<div class="stat-label">1サイクル時間</div>
@@ -3573,6 +3581,15 @@ async function patrolStart(){
   const d=await r.json();if(!d.ok)alert('巡回開始失敗: '+(d.error||''));
 }
 async function patrolStop(){await fetch('/api/patrol/stop',{method:'POST'});}
+async function patrolAllOnce(){
+  const startCh=parseInt(document.getElementById('patrol-all-start-ch')?.value)||1;
+  const endCh=parseInt(document.getElementById('patrol-all-end-ch')?.value)||100;
+  if(startCh>endCh){alert('開始chが終了chより大きいです');return;}
+  const channels=[];for(let i=startCh;i<=endCh;i++)channels.push(i);
+  const body={serials:selectedSerials(),reversed:false,loop_mode:false,channels};
+  const r=await fetch('/api/patrol/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();if(!d.ok)alert('巡回開始失敗: '+(d.error||''));
+}
 async function clearFullChannels(){await fetch('/api/patrol/clear-full',{method:'POST'});}
 const patrolCycleStats={lastMoveStartAt:0,cycleMsHistory:[],avgCycleMs:0};
 function formatPatrolCycleDuration(ms){
