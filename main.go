@@ -171,10 +171,12 @@ func main() {
 		}
 	}
 
-	// 起動時に ADB サーバーを起動・デバイス接続確認する
-	if err := mumu.EnsureServer(context.Background(), mumuCfg); err != nil {
-		log.Printf("warn: ADB 初期化失敗（検知に影響する可能性あり）: %v", err)
-	}
+	// 起動時に ADB サーバーを起動・デバイス接続確認する（GUIと並行して実行）
+	go func() {
+		if err := mumu.EnsureServer(context.Background(), mumuCfg); err != nil {
+			log.Printf("warn: ADB 初期化失敗（検知に影響する可能性あり）: %v", err)
+		}
+	}()
 
 	// GUI サーバーを作成
 	guiServer := gui.New(cfg.GUIPort, mumuCfg, patrolChannels, cfg.PatrolChannelsFile)

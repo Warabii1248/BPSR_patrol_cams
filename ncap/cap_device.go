@@ -185,9 +185,9 @@ type CapDevice struct {
 	// チャット除外キーワード（filter.json の chat_exclude から設定）
 	chatExclude []string
 
-	// チャット重複排除（複数インスタンスが同じメッセージを受信しても1回だけ通知）
+	// チャット重複排除（同一クライアントの同一メッセージを 10 秒以内に再受信した場合のみスキップ。複数デバイスの同時受信は各々通知する）
 	chatDedupMu sync.Mutex
-	chatDedup   map[string]time.Time // key=sender+"\x00"+message, value=最終受信時刻
+	chatDedup   map[string]time.Time // key=clientIP+channel+sender+message, value=最終受信時刻
 
 	// チャット通知コールバック（GUI へのリアルタイム配信用）
 	chatNotifyFn func(clientIP, sender, message string, channel uint32, hasCh bool)
@@ -1778,8 +1778,8 @@ func (cd *CapDevice) tryScanChatPayload(sess *session, payload []byte) {
 		chLabel = fmt.Sprintf("%d", channel)
 	}
 
-	// 重複排除：複数インスタンスが同じメッセージを受信しても1回だけ処理する
-	dedupKey := fmt.Sprintf("%d\x00%s\x00%s", channel, senderDisplay, message)
+	// 重複排除：同一クライアントの同一メッセージを 10 秒以内に再受信した場合のみスキップ
+	dedupKey := fmt.Sprintf("%s\x00%d\x00%s\x00%s", sess.clientIP, channel, senderDisplay, message)
 	cd.chatDedupMu.Lock()
 	now := time.Now()
 	if t, seen := cd.chatDedup[dedupKey]; seen && now.Sub(t) < 10*time.Second {

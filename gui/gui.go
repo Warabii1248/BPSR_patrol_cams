@@ -78,7 +78,6 @@ type Server struct {
 	chatReportFn      func(notifier.Detection)
 	chatReportDedupMu sync.Mutex
 	chatReportDedup   map[string]time.Time
-	tapper            *mumu.Tapper
 }
 
 // PortMapEntry はポートマップの1エントリ（GUI向け）
@@ -149,7 +148,6 @@ func NewWithOptions(port int, mumuCfg mumu.Config, patrolChannels []uint32, patr
 		goldHistoryFile:    historyFile,
 		cooldownChs:        make(map[uint32]time.Time),
 		gasTargetEnemy:     "金ウリボ",
-		tapper:             mumu.NewTapper(),
 	}
 	if err := s.loadGoldHistoryFromDisk(); err != nil {
 		log.Printf("[GUI] gold history load failed: %v", err)
@@ -626,6 +624,8 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/gold-history/delete", s.handleDeleteGoldHistory)
 	mux.HandleFunc("/api/gold-history/clear", s.handleClearGoldHistory)
 	mux.HandleFunc("/api/adb/restart", s.handleADBRestart)
+	mux.HandleFunc("/api/adb/kill-server", s.handleADBKillServer)
+	mux.HandleFunc("/api/adb/connect", s.handleADBConnect)
 	mux.HandleFunc("/api/adb/tap-loop/start", s.handleTapLoopStart)
 	mux.HandleFunc("/api/adb/tap-loop/stop", s.handleTapLoopStop)
 	mux.HandleFunc("/api/adb/tap-loop/status", s.handleTapLoopStatus)
@@ -1349,6 +1349,55 @@ func (s *Server) handleADBRestart(w http.ResponseWriter, r *http.Request) {
 	writeOK(w)
 }
 
+// handleADBKillServer は adb kill-server を実行してADBサーバーを停止する。
+func (s *Server) handleADBKillServer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	cfg := s.patroller.Config()
+	out, err := exec.CommandContext(r.Context(), cfg.ADBPath, "kill-server").CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if err != nil && r.Context().Err() == nil {
+		log.Printf("[MuMu] adb kill-server 失敗: %v: %s", err, msg)
+		writeJSON(w, map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	if msg != "" {
+		log.Printf("[MuMu] adb kill-server: %s", msg)
+	}
+	writeOK(w)
+}
+
+// handleADBConnect は adb connect <serial> で指定シリアルのデバイスを追加接続する。
+func (s *Server) handleADBConnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	var req struct {
+		Serial string `json:"serial"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Serial == "" {
+		http.Error(w, "serial required", http.StatusBadRequest)
+		return
+	}
+	// host:port 形式のみ受け付ける（コマンドインジェクション防止）
+	if strings.ContainsAny(req.Serial, " \t\r\n/\\;|&`$<>") {
+		http.Error(w, "invalid serial format", http.StatusBadRequest)
+		return
+	}
+	cfg := s.patroller.Config()
+	out, err := exec.CommandContext(r.Context(), cfg.ADBPath, "connect", req.Serial).CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if err != nil && r.Context().Err() == nil {
+		log.Printf("[MuMu] adb connect %s 失敗: %v: %s", req.Serial, err, msg)
+		writeJSON(w, map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	log.Printf("[MuMu] adb connect %s: %s", req.Serial, msg)
+	writeJSON(w, map[string]interface{}{"ok": true, "message": msg})
+}
 
 // handleTapLoopStart はタップループを開始する。
 func (s *Server) handleTapLoopStart(w http.ResponseWriter, r *http.Request) {
@@ -1806,14 +1855,15 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',system-ui,s
 
 /* PortMap modal */
 .pm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;display:flex;align-items:center;justify-content:center}
-.pm-modal{background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px 22px;min-width:340px;max-width:480px;box-shadow:0 8px 32px rgba(0,0,0,.5)}
-.pm-modal-title{font-size:var(--fs-md);font-weight:600;color:var(--warn);margin-bottom:12px;display:flex;align-items:center;gap:7px}
+.pm-modal{background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px 22px;min-width:340px;max-width:480px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.pm-modal-title{font-size:var(--fs-md);font-weight:600;color:var(--warn);margin-bottom:12px;display:flex;align-items:center;gap:7px;flex-shrink:0}
+.pm-body{overflow-y:auto;flex:1;min-height:0}
 .pm-change-row{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin-bottom:6px;font-size:var(--fs-sm);line-height:1.6}
 .pm-ch{color:var(--accent);font-weight:700}
 .pm-ip{font-family:monospace;color:var(--text2);font-size:var(--fs-sm);word-break:break-all}
 .pm-arrow{color:var(--text3);margin:0 5px}
 .pm-votes{font-size:var(--fs-xs);color:var(--text3);margin-top:2px}
-.pm-btns{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
+.pm-btns{display:flex;gap:8px;margin-top:14px;justify-content:flex-end;flex-shrink:0}
 
 /* Main */
 .main{background:var(--bg0);overflow:hidden;padding:12px;display:flex;flex-direction:column;min-height:0}
@@ -2135,7 +2185,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
     チャットログ
   </div>
-  <div class="nav-item" id="nav-devices" onclick="switchView('devices',this);loadTapConfig()">
+  <div class="nav-item" id="nav-devices" onclick="switchView('devices',this)">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>
     デバイス管理
   </div>
@@ -2315,28 +2365,12 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     </div>
     <div id="adb-op-status" style="font-size:.82em;color:var(--accent2);margin-top:6px;min-height:1.2em"></div>
   </div>
-  <div class="card" style="margin-bottom:10px">
-    <div class="card-title">連続タップ</div>
-    <div class="flex-row" style="margin-bottom:8px;gap:8px;flex-wrap:wrap;align-items:center">
-      <label style="font-size:.85em;white-space:nowrap">X:</label>
-      <input type="number" id="tap-x" min="0" max="9999" value="0" style="width:70px">
-      <label style="font-size:.85em;white-space:nowrap">Y:</label>
-      <input type="number" id="tap-y" min="0" max="9999" value="0" style="width:70px">
-      <label style="font-size:.85em;white-space:nowrap">間隔(ms):</label>
-      <input type="number" id="tap-interval" min="100" max="60000" value="1000" style="width:90px">
-    </div>
-    <div class="flex-row" style="gap:6px;align-items:center">
-      <button class="btn success" id="btn-tap-start" onclick="startTap()">▶ タップ開始</button>
-      <button class="btn danger" id="btn-tap-stop" onclick="stopTap()" disabled>■ 停止</button>
-      <span id="tap-status" style="font-size:.82em;color:var(--accent2);margin-left:4px"></span>
-    </div>
-  </div>
   <div class="card">
     <div class="card-title">接続デバイス一覧</div>
     <div class="flex-row" style="margin-bottom:6px">
       <button class="btn" onclick="selectAllDevices()">☑ 全選択</button>
       <button class="btn" onclick="deselectAllDevices()">☐ 全解除</button>
-      <button class="btn" style="margin-left:auto" onclick="refreshDevices()">🔄 再スキャン / ADB再起動</button>
+      <button class="btn" style="margin-left:auto" onclick="scanDevices()">🔍 再スキャン</button>
     </div>
     <div class="flex-row" style="margin-bottom:10px">
       <label style="font-size:var(--fs-sm);color:var(--text2)">一括 Ch:</label>
@@ -2471,7 +2505,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
             <button class="btn success" onclick="portmapMapCh()">📌 マッピング</button>
           </div>
         </div>
-        <div style="margin-left:auto">
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:flex-end">
+          <button class="btn" onclick="portmapSetAsPatrol()" title="マッピング済みchを巡回チャンネルリストに反映">📡 巡回リストへ反映</button>
           <button class="btn" onclick="loadPortMapEntries()">🔄 更新</button>
         </div>
       </div>
@@ -2548,6 +2583,27 @@ function portmapMapCh() {
       if (inp) inp.value = '';
       loadPortMapEntries();
     }).catch(()=>portmapSetStatus('エラーが発生しました', true));
+}
+async function portmapSetAsPatrol() {
+  portmapSetStatus('ポートマップからch一覧を取得中...', false);
+  let entries;
+  try { entries = await fetch('/api/portmap/entries').then(r=>r.json()); } catch(e) { portmapSetStatus('取得失敗', true); return; }
+  if (!entries || entries.length === 0) { portmapSetStatus('マッピングデータがありません', true); return; }
+  const chs = [...new Set(entries.map(e=>e.ch).filter(c=>c>0 && c<=100))].sort((a,b)=>a-b);
+  if (chs.length === 0) { portmapSetStatus('有効なch（1〜100）がありません', true); return; }
+  const preview = chs.slice(0,5).join(',') + (chs.length>5 ? '...' : '');
+  const ok = confirm('ポートマップの '+chs.length+' ch ['+preview+'] を巡回リストに設定しますか？\n現在のリストは上書きされます。');
+  if (!ok) return;
+  try {
+    const r = await fetch('/api/patrol/channels', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({channels:chs})});
+    const d = await r.json();
+    if (d.ok) {
+      portmapSetStatus('✓ '+chs.length+' chを巡回リストに反映しました', false);
+      if (typeof loadPatrolChannels === 'function') loadPatrolChannels();
+    } else {
+      portmapSetStatus('✗ 保存失敗', true);
+    }
+  } catch(e) { portmapSetStatus('✗ エラー: '+e.message, true); }
 }
 // 巡回チャンネルリストから開始Chプルダウン生成・同期
 function updateStartChDropdown() {
@@ -3056,39 +3112,43 @@ async function refreshDevices(){
   currentDevices=devs||[];currentDeviceMap=deviceMap;
   renderDeviceList();
 }
+async function scanDevices(){
+  const st=document.getElementById('adb-op-status');if(st)st.textContent='スキャン中...';
+  const r=await fetch('/api/devices');const res=await r.json();
+  const devs=Array.isArray(res)?res:(res.devices||[]);
+  const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
+  const deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
+  if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
+  renderDashDevices(devs,deviceMap);
+  currentDevices=devs||[];currentDeviceMap=deviceMap;
+  renderDeviceList();
+  if(st)st.textContent=devs.length>0?'✓ '+devs.length+'台検出':'デバイスが見つかりません';
+  setTimeout(()=>{if(st)st.textContent='';},3000);
+}
+async function restartADB(){
+  const st=document.getElementById('adb-op-status');if(st)st.textContent='ADB再起動中...';
+  await fetch('/api/adb/restart',{method:'POST'});
+  await scanDevices();
+}
+async function killADB(){
+  if(!confirm('ADBサーバーを停止しますか？'))return;
+  const st=document.getElementById('adb-op-status');if(st)st.textContent='ADB停止中...';
+  const res=await fetch('/api/adb/kill-server',{method:'POST'}).then(r=>r.json()).catch(()=>({ok:false}));
+  if(st){st.textContent=res.ok?'✓ ADB停止完了':'✗ 停止失敗';setTimeout(()=>st.textContent='',3000);}
+}
+async function addADBDevice(){
+  const inp=document.getElementById('adb-add-serial');
+  const serial=(inp?inp.value:'').trim();
+  const st=document.getElementById('adb-op-status');
+  if(!serial){if(st){st.textContent='host:portを入力してください';setTimeout(()=>st.textContent='',3000);}return;}
+  if(st)st.textContent='接続中...';
+  const res=await fetch('/api/adb/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial})}).then(r=>r.json()).catch(()=>({ok:false}));
+  if(st){st.textContent=res.ok?'✓ '+(res.message||'接続完了'):'✗ '+(res.error||'接続失敗');setTimeout(()=>st.textContent='',4000);}
+  if(inp&&res.ok)inp.value='';
+  if(res.ok)await scanDevices();
 }
 function toggleDevice(s,c){c?selectedDevices.add(s):selectedDevices.delete(s);}
 // ── Continuous Tap ──
-function loadTapConfig(){
-  const x=localStorage.getItem('tapX'),y=localStorage.getItem('tapY'),iv=localStorage.getItem('tapInterval');
-  if(x!==null){const el=document.getElementById('tap-x');if(el)el.value=x;}
-  if(y!==null){const el=document.getElementById('tap-y');if(el)el.value=y;}
-  if(iv!==null){const el=document.getElementById('tap-interval');if(el)el.value=iv;}
-  fetch('/api/adb/tap').then(r=>r.json()).then(res=>{setTapRunning(!!res.running);}).catch(()=>{});
-}
-function setTapRunning(running){
-  const btnStart=document.getElementById('btn-tap-start');
-  const btnStop=document.getElementById('btn-tap-stop');
-  const lbl=document.getElementById('tap-status');
-  if(btnStart)btnStart.disabled=running;
-  if(btnStop)btnStop.disabled=!running;
-  if(lbl)lbl.textContent=running?'タップ中...':'';
-}
-async function startTap(){
-  const x=parseInt(document.getElementById('tap-x').value)||0;
-  const y=parseInt(document.getElementById('tap-y').value)||0;
-  const iv=parseInt(document.getElementById('tap-interval').value)||1000;
-  localStorage.setItem('tapX',x);localStorage.setItem('tapY',y);localStorage.setItem('tapInterval',iv);
-  const lbl=document.getElementById('tap-status');
-  if(lbl)lbl.textContent='開始中...';
-  const res=await fetch('/api/adb/tap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'start',x,y,interval_ms:iv})}).then(r=>r.json()).catch(()=>({ok:false}));
-  if(res.ok){setTapRunning(true);}
-  else{if(lbl)lbl.textContent='エラー: '+(res.error||'');setTimeout(()=>{if(lbl)lbl.textContent='';},3000);}
-}
-async function stopTap(){
-  const res=await fetch('/api/adb/tap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'stop'})}).then(r=>r.json()).catch(()=>({ok:false}));
-  if(res.ok)setTapRunning(false);
-}
 // ── Chat Panel ──
 let chatEvents=[],chatIPToSerial={},chatKnownSerials=[];
 let notifySoundEnabled=localStorage.getItem('notifySoundEnabled')!=='false';
@@ -4575,7 +4635,7 @@ syncLayoutEditState();
 <div id="pm-overlay" class="pm-overlay" style="display:none">
   <div class="pm-modal">
     <div class="pm-modal-title">⚠ PortMap 変更の確認</div>
-    <div id="pm-body"></div>
+    <div id="pm-body" class="pm-body"></div>
     <div class="pm-btns">
       <button class="btn danger" onclick="pmRejectAll()">すべて却下</button>
       <button class="btn success" onclick="pmApplyAll()">すべて適用</button>
