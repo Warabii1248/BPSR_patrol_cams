@@ -184,7 +184,7 @@ func EnsureServer(ctx context.Context, cfg Config) error {
 	}
 	log.Println("[MuMu] ADB サーバー起動確認完了")
 	ConnectConfiguredSerials(ctx, cfg)
-	devices, waitErr := waitForDevices(ctx, cfg, 5*time.Second)
+	devices, waitErr := WaitForDevices(ctx, cfg, 5*time.Second)
 	if waitErr != nil {
 		return waitErr
 	}
@@ -255,7 +255,7 @@ func RecoverServer(ctx context.Context, cfg Config) error {
 	}
 
 	ConnectConfiguredSerials(ctx, cfg)
-	devices, waitErr := waitForDevices(ctx, cfg, 20*time.Second)
+	devices, waitErr := WaitForDevices(ctx, cfg, 20*time.Second)
 	if waitErr == nil && len(devices) > 0 {
 		log.Printf("[MuMu] ADB復旧成功（非破壊）: %d台", len(devices))
 		return nil
@@ -1123,7 +1123,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				for draining && got < need {
 					select {
 					case msg := <-sig:
-						if msg.t.After(switchStartAt) {
+						if msg.t.After(switchDoneAt) {
 							got++
 							respondedSet[msg.label] = true
 							log.Printf("[MuMu] 巡回: Ch%d [0x2E] buffered %s (%d/%d台)", ch, msg.label, got, need)
@@ -1147,7 +1147,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 							log.Printf("[MuMu] 巡回: Ch%d 満員と判定（移動完了シグナルなし） → スキップ", ch)
 							break waitFirst
 						case msg := <-sig:
-							if msg.t.After(switchStartAt) {
+							if msg.t.After(switchDoneAt) {
 								got++
 								respondedSet[msg.label] = true
 								log.Printf("[MuMu] 巡回: Ch%d [0x2E] %s (%d/%d台) ← マージタイマー開始 (%.0fs)",
@@ -1171,7 +1171,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 							log.Printf("[MuMu] 巡回: Ch%d 移動待ちタイムアウト (%d/%d台) → 強制進行", ch, got, need)
 							break waitRest
 						case msg := <-sig:
-							if msg.t.After(switchStartAt) {
+							if msg.t.After(switchDoneAt) {
 								got++
 								respondedSet[msg.label] = true
 								log.Printf("[MuMu] 巡回: Ch%d [0x2E] %s (%d/%d台)", ch, msg.label, got, need)
