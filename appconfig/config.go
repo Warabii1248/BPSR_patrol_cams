@@ -131,6 +131,10 @@ type Config struct {
 	// GASTargetEnemy はChrome拡張から受信するチャンネルのフィルタ対象エネミー名。
 	// 部分一致で判定。例: "金ウリボ" or "金ナッポ"。デフォルト: "金ウリボ"
 	GASTargetEnemy string `json:"gas_target_enemy"`
+
+	// ShowNoDeviceDialog は起動時にADBデバイスが見つからない場合にダイアログを表示するかどうか。
+	// デフォルト: true
+	ShowNoDeviceDialog bool `json:"show_no_device_dialog"`
 }
 
 func defaultConfig() *Config {
@@ -164,7 +168,8 @@ func defaultConfig() *Config {
 		SceneMapIds: map[string]uint32{
 			"阿斯特里亚平原": 7, // アステリア平原
 		},
-		GASTargetEnemy: "金ウリボ",
+		GASTargetEnemy:     "金ウリボ",
+		ShowNoDeviceDialog: true,
 	}
 }
 

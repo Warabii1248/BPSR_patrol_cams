@@ -182,17 +182,8 @@ func EnsureServer(ctx context.Context, cfg Config) error {
 		}
 		return fmt.Errorf("adb start-server: %w\n%s", err, string(out))
 	}
-	log.Println("[MuMu] ADB サーバー起動確認完了")
+	log.Println("[MuMu] ADB サーバー起動完了")
 	ConnectConfiguredSerials(ctx, cfg)
-	devices, waitErr := WaitForDevices(ctx, cfg, 5*time.Second)
-	if waitErr != nil {
-		return waitErr
-	}
-	if len(devices) > 0 {
-		log.Printf("[MuMu] ADB サーバー起動後デバイス確認: %d台", len(devices))
-	} else {
-		log.Println("[MuMu] ADB サーバー起動後デバイス未検出（MuMu Playerが未起動の可能性）")
-	}
 	return nil
 }
 
@@ -268,13 +259,12 @@ func RecoverServer(ctx context.Context, cfg Config) error {
 // ListDevices は接続中のADBデバイス一覧を返す。
 // ADBサーバーの再起動は行わない（通常の取得に使用）。
 func ListDevices(ctx context.Context, cfg Config) ([]string, error) {
-	log.Println("[MuMu] デバイス一覧を取得中...")
 	devices, err := listDevicesOnce(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	if len(devices) == 0 {
-		log.Println("[MuMu] デバイスが見つかりません。ADBでエミュレーターが認識されているか確認してください")
+	if len(devices) > 0 {
+		log.Printf("[MuMu] 有効デバイス: %v (%d台)", devices, len(devices))
 	}
 	return devices, nil
 }
@@ -285,8 +275,6 @@ func listDevicesOnce(ctx context.Context, cfg Config) ([]string, error) {
 		log.Printf("[MuMu] adb devices 失敗: %v", err)
 		return nil, err
 	}
-	// 生出力を全行ログ（\n 展開して見やすく）
-	log.Printf("[MuMu] adb devices 出力:\n%s", out)
 
 	var devices []string
 	var offline []string
@@ -327,13 +315,8 @@ func listDevicesOnce(ctx context.Context, cfg Config) ([]string, error) {
 	normalized := normalizeDeviceList(devices)
 	selected := selectDevicesForPatrol(normalized, cfg.ConnectSerials)
 
-	if len(cfg.ConnectSerials) > 0 {
-		log.Printf("[MuMu] 有効デバイス(設定優先): %v (%d台)", selected, len(selected))
-		if len(selected) < len(cfg.ConnectSerials) {
-			log.Printf("[MuMu] 設定シリアル %d台のうち %d台のみ検出", len(cfg.ConnectSerials), len(selected))
-		}
-	} else {
-		log.Printf("[MuMu] 有効デバイス: %v (%d台)", selected, len(selected))
+	if len(cfg.ConnectSerials) > 0 && len(selected) < len(cfg.ConnectSerials) {
+		log.Printf("[MuMu] 設定シリアル %d台のうち %d台のみ検出", len(cfg.ConnectSerials), len(selected))
 	}
 	return selected, nil
 }
