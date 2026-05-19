@@ -38,6 +38,24 @@ type Config struct {
 	MergeTimeout time.Duration
 	// DwellDuration はch移動完了後〜次ch移動開始までの待機時間
 	DwellDuration time.Duration
+	// AdaptiveTimeout は実ロード時間を学習して MoveTimeout/MergeTimeout を自動調整する
+	AdaptiveTimeout bool
+	// AdaptiveTimeoutWindow は学習に使うサンプル数（0=デフォルト10）
+	AdaptiveTimeoutWindow int
+
+	// GetLabelByIP はIPアドレスからインスタンスラベル（"Instance-N"等）を解決するコールバック。
+	// CapDevice.GetLabelByClientIP を注入する。省略可。
+	GetLabelByIP func(ip string) string
+	// SerialToLabel はADBシリアル→ラベルの手動マッピング（GetLabelByIP より優先）。
+	SerialToLabel map[string]string
+	// GamePackageName はゲームのAndroidパッケージ名（空=クラッシュ検知・復帰無効）。
+	GamePackageName string
+	// GameLaunchActivity はゲーム起動Activity（省略時は monkey -p を使用）。
+	GameLaunchActivity string
+	// CrashRecoveryEnabled はタイムアウト時にプロセス確認し自動復帰する。
+	CrashRecoveryEnabled bool
+	// CrashRecoveryDelaySecs は復帰後のゲーム起動待機秒数（デフォルト: 30）。
+	CrashRecoveryDelaySecs float64
 }
 
 // newCmd は HideWindow: true でコマンドを作成する（GUIモード時のコンソール点滅防止）
@@ -692,6 +710,20 @@ func SaveChannels(path string, channels []uint32) error {
 
 // ───── 巡回（パトロール） ─────
 
+// DeviceStatus はADBシリアル単位のデバイス状態を保持する。
+type DeviceStatus struct {
+	Serial             string  `json:"serial"`
+	Label              string  `json:"label"`                 // 紐づけ済みラベル（"Instance-N"等、空=未紐づけ）
+	CurrentCh          uint32  `json:"current_ch"`            // 最後にロード完了したch
+	LastLoadSecs       float64 `json:"last_load_secs"`        // 最後のロード完了時間（秒）
+	TimedOutLast       bool    `json:"timed_out_last"`        // 直近サイクルでタイムアウト
+	ConsecutiveTimeout int     `json:"consecutive_timeout"`   // 連続タイムアウト回数
+	ADBFailed          bool    `json:"adb_failed"`            // ADB切替コマンド失敗
+	GameCrashed        bool    `json:"game_crashed"`          // pidof でゲームプロセス死亡確認済み
+	Recovering         bool    `json:"recovering"`            // 復帰処理実行中
+	LastRecoveredAtMs  int64   `json:"last_recovered_at_ms"`  // 最後の復帰試行完了時刻
+}
+
 // moveSignalMsg は [0x2E] パケット受信時のシグナル（インスタンスラベル付き）
 type moveSignalMsg struct {
 	t     time.Time
@@ -718,8 +750,9 @@ type PatrolStatus struct {
 	MoveTimeoutSecs      float64  `json:"move_timeout_secs"`      // 移動待ちタイムアウト(秒)
 	FullChannels         []uint32 `json:"full_channels"`          // 満員と判定してスキップしたch一覧
 	ConsecutiveFullCount int      `json:"consecutive_full_count"` // 連続して満員スキップしたch数（クラッシュ検知用）
-	KnownInstances       []string `json:"known_instances"`        // 認識済みUID一覧
-	CrashedInstances     []string `json:"crashed_instances"`      // クラッシュ判定中のUID
+	KnownInstances       []string       `json:"known_instances"`        // 認識済みUID一覧
+	CrashedInstances     []string       `json:"crashed_instances"`      // クラッシュ判定中のUID
+	DeviceStatuses       []DeviceStatus `json:"device_statuses"`        // デバイス別状態（シリアル単位）
 }
 
 // PatrolOptions は巡回の追加オプション
@@ -742,6 +775,14 @@ type Patroller struct {
 	knownInstances   map[string]bool    // 一度でも応答したUID
 	missedCounts     map[string]int     // UID別連続未応答カウント
 	crashedInstances map[string]bool    // クラッシュ判定済みUID（3回連続未応答）
+	loadHistory      []float64          // 直近N回の実ロード完了時間（秒）
+	loadHistMu       sync.Mutex
+
+	deviceStatuses   map[string]*DeviceStatus // serial → デバイス状態
+	deviceStatusesMu sync.RWMutex
+	serialIPCache    map[string]string        // serial → IP（TTLキャッシュ）
+	serialIPCacheAt  map[string]time.Time
+	serialIPCacheMu  sync.Mutex
 }
 
 // NotifyChMovePacket は ncap が [0x2E] パケットを受信したときに呼び出す。
@@ -791,11 +832,13 @@ func (p *Patroller) UpdateConfig(cfg Config) {
 	p.mu.Unlock()
 }
 
-// Status は現在の巡回状態を返す
+// Status は現在の巡回状態を返す。DeviceStatuses は別ロックから live マージする。
 func (p *Patroller) Status() PatrolStatus {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.status
+	s := p.status
+	p.mu.RUnlock()
+	s.DeviceStatuses = p.GetDeviceStatuses()
+	return s
 }
 
 // ClearFullChannels は満員判定リストをクリアする
@@ -804,6 +847,224 @@ func (p *Patroller) ClearFullChannels() {
 	p.status.FullChannels = nil
 	p.mu.Unlock()
 	log.Println("[MuMu] 満員チャンネルリストをクリアしました")
+}
+
+// recordLoadTime は全台ロード完了時間（秒）を履歴に追記する。
+func (p *Patroller) recordLoadTime(secs float64, window int) {
+	if window <= 0 {
+		window = 10
+	}
+	p.loadHistMu.Lock()
+	defer p.loadHistMu.Unlock()
+	p.loadHistory = append(p.loadHistory, secs)
+	if len(p.loadHistory) > window {
+		p.loadHistory = p.loadHistory[len(p.loadHistory)-window:]
+	}
+}
+
+// adaptiveMaxLoad は直近ロード履歴の最大値×1.5 と base の大きい方を返す。
+// 履歴がない場合は base をそのまま返す。
+func (p *Patroller) adaptiveMaxLoad(base time.Duration) time.Duration {
+	p.loadHistMu.Lock()
+	defer p.loadHistMu.Unlock()
+	if len(p.loadHistory) == 0 {
+		return base
+	}
+	var maxT float64
+	for _, t := range p.loadHistory {
+		if t > maxT {
+			maxT = t
+		}
+	}
+	adaptive := time.Duration(maxT * 1.5 * float64(time.Second))
+	if adaptive > base {
+		return adaptive
+	}
+	return base
+}
+
+// GetDeviceStatuses は現在のデバイス別状態のスナップショットを返す。
+func (p *Patroller) GetDeviceStatuses() []DeviceStatus {
+	p.deviceStatusesMu.RLock()
+	defer p.deviceStatusesMu.RUnlock()
+	out := make([]DeviceStatus, 0, len(p.deviceStatuses))
+	for _, ds := range p.deviceStatuses {
+		out = append(out, *ds)
+	}
+	return out
+}
+
+// SetDeviceCh は手動切替完了時にシリアル単位の CurrentCh を即時更新する。
+func (p *Patroller) SetDeviceCh(serial string, ch uint32) {
+	p.deviceStatusesMu.Lock()
+	defer p.deviceStatusesMu.Unlock()
+	if ds, ok := p.deviceStatuses[serial]; ok {
+		ds.CurrentCh = ch
+	}
+}
+
+// resolveLabel はADBシリアルからインスタンスラベルを解決する。
+// 手動マッピング（SerialToLabel）→ GetLabelByIP の順で試みる。
+func (p *Patroller) resolveLabel(ctx context.Context, serial string, cfg Config) string {
+	if cfg.SerialToLabel != nil {
+		if label, ok := cfg.SerialToLabel[serial]; ok && label != "" {
+			return label
+		}
+	}
+	if cfg.GetLabelByIP != nil {
+		if ip := p.getCachedIP(ctx, serial, cfg); ip != "" {
+			if label := cfg.GetLabelByIP(ip); label != "" {
+				return label
+			}
+		}
+	}
+	return ""
+}
+
+// getCachedIP はADBシリアルのIPをキャッシュ付きで取得する（TTL: 5分）。
+func (p *Patroller) getCachedIP(ctx context.Context, serial string, cfg Config) string {
+	const ttl = 5 * time.Minute
+	p.serialIPCacheMu.Lock()
+	defer p.serialIPCacheMu.Unlock()
+	if t, ok := p.serialIPCacheAt[serial]; ok && time.Since(t) < ttl {
+		return p.serialIPCache[serial]
+	}
+	ipCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ip, err := GetDeviceIP(ipCtx, serial, cfg)
+	if err == nil && ip != "" {
+		if p.serialIPCache == nil {
+			p.serialIPCache = make(map[string]string)
+			p.serialIPCacheAt = make(map[string]time.Time)
+		}
+		p.serialIPCache[serial] = ip
+		p.serialIPCacheAt[serial] = time.Now()
+	}
+	return ip
+}
+
+// updateDeviceStatus はシリアル単位のデバイス状態を更新する。
+func (p *Patroller) updateDeviceStatus(serial, label string, ch uint32, responded bool, loadSecs float64, adbFailed bool) {
+	p.deviceStatusesMu.Lock()
+	defer p.deviceStatusesMu.Unlock()
+	if p.deviceStatuses == nil {
+		p.deviceStatuses = make(map[string]*DeviceStatus)
+	}
+	ds, ok := p.deviceStatuses[serial]
+	if !ok {
+		ds = &DeviceStatus{Serial: serial}
+		p.deviceStatuses[serial] = ds
+	}
+	if label != "" {
+		ds.Label = label
+	}
+	ds.ADBFailed = adbFailed
+	ds.TimedOutLast = !responded && !adbFailed
+	if responded {
+		ds.CurrentCh = ch
+		ds.LastLoadSecs = loadSecs
+		ds.ConsecutiveTimeout = 0
+		ds.GameCrashed = false
+	} else if !adbFailed {
+		ds.ConsecutiveTimeout++
+	}
+}
+
+// checkAndRecover はゲームプロセスの生死確認と必要に応じた自動復帰を行う。
+// タイムアウト発生時に goroutine で呼び出す。
+func (p *Patroller) checkAndRecover(ctx context.Context, serial string, cfg Config) {
+	if cfg.GamePackageName == "" {
+		return
+	}
+	pidCtx, pidCancel := context.WithTimeout(ctx, 8*time.Second)
+	defer pidCancel()
+	out, err := adb(pidCtx, serial, cfg, "shell", "pidof", cfg.GamePackageName)
+	if err != nil || strings.TrimSpace(out) != "" {
+		// エラー or プロセス生存 → 何もしない
+		return
+	}
+	// プロセス死亡 → クラッシュ確定
+	p.deviceStatusesMu.Lock()
+	if p.deviceStatuses == nil {
+		p.deviceStatuses = make(map[string]*DeviceStatus)
+	}
+	ds, ok := p.deviceStatuses[serial]
+	if !ok {
+		ds = &DeviceStatus{Serial: serial}
+		p.deviceStatuses[serial] = ds
+	}
+	ds.GameCrashed = true
+	if !cfg.CrashRecoveryEnabled || ds.Recovering {
+		p.deviceStatusesMu.Unlock()
+		log.Printf("[MuMu] %s: ゲームプロセス死亡確認 (pidof %s = 空) [復帰%s]",
+			serial, cfg.GamePackageName, map[bool]string{true: "無効", false: "既に実行中"}[!cfg.CrashRecoveryEnabled])
+		return
+	}
+	ds.Recovering = true
+	p.deviceStatusesMu.Unlock()
+
+	log.Printf("[MuMu] %s: ゲームクラッシュ検知 → 復帰処理開始 (force-stop + 再起動)", serial)
+	defer func() {
+		p.deviceStatusesMu.Lock()
+		if ds, ok := p.deviceStatuses[serial]; ok {
+			ds.Recovering = false
+			ds.LastRecoveredAtMs = time.Now().UnixMilli()
+		}
+		p.deviceStatusesMu.Unlock()
+	}()
+
+	// 1. force-stop
+	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)
+	adb(stopCtx, serial, cfg, "shell", "am", "force-stop", cfg.GamePackageName) //nolint
+	stopCancel()
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Second):
+	}
+
+	// 2. ゲーム起動
+	startCtx, startCancel := context.WithTimeout(ctx, 10*time.Second)
+	if cfg.GameLaunchActivity != "" {
+		adb(startCtx, serial, cfg, "shell", "am", "start", "-n", cfg.GameLaunchActivity) //nolint
+	} else {
+		adb(startCtx, serial, cfg, "shell", "monkey", "-p", cfg.GamePackageName, "-c", "android.intent.category.LAUNCHER", "1") //nolint
+	}
+	startCancel()
+
+	// 3. 起動待機
+	delay := time.Duration(cfg.CrashRecoveryDelaySecs * float64(time.Second))
+	if delay < 5*time.Second {
+		delay = 30 * time.Second
+	}
+	log.Printf("[MuMu] %s: ゲーム起動待機 %.0fs", serial, delay.Seconds())
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(delay):
+	}
+
+	p.deviceStatusesMu.Lock()
+	if ds, ok := p.deviceStatuses[serial]; ok {
+		ds.GameCrashed = false
+		ds.ConsecutiveTimeout = 0
+	}
+	p.deviceStatusesMu.Unlock()
+	log.Printf("[MuMu] %s: 復帰処理完了", serial)
+}
+
+// RecoverDevice は指定シリアルのデバイスを手動で復帰させる。
+// game_package_name が設定されていない場合はエラーを返す。
+func (p *Patroller) RecoverDevice(ctx context.Context, serial string) error {
+	p.mu.RLock()
+	cfg := p.cfg
+	p.mu.RUnlock()
+	if cfg.GamePackageName == "" {
+		return fmt.Errorf("game_package_name が設定されていません")
+	}
+	go p.checkAndRecover(ctx, serial, cfg)
+	return nil
 }
 
 // Stop は巡回を停止する
@@ -1023,6 +1284,24 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				return
 			}
 
+			// シリアル→ラベルを並列解決（IPキャッシュ付き）
+			serialLabels := make(map[string]string, len(targets))
+			if currentCfg.GetLabelByIP != nil || currentCfg.SerialToLabel != nil {
+				var labelsMu sync.Mutex
+				var labelsWg sync.WaitGroup
+				for _, s := range targets {
+					labelsWg.Add(1)
+					go func(serial string) {
+						defer labelsWg.Done()
+						label := p.resolveLabel(ctx, serial, currentCfg)
+						labelsMu.Lock()
+						serialLabels[serial] = label
+						labelsMu.Unlock()
+					}(s)
+				}
+				labelsWg.Wait()
+			}
+
 			p.mu.Lock()
 			p.status.CurrentChannel = ch
 			p.status.CurrentIndex = normalIdx
@@ -1110,14 +1389,26 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				if mergeTimeout <= 0 {
 					mergeTimeout = currentCfg.MoveTimeout // 未設定なら従来動作
 				}
+				// 適応型タイムアウト: 直近ロード履歴の最大値×1.5 を下限として実効値を算出
+				effectiveMove := currentCfg.MoveTimeout
+				effectiveMerge := mergeTimeout
+				if currentCfg.AdaptiveTimeout {
+					effectiveMove = p.adaptiveMaxLoad(currentCfg.MoveTimeout)
+					if currentCfg.MoveTimeout > 0 {
+						ratio := float64(mergeTimeout) / float64(currentCfg.MoveTimeout)
+						if scaled := time.Duration(float64(effectiveMove) * ratio); scaled > mergeTimeout {
+							effectiveMerge = scaled
+						}
+					}
+				}
 				p.mu.Lock()
 				p.status.WaitingMove = true
 				p.status.Phase = "loading"
-				p.status.PhaseTotalSecs = mergeTimeout.Seconds()
+				p.status.PhaseTotalSecs = effectiveMerge.Seconds()
 				p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
 				p.mu.Unlock()
 				log.Printf("[MuMu] 巡回: Ch%d 移動完了待ち (0/%d台, 初回待ち=%.0fs, マージ待ち=%.0fs, 切替所要=%.1fs)",
-					ch, need, currentCfg.MoveTimeout.Seconds(), mergeTimeout.Seconds(),
+					ch, need, effectiveMove.Seconds(), effectiveMerge.Seconds(),
 					switchDoneAt.Sub(switchStartAt).Seconds())
 				draining := true
 				for draining && got < need {
@@ -1135,7 +1426,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 
 				// フェーズ1: 1台目のシグナルを MoveTimeout で待つ（バッファ消化で0台のとき）
 				if got == 0 {
-					deadline := time.NewTimer(currentCfg.MoveTimeout)
+					deadline := time.NewTimer(effectiveMove)
 				waitFirst:
 					for got == 0 {
 						select {
@@ -1151,7 +1442,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 								got++
 								respondedSet[msg.label] = true
 								log.Printf("[MuMu] 巡回: Ch%d [0x2E] %s (%d/%d台) ← マージタイマー開始 (%.0fs)",
-									ch, msg.label, got, need, mergeTimeout.Seconds())
+									ch, msg.label, got, need, effectiveMerge.Seconds())
 							}
 						}
 					}
@@ -1160,7 +1451,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 
 				// フェーズ2: 残りのシグナルを MergeTimeout で待つ
 				if !isFull && got < need {
-					mergeDeadline := time.NewTimer(mergeTimeout)
+					mergeDeadline := time.NewTimer(effectiveMerge)
 				waitRest:
 					for got < need {
 						select {
@@ -1230,6 +1521,25 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 					}
 				}
 
+				// 全台ロード完了時のみ実ロード時間を記録（適応型タイムアウトの学習データ）
+				if !isFull && got == need {
+					p.recordLoadTime(time.Since(switchDoneAt).Seconds(), currentCfg.AdaptiveTimeoutWindow)
+				}
+
+				// デバイス別状態を更新し、タイムアウトデバイスのクラッシュ確認を非同期実行
+				loadElapsed := time.Since(switchDoneAt).Seconds()
+				for _, serial := range targets {
+					label := serialLabels[serial]
+					// label="" はラベル解決不能（NAT環境等）。照合できないため巡回成功なら responded とみなす。
+					responded := !isFull && (label == "" || respondedSet[label])
+					adbFailed := patrolResults[serial] != nil
+					p.updateDeviceStatus(serial, label, ch, responded, loadElapsed, adbFailed)
+					// タイムアウト（isFull でなく、かつ未応答）のデバイスのみ crash check
+					if !isFull && !responded && !adbFailed {
+						go p.checkAndRecover(ctx, serial, currentCfg)
+					}
+				}
+
 				p.mu.Lock()
 				p.status.WaitingMove = false
 				if isFull {
@@ -1254,10 +1564,23 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				p.mu.Unlock()
 			}
 
+			// ロード猶予: 適応型タイムアウト有効時、推定最大ロード時間に達していなければ
+			// dwell を延長してロード中デバイスへの次切替コマンドを遅延させる
+			effectiveDwell := dwell
+			if currentCfg.AdaptiveTimeout && currentCfg.MoveTimeout > 0 {
+				estimatedMax := p.adaptiveMaxLoad(currentCfg.MoveTimeout)
+				if elapsed := time.Since(switchDoneAt); elapsed < estimatedMax {
+					if grace := estimatedMax - elapsed; grace > effectiveDwell {
+						effectiveDwell = grace
+						log.Printf("[MuMu] 巡回: Ch%d ロード猶予: dwell を %.1fs に延長 (推定最大=%.1fs, 経過=%.1fs)",
+							ch, effectiveDwell.Seconds(), estimatedMax.Seconds(), elapsed.Seconds())
+					}
+				}
+			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(dwell):
+			case <-time.After(effectiveDwell):
 			}
 
 			// channels.txt が更新されていたら近傍から再巡回

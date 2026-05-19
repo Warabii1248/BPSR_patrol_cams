@@ -156,9 +156,16 @@ func main() {
 		GlobalDelay:        time.Duration(cfg.MumuDelayMs) * time.Millisecond,
 		ParallelLimit:      cfg.ParallelLimit,
 		ParallelGroupDelay: time.Duration(cfg.ParallelGroupDelaySecs * float64(time.Second)),
-		MoveTimeout:        time.Duration(cfg.PatrolMoveTimeoutSecs * float64(time.Second)),
-		MergeTimeout:       time.Duration(cfg.PatrolMergeTimeoutSecs * float64(time.Second)),
-		DwellDuration:      time.Duration(cfg.PatrolDwellSecs * float64(time.Second)),
+		MoveTimeout:           time.Duration(cfg.PatrolMoveTimeoutSecs * float64(time.Second)),
+		MergeTimeout:          time.Duration(cfg.PatrolMergeTimeoutSecs * float64(time.Second)),
+		DwellDuration:         time.Duration(cfg.PatrolDwellSecs * float64(time.Second)),
+		AdaptiveTimeout:        cfg.PatrolAdaptiveTimeout,
+		AdaptiveTimeoutWindow:  cfg.PatrolAdaptiveTimeoutWindow,
+		SerialToLabel:          cfg.SerialToLabel,
+		GamePackageName:        cfg.GamePackageName,
+		GameLaunchActivity:     cfg.GameLaunchActivity,
+		CrashRecoveryEnabled:   cfg.CrashRecoveryEnabled,
+		CrashRecoveryDelaySecs: cfg.CrashRecoveryDelaySecs,
 	}
 
 	var patrolChannels []uint32
@@ -272,6 +279,10 @@ func main() {
 		capDevice.SetChWatch(true)
 	}
 
+	// デバイスIP → インスタンスラベル解決コールバックをPatrollerに設定する
+	mumuCfg.GetLabelByIP = capDevice.GetLabelByClientIP
+	guiServer.SetGetLabelByIPFn(capDevice.GetLabelByClientIP)
+
 	// Patroller がチャンネル切替時に capDevice へ現在チャンネルを通知する
 	guiServer.SetChannelNotifyFn(func(ch uint32) {
 		capDevice.SetCurrentChannel(ch)
@@ -288,6 +299,7 @@ func main() {
 				UserUID:   s.UserUID,
 				MapID:     s.MapID,
 				LineID:    s.LineID,
+				CurrentCh: s.CurrentCh,
 				Confirmed: s.Confirmed,
 			}
 		}

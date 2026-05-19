@@ -185,7 +185,7 @@ type CapDevice struct {
 	// チャット除外キーワード（filter.json の chat_exclude から設定）
 	chatExclude []string
 
-	// チャット重複排除（同一クライアントの同一メッセージを 10 秒以内に再受信した場合のみスキップ。複数デバイスの同時受信は各々通知する）
+	// チャット重複排除（同一デバイスの同一メッセージを10秒以内に再受信した場合のみスキップ）
 	chatDedupMu sync.Mutex
 	chatDedup   map[string]time.Time // key=clientIP+channel+sender+message, value=最終受信時刻
 
@@ -452,12 +452,19 @@ type CaptureSession struct {
 	UserUID   uint64
 	MapID     uint32
 	LineID    uint32
+	CurrentCh uint32 // 解決済みチャンネル: lineID → portMap → patrolCh の優先順位
 	Confirmed bool
 }
 
 // Sessions は現在の全セッションのスナップショットを返す。
 // clientIP 単位で重複を除き、Confirmed または UserUID が有効なものを優先する。
 func (cd *CapDevice) Sessions() []CaptureSession {
+	// currentChannel をループ前に読む（sess.mu 保持中に currentChannelMu を取ると
+	// SetCurrentChannel と逆順になりデッドロックするため）
+	cd.currentChannelMu.RLock()
+	patrolCh := cd.currentChannel
+	cd.currentChannelMu.RUnlock()
+
 	cd.sessionsMu.RLock()
 	defer cd.sessionsMu.RUnlock()
 
@@ -471,6 +478,16 @@ func (cd *CapDevice) Sessions() []CaptureSession {
 		cur, exists := seen[s.clientIP]
 		// confirmed または UID あり を優先して上書き
 		if !exists || (!cur.Confirmed && s.serverConfirmed) || (cur.UserUID == 0 && s.userUID != 0) {
+			// CurrentCh: lineID（0x15パケット由来）→ portMap → patrolCh の優先順
+			currentCh := s.lineID
+			if currentCh == 0 && cd.portMap != nil && s.serverIP != "" {
+				if ch, ok := cd.portMap.LookupByPort(s.serverIP); ok {
+					currentCh = ch
+				}
+			}
+			if currentCh == 0 {
+				currentCh = patrolCh
+			}
 			seen[s.clientIP] = CaptureSession{
 				Label:     s.label,
 				ClientIP:  s.clientIP,
@@ -478,6 +495,7 @@ func (cd *CapDevice) Sessions() []CaptureSession {
 				UserUID:   s.userUID,
 				MapID:     s.mapID,
 				LineID:    s.lineID,
+				CurrentCh: currentCh,
 				Confirmed: s.serverConfirmed,
 			}
 		}
@@ -741,6 +759,19 @@ func (cd *CapDevice) findConfirmedSessionByClientIP(clientIP string) *session {
 		}
 	}
 	return best
+}
+
+// GetLabelByClientIP はクライアントIPに対応するセッションラベル（"Instance-N"等）を返す。
+// 確認済みセッションが見つからない場合は空文字列を返す。
+// ADBシリアル → IP → ラベル の変換チェーンで巡回デバイスとの紐づけに使用する。
+func (cd *CapDevice) GetLabelByClientIP(ip string) string {
+	sess := cd.findConfirmedSessionByClientIP(ip)
+	if sess == nil {
+		return ""
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.label
 }
 
 func (cd *CapDevice) lookupSessionByConn(srcKey, revKey string) *session {
@@ -1040,19 +1071,22 @@ func (cd *CapDevice) handleServerToClientFast(srcIP, dstIP, srcKey, revKey strin
 			// 同一アカウントの再接続は mergeSessionIfDuplicate (0x15 受信時) でマージする。
 			sess = cd.getOrCreateSession(clientEndpoint, clientIP)
 		} else {
-			// チャットサーバー等 (SrcPort < 9000):
-			// どのインスタンスのチャットかは区別不要。
-			// port 5003 のみ処理。任意の確認済みセッションに紐付けて解析する。
+			// チャットサーバー等 (SrcPort < 9000): port 5003 のみ処理。
 			if tcp.SrcPort != 5003 {
 				return
 			}
-			sess = cd.findConfirmedSessionByClientIP(clientIP)
-			if sess == nil {
-				return
+			// 確定済みセッションを優先して紐付け。未存在の場合は仮セッションを即時作成して
+			// チャットをそのまま処理する（ゲームログインタイミングに依存しない）。
+			if confirmed := cd.findConfirmedSessionByClientIP(clientIP); confirmed != nil {
+				sess = confirmed
+				cd.sessionsMu.Lock()
+				if _, exists := cd.sessions[clientEndpoint]; !exists {
+					cd.sessions[clientEndpoint] = sess
+				}
+				cd.sessionsMu.Unlock()
+			} else {
+				sess = cd.getOrCreateSession(clientEndpoint, clientIP)
 			}
-			cd.sessionsMu.Lock()
-			cd.sessions[clientEndpoint] = sess
-			cd.sessionsMu.Unlock()
 		}
 	}
 
@@ -1062,23 +1096,26 @@ func (cd *CapDevice) handleServerToClientFast(srcIP, dstIP, srcKey, revKey strin
 	newServerAddr := fmt.Sprintf("%s:%d", srcIP, tcp.SrcPort)
 
 	if !sess.serverConfirmed && sess.userUID == 0 {
-		// 完全未確定（UID未取得）時のみ旧ロジック：ゲームサーバーポート（9000以上）以外は無視
-		if tcp.SrcPort < 9000 {
+		if tcp.SrcPort == 5003 {
+			// チャット仮セッション: serverIP の確認不要、そのまま処理を続行
+		} else if tcp.SrcPort < 9000 {
+			// 完全未確定かつ非チャット非ゲームポート → 無視
 			return
-		}
-		if sess.serverIP != newServerAddr {
-			log.Printf("[%s] fast-path: サーバー変更 [%s] → [%s]", sess.label, sess.serverIP, newServerAddr)
-			sess.serverIP = newServerAddr
-			sess.serverIPSetAt = time.Now()
-			// 未確定時は古い sub-stream をクリア
-			sess.streams = make(map[string]*tcpSubStream)
-			cd.sessionsMu.Lock()
-			for k, v := range cd.activeConns {
-				if v == clientEndpoint {
-					delete(cd.activeConns, k)
+		} else {
+			// ゲームサーバー: serverIP を更新してストリームをリセット
+			if sess.serverIP != newServerAddr {
+				log.Printf("[%s] fast-path: サーバー変更 [%s] → [%s]", sess.label, sess.serverIP, newServerAddr)
+				sess.serverIP = newServerAddr
+				sess.serverIPSetAt = time.Now()
+				sess.streams = make(map[string]*tcpSubStream)
+				cd.sessionsMu.Lock()
+				for k, v := range cd.activeConns {
+					if v == clientEndpoint {
+						delete(cd.activeConns, k)
+					}
 				}
+				cd.sessionsMu.Unlock()
 			}
-			cd.sessionsMu.Unlock()
 		}
 	} else {
 		// serverConfirmed、またはUID確定済み（idle timeout後のチャットサーバー接続等）：
@@ -1778,7 +1815,8 @@ func (cd *CapDevice) tryScanChatPayload(sess *session, payload []byte) {
 		chLabel = fmt.Sprintf("%d", channel)
 	}
 
-	// 重複排除：同一クライアントの同一メッセージを 10 秒以内に再受信した場合のみスキップ
+	// 重複排除：同一デバイスの同一メッセージを10秒以内に再受信した場合のみスキップ
+	// 複数デバイスが同じ内容を受信しても各デバイス分をフロントエンドに渡す（フロント側でコンテンツdedup）
 	dedupKey := fmt.Sprintf("%s\x00%d\x00%s\x00%s", sess.clientIP, channel, senderDisplay, message)
 	cd.chatDedupMu.Lock()
 	now := time.Now()
@@ -1851,11 +1889,13 @@ func (cd *CapDevice) triggerDetection(sess *session, source, name string, pos *p
 		}
 	}
 
-	// lineID 解決: 3段階優先度
+	// lineID 解決: 優先度
 	//   最優先（確定）: 巡回指定ch と PortMap が一致
-	//   次点  （確定）: 巡回指定ch のみ（PortMap未登録 or 不一致）
-	//   非確定       : PortMap のみ（巡回中でない）
-	//   不明         : 両方なし → sess.lineID（proto由来）を使用
+	//   PortMap不一致 : PortMap確定（手動ch変更の可能性）→ PortMap優先
+	//   proto不一致   : PortMapなし・proto由来が巡回指定と不一致 → proto優先
+	//   巡回指定のみ  : portMapなし・sess.lineID=0
+	//   非確定        : PortMap のみ（巡回中でない）
+	//   不明          : 両方なし → sess.lineID（proto由来）を使用
 	lineID := sess.lineID
 	lineIDUnconfirmed := false
 
@@ -1871,14 +1911,18 @@ func (cd *CapDevice) triggerDetection(sess *session, source, name string, pos *p
 			// 最優先: 巡回指定 + PortMap が一致 → 最高信頼度
 			lineID = patrolCh
 			log.Printf("[%s][検知] ch確定(最優先): Ch%d (巡回指定+PortMap一致)", sess.label, lineID)
+		case patrolCh > 0 && hasPortMap && portMapCh != patrolCh:
+			// PortMap確定かつ巡回指定と不一致 → デバイスが手動でch変更された可能性。PortMap優先
+			lineID = portMapCh
+			log.Printf("[%s][検知] ch確定(PortMap優先): Ch%d (巡回指定=%d と不一致、PortMapを優先)", sess.label, lineID, patrolCh)
+		case patrolCh > 0 && sess.lineID != 0 && sess.lineID != patrolCh:
+			// PortMapなし・proto由来lineIDが巡回指定と不一致 → デバイスが手動でch変更された可能性。proto優先
+			lineID = sess.lineID
+			log.Printf("[%s][検知] ch確定(proto優先): Ch%d (巡回指定=%d と不一致、protoを優先)", sess.label, lineID, patrolCh)
 		case patrolCh > 0:
-			// 次点: 巡回指定のみ
+			// 巡回指定のみ（PortMapなし・sess.lineID=0 または一致済み）
 			lineID = patrolCh
-			if hasPortMap && portMapCh != patrolCh {
-				log.Printf("[%s][検知] ch確定(巡回指定): Ch%d (PortMap=%d と不一致、巡回を優先)", sess.label, lineID, portMapCh)
-			} else {
-				log.Printf("[%s][検知] ch確定(巡回指定): Ch%d", sess.label, lineID)
-			}
+			log.Printf("[%s][検知] ch確定(巡回指定): Ch%d", sess.label, lineID)
 		case hasPortMap:
 			// 非確定: PortMap のみ（巡回中でない）
 			lineID = portMapCh

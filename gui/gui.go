@@ -34,6 +34,7 @@ type DeviceSessionInfo struct {
 	UserUID   uint64
 	MapID     uint32
 	LineID    uint32
+	CurrentCh uint32
 	Confirmed bool
 }
 
@@ -79,6 +80,8 @@ type Server struct {
 	chatReportFn      func(notifier.Detection)
 	chatReportDedupMu sync.Mutex
 	chatReportDedup   map[string]time.Time
+
+	getLabelByIPFn func(string) string // デバイスIP → インスタンスラベル解決コールバック
 }
 
 // PortMapEntry はポートマップの1エントリ（GUI向け）
@@ -446,6 +449,17 @@ func (s *Server) SetChatReportFn(fn func(notifier.Detection)) {
 	s.chatReportFn = fn
 }
 
+// SetGetLabelByIPFn はデバイスIP → インスタンスラベル解決コールバックを設定し、
+// 巡回設定にも即時反映する。
+func (s *Server) SetGetLabelByIPFn(fn func(string) string) {
+	s.getLabelByIPFn = fn
+	if s.patrolEnabled {
+		cfg := s.patroller.Config()
+		cfg.GetLabelByIP = fn
+		s.patroller.UpdateConfig(cfg)
+	}
+}
+
 // AddPortMapPending はクォーラム成立した portMap 変更を確認待ちキューに追加し、SSE で通知する。
 // 同一 ch の既存エントリがあれば上書き（最新情報に差し替え）。
 func (s *Server) AddPortMapPending(ch uint32, newIP, oldIP string, voteCount int) {
@@ -471,12 +485,11 @@ func (s *Server) AddPortMapPending(ch uint32, newIP, oldIP string, voteCount int
 	if !found {
 		s.pendingPortMaps = append(s.pendingPortMaps, change)
 	}
-	s.pendingPortMapMu.Unlock()
-
 	s.mu.RLock()
 	clients := make([]chan string, len(s.clients))
 	copy(clients, s.clients)
 	s.mu.RUnlock()
+	s.pendingPortMapMu.Unlock()
 
 	broadcastSSE(clients, "[PORTMAP_PENDING]")
 }
@@ -531,33 +544,49 @@ func (w *guiWriter) Write(p []byte) (int, error) {
 			// - "[Instance-N][0x2E] lineID補完: ..." は補助情報 → 二重カウント防止
 			// - "[MuMu] 巡回: Ch%d [0x2E] ..." は自ログ → フィードバックループ防止
 			if w.srv.patrolEnabled && strings.Contains(line, "[0x2E] UUID=") {
-				w.srv.patroller.NotifyChMovePacket(extractUID(line))
+				w.srv.patroller.NotifyChMovePacket(extractInstanceLabel(line))
 			}
 		}
 	}
 	return n, err
 }
 
-// extractUID は "[Instance-7][0x2E] UUID=1234567890 (UID=9876543)" 形式のログ行から
-// UID文字列（"9876543"）を抽出する。UID が見つからない場合は空文字列を返す。
-func extractUID(line string) string {
-	const prefix = "(UID="
-	idx := strings.Index(line, prefix)
-	if idx < 0 {
+// extractInstanceLabel は "[Instance-7][0x2E] UUID=..." 形式のログ行から
+// インスタンスラベル文字列（"Instance-7"）を抽出する。見つからない場合は空文字列を返す。
+func extractInstanceLabel(line string) string {
+	if len(line) == 0 || line[0] != '[' {
 		return ""
 	}
-	rest := line[idx+len(prefix):]
-	end := strings.Index(rest, ")")
-	if end <= 0 {
+	end := strings.Index(line, "]")
+	if end <= 1 {
 		return ""
 	}
-	uid := rest[:end]
-	if uid == "0" {
+	label := line[1:end]
+	if !strings.HasPrefix(label, "Instance-") {
 		return ""
 	}
-	return uid
+	return label
 }
 
+// getDeviceIPCtx は mumu.GetDeviceIP をコンテキストのキャンセルに対応させるラッパー。
+// GetDeviceIP 自体はコンテキストを受け取らないため、内部ゴルーチンで実行し ctx 終了時に空文字を返す。
+func getDeviceIPCtx(ctx context.Context, serial string, cfg mumu.Config) string {
+	ch := make(chan string, 1)
+	go func() {
+		ip, err := mumu.GetDeviceIP(ctx, serial, cfg)
+		if err != nil {
+			log.Printf("[MuMu] GetDeviceIP %s: %v", serial, err)
+			ip = ""
+		}
+		ch <- ip
+	}()
+	select {
+	case ip := <-ch:
+		return ip
+	case <-ctx.Done():
+		return ""
+	}
+}
 
 // LogWriter は log.SetOutput() に渡す io.Writer を返す。
 func (s *Server) LogWriter(base io.Writer) io.Writer {
@@ -605,6 +634,8 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/patrol/start", s.handlePatrolStart)
 	mux.HandleFunc("/api/patrol/stop", s.handlePatrolStop)
 	mux.HandleFunc("/api/patrol/status", s.handlePatrolStatus)
+	mux.HandleFunc("/api/patrol/device-statuses", s.handlePatrolDeviceStatuses)
+	mux.HandleFunc("/api/patrol/recover", s.handlePatrolRecover)
 	mux.HandleFunc("/api/patrol/clear-full", s.handlePatrolClearFull)
 	mux.HandleFunc("/api/patrol/channels", s.handlePatrolChannels)
 	mux.HandleFunc("/api/patrol/channels/gas", s.handlePatrolChannelsGAS)
@@ -846,12 +877,11 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 同一 IP を持つセッションが複数ある場合（NAT環境）に備えてスライスで保持
-	ipToSess := make(map[string][]DeviceSessionInfo)
+	ipToSess := make(map[string]DeviceSessionInfo)
 	if s.getSessions != nil {
 		for _, sess := range s.getSessions() {
 			if sess.ClientIP != "" {
-				ipToSess[sess.ClientIP] = append(ipToSess[sess.ClientIP], sess)
+				ipToSess[sess.ClientIP] = sess
 			}
 		}
 	}
@@ -863,6 +893,7 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 		Label     string `json:"label"`
 		MapID     uint32 `json:"map_id"`
 		LineID    uint32 `json:"line_id"`
+		CurrentCh uint32 `json:"current_ch"`
 		Confirmed bool   `json:"confirmed"`
 	}
 
@@ -874,27 +905,45 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(idx int, ser string) {
 			defer wg.Done()
-			devIP, ipErr := mumu.GetDeviceIP(ctx, ser, cfg)
-			if ipErr != nil {
-				log.Printf("[MuMu] GetDeviceIP %s: %v", ser, ipErr)
-			}
+			devIP := getDeviceIPCtx(ctx, ser, cfg)
 			entries[idx].DeviceIP = devIP
 			if devIP != "" {
-				if sessions, ok := ipToSess[devIP]; ok && len(sessions) > 0 {
-					if len(sessions) > 1 {
-						log.Printf("[MuMu] device-map: IP %s が %d セッションと衝突 (NAT環境?) — 先頭セッションを使用", devIP, len(sessions))
-					}
-					sess := sessions[0]
+				if sess, ok := ipToSess[devIP]; ok {
 					entries[idx].UserUID = sess.UserUID
 					entries[idx].Label = sess.Label
 					entries[idx].MapID = sess.MapID
 					entries[idx].LineID = sess.LineID
+					entries[idx].CurrentCh = sess.CurrentCh
 					entries[idx].Confirmed = sess.Confirmed
 				}
 			}
 		}(i, serial)
 	}
 	wg.Wait()
+
+	// DeviceStatus（ADB serial ベース）を最優先で CurrentCh にマージする。
+	// NAT 環境では IP 照合が失敗するため、これが唯一の per-device Ch ソースになる。
+	if s.patroller != nil {
+		deviceChMap := make(map[string]uint32)
+		for _, ds := range s.patroller.GetDeviceStatuses() {
+			if ds.CurrentCh > 0 {
+				deviceChMap[ds.Serial] = ds.CurrentCh
+			}
+		}
+		for i := range entries {
+			if ch, ok := deviceChMap[entries[i].Serial]; ok {
+				entries[i].CurrentCh = ch
+			}
+		}
+		// デバイス別データが無ければ巡回全体の現在Chをフォールバックにする
+		if patrolCh := s.patroller.Status().CurrentChannel; patrolCh > 0 {
+			for i := range entries {
+				if entries[i].CurrentCh == 0 {
+					entries[i].CurrentCh = patrolCh
+				}
+			}
+		}
+	}
 
 	writeJSON(w, map[string]interface{}{"devices": entries})
 }
@@ -988,13 +1037,12 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		results = append(results, res)
 	}
 
-	// 手動切替後も capDevice の currentChannel を更新する
-	if req.Channel > 0 {
-		s.mu.RLock()
-		fn := s.channelNotifyFn
-		s.mu.RUnlock()
-		if fn != nil {
-			fn(req.Channel)
+	// 成功した切替を DeviceStatus に即時反映し、次回 device-map 取得時に最新 Ch が返るようにする
+	if s.patroller != nil {
+		for _, res := range results {
+			if res.OK {
+				s.patroller.SetDeviceCh(res.Serial, req.Channel)
+			}
 		}
 	}
 
@@ -1126,12 +1174,16 @@ func (s *Server) handleDeleteGoldHistory(w http.ResponseWriter, r *http.Request)
 
 	s.mu.Lock()
 	idx := -1
+	var evCh uint32
 	for i, ev := range s.goldBoarHistory {
 		if ev.Timestamp == req.Timestamp {
 			idx = i
+			evCh = ev.Channel
 			break
 		}
 	}
+	var saveChannelsFn func([]uint32) error
+	var restoredChs []uint32
 	if idx >= 0 {
 		s.goldBoarHistory = append(s.goldBoarHistory[:idx], s.goldBoarHistory[idx+1:]...)
 		if err := s.persistGoldHistoryLocked(); err != nil {
@@ -1140,12 +1192,35 @@ func (s *Server) handleDeleteGoldHistory(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "save failed", 500)
 			return
 		}
+		// クールダウン解除（GAS経由の再追加を許可）
+		delete(s.cooldownChs, evCh)
+		// 巡回リストに復元（未登録の場合のみ追加）
+		alreadyIn := false
+		for _, pc := range s.patrolChannels {
+			if pc == evCh {
+				alreadyIn = true
+				break
+			}
+		}
+		if !alreadyIn && evCh > 0 {
+			s.patrolChannels = append(s.patrolChannels, evCh)
+			restoredChs = make([]uint32, len(s.patrolChannels))
+			copy(restoredChs, s.patrolChannels)
+		}
+		saveChannelsFn = s.saveChannelsFn
 	}
 	s.mu.Unlock()
 
 	if idx < 0 {
 		http.Error(w, "not found", 404)
 		return
+	}
+	if restoredChs != nil && saveChannelsFn != nil {
+		if err := saveChannelsFn(restoredChs); err != nil {
+			log.Printf("[GUI] channels.txt 保存失敗 (誤報取消): %v", err)
+		} else {
+			log.Printf("[GUI] 誤報取消: Ch%d を巡回リストに復元 (計%d ch)", evCh, len(restoredChs))
+		}
 	}
 	writeOK(w)
 }
@@ -1201,9 +1276,16 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 					MumuDelayMs            int      `json:"mumu_delay_ms"`
 					ParallelLimit          int      `json:"parallel_limit"`
 					ParallelGroupDelaySecs float64  `json:"parallel_group_delay_secs"`
-					PatrolMoveTimeoutSecs  float64  `json:"patrol_move_timeout_secs"`
-					PatrolMergeTimeoutSecs float64  `json:"patrol_merge_timeout_secs"`
-					PatrolDwellSecs        float64  `json:"patrol_dwell_secs"`
+					PatrolMoveTimeoutSecs       float64 `json:"patrol_move_timeout_secs"`
+					PatrolMergeTimeoutSecs      float64 `json:"patrol_merge_timeout_secs"`
+					PatrolDwellSecs             float64 `json:"patrol_dwell_secs"`
+					PatrolAdaptiveTimeout       bool              `json:"patrol_adaptive_timeout"`
+					PatrolAdaptiveTimeoutWindow int               `json:"patrol_adaptive_timeout_window"`
+					SerialToLabel               map[string]string `json:"serial_to_label"`
+					GamePackageName             string            `json:"game_package_name"`
+					GameLaunchActivity          string            `json:"game_launch_activity"`
+					CrashRecoveryEnabled        bool              `json:"crash_recovery_enabled"`
+					CrashRecoveryDelaySecs      float64           `json:"crash_recovery_delay_secs"`
 				}
 				if json.Unmarshal(savedData, &appCfg) == nil {
 					newCfg := mumu.Config{
@@ -1216,9 +1298,17 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 						GlobalDelay:        time.Duration(appCfg.MumuDelayMs) * time.Millisecond,
 						ParallelLimit:      appCfg.ParallelLimit,
 						ParallelGroupDelay: time.Duration(appCfg.ParallelGroupDelaySecs * float64(time.Second)),
-						MoveTimeout:        time.Duration(appCfg.PatrolMoveTimeoutSecs * float64(time.Second)),
-						MergeTimeout:       time.Duration(appCfg.PatrolMergeTimeoutSecs * float64(time.Second)),
-						DwellDuration:      time.Duration(appCfg.PatrolDwellSecs * float64(time.Second)),
+						MoveTimeout:           time.Duration(appCfg.PatrolMoveTimeoutSecs * float64(time.Second)),
+						MergeTimeout:          time.Duration(appCfg.PatrolMergeTimeoutSecs * float64(time.Second)),
+						DwellDuration:         time.Duration(appCfg.PatrolDwellSecs * float64(time.Second)),
+						AdaptiveTimeout:        appCfg.PatrolAdaptiveTimeout,
+						AdaptiveTimeoutWindow:  appCfg.PatrolAdaptiveTimeoutWindow,
+						GetLabelByIP:           s.getLabelByIPFn,
+						SerialToLabel:          appCfg.SerialToLabel,
+						GamePackageName:        appCfg.GamePackageName,
+						GameLaunchActivity:     appCfg.GameLaunchActivity,
+						CrashRecoveryEnabled:   appCfg.CrashRecoveryEnabled,
+						CrashRecoveryDelaySecs: appCfg.CrashRecoveryDelaySecs,
 					}
 					s.UpdatePatrollerCfg(newCfg)
 					log.Printf("[GUI] 巡回設定を即時反映: 滞在=%.0fs, 初回待ち=%.0fs, マージ待ち=%.0fs, グループ間=%.0fs, 並列=%d",
@@ -1325,13 +1415,6 @@ func (s *Server) handlePatrolStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.patroller.Stop()
-	// 巡回停止後に capDevice の currentChannel をリセットし stale 値での lineID 解決を防ぐ
-	s.mu.RLock()
-	fn := s.channelNotifyFn
-	s.mu.RUnlock()
-	if fn != nil {
-		fn(0)
-	}
 	writeOK(w)
 }
 
@@ -1673,6 +1756,40 @@ func (s *Server) handlePatrolStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.patroller.Status())
 }
 
+// handlePatrolDeviceStatuses はデバイスごとの巡回状態を返す
+func (s *Server) handlePatrolDeviceStatuses(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		writeJSON(w, []interface{}{})
+		return
+	}
+	writeJSON(w, s.patroller.GetDeviceStatuses())
+}
+
+// handlePatrolRecover は指定シリアルのゲームクラッシュ復帰を手動トリガーする
+func (s *Server) handlePatrolRecover(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		http.Error(w, "patrol disabled", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	var req struct {
+		Serial string `json:"serial"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Serial == "" {
+		http.Error(w, "serial required", http.StatusBadRequest)
+		return
+	}
+	go func() {
+		if err := s.patroller.RecoverDevice(r.Context(), req.Serial); err != nil {
+			log.Printf("[GUI] recover device %s: %v", req.Serial, err)
+		}
+	}()
+	writeJSON(w, map[string]interface{}{"ok": true, "serial": req.Serial})
+}
+
 // sseStream はSSEエンドポイントの共通ループ処理。
 // add/remove でクライアントチャネルの登録・解除を行い、format でメッセージを整形する。
 func (s *Server) sseStream(w http.ResponseWriter, r *http.Request,
@@ -1957,22 +2074,31 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .patrol-status .running{color:var(--accent2);font-weight:600}
 .patrol-status .stopped{color:var(--text3)}
 .ch-editor{display:flex;flex-direction:column;gap:3px;max-height:180px;overflow-y:auto;margin:6px 0}
+.dev-stat-table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
+.dev-stat-table th,.dev-stat-table td{padding:3px 6px;border-bottom:1px solid var(--border);text-align:left}
+.dev-stat-table th{color:var(--text3);font-weight:600}
+.dev-stat-badge{display:inline-block;padding:1px 6px;border-radius:10px;font-size:.8em}
+.dev-stat-ok{background:#1a3a1a;color:#4caf50}
+.dev-stat-timeout{background:#3a2a00;color:#f0a000}
+.dev-stat-crash{background:#3a0000;color:#f06060}
+.dev-stat-recover{background:#1a2a3a;color:#60c0f0}
+.dev-stat-adb{background:#2a1a2a;color:#c060c0}
 .ch-row{display:flex;gap:5px;align-items:center;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;transition:border-color .12s}
 .ch-row:hover{border-color:var(--text3)}
 .ch-row .ch-num{color:var(--accent);font-family:monospace;font-size:.9em;min-width:24px;text-align:right}
 
 /* Gold table */
-.gold-table{width:100%;border-collapse:collapse;font-size:.82em;table-layout:fixed}
-.gold-table th{color:var(--text2);text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0;background:var(--bg1);z-index:1;font-size:.88em;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-.gold-table col.col-time{width:6.5em}.gold-table col.col-ch{width:5em}.gold-table col.col-name{width:8em}.gold-table col.col-action{width:2.8em}
-.gold-table td{padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:middle;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gold-table{width:100%;border-collapse:collapse;font-size:var(--fs-sm);table-layout:fixed}
+.gold-table th{color:var(--text3);text-align:left;padding:6px 10px;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0;background:var(--bg1);z-index:1;font-size:var(--fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.gold-table col.col-time{width:9.5em}.gold-table col.col-ch{width:5em}.gold-table col.col-name{width:8em}.gold-table col.col-loc{width:7em}.gold-table col.col-action{width:2.8em}
+.gold-table td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:middle;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gold-table .action-cell{padding:0;white-space:normal;text-align:center}
 .gold-table .action-cell button{background:transparent;border:none;color:var(--danger);font-size:1em;cursor:pointer;padding:0 4px;line-height:1.5}
 .gold-table .action-cell button:hover{color:#ff8a8a}
 .gold-table tr:hover td{background:rgba(255,255,255,.03)}
-.gold-table .ch-cell{color:var(--accent);font-family:monospace;font-weight:600}
-.gold-table .time-cell{color:var(--text3);font-size:.85em}
-.gold-table .name-cell{color:var(--warn);font-weight:500}
+.gold-table .ch-cell{color:var(--accent);font-family:var(--font-mono);font-weight:700;font-size:var(--fs-md);letter-spacing:-.01em}
+.gold-table .time-cell{color:var(--text3);font-size:var(--fs-xs);font-family:var(--font-mono)}
+.gold-table .name-cell{color:var(--warn);font-weight:600;font-size:var(--fs-sm)}
 .gold-table .name-cell.silver{color:var(--text2)}
 .no-history{color:var(--text2);font-size:.85em;padding:8px 0}
 #gold-history-container{flex:1;min-height:0;max-height:none;overflow-y:auto}
@@ -2141,6 +2267,179 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 [data-theme="light"] .btn.danger{background:rgba(207,34,46,.06);border-color:rgba(207,34,46,.22);color:#cf222e}
 [data-theme="light"] .chip.active{background:rgba(9,105,218,.1);border-color:rgba(9,105,218,.35);color:#0969da}
 [data-theme="light"] .nav-item.layout-edit-active{background:rgba(122,69,0,.08);color:#7a4500;border-left-color:#7a4500}
+/* ============================================================
+   === BPSR Design Refresh v2 — Option B (Status Hero) tokens ===
+   Additive only. Existing classes above remain for back-compat.
+   ============================================================ */
+:root{
+  --bg-elev:#1f2530;
+  --border-soft:rgba(48,54,61,.6);
+  --border-strong:rgba(110,118,129,.5);
+  --accent-bg:rgba(88,166,255,.08);
+  --accent-bg-strong:rgba(88,166,255,.16);
+  --accent-border:rgba(88,166,255,.3);
+  --ok-bg:rgba(63,185,80,.08);
+  --ok-bg-strong:rgba(63,185,80,.16);
+  --ok-border:rgba(63,185,80,.28);
+  --warn-bg:rgba(210,153,34,.1);
+  --warn-border:rgba(210,153,34,.28);
+  --danger-bg:rgba(248,81,73,.08);
+  --danger-border:rgba(248,81,73,.25);
+  --radius-sm:4px;
+  --radius-pill:999px;
+  --btn-h-sm:26px;
+  --btn-h:32px;
+  --btn-h-lg:40px;
+  --font-mono:'Segoe UI',system-ui,-apple-system,sans-serif;
+}
+[data-theme="black"]{
+  --accent-bg:rgba(0,229,255,.08);--accent-bg-strong:rgba(0,229,255,.18);--accent-border:rgba(0,229,255,.32);
+  --ok-bg:rgba(0,230,118,.1);--ok-bg-strong:rgba(0,230,118,.2);--ok-border:rgba(0,230,118,.32);
+  --warn-bg:rgba(255,202,40,.1);--warn-border:rgba(255,202,40,.32);
+  --danger-bg:rgba(255,82,82,.1);--danger-border:rgba(255,82,82,.32);
+}
+[data-theme="light"]{
+  --accent-bg:rgba(9,105,218,.08);--accent-bg-strong:rgba(9,105,218,.16);--accent-border:rgba(9,105,218,.3);
+  --ok-bg:rgba(26,127,55,.08);--ok-bg-strong:rgba(26,127,55,.18);--ok-border:rgba(26,127,55,.3);
+  --warn-bg:rgba(122,69,0,.08);--warn-border:rgba(122,69,0,.25);
+  --danger-bg:rgba(207,34,46,.06);--danger-border:rgba(207,34,46,.25);
+}
+[data-theme="warm"]{
+  --accent-bg:rgba(255,215,0,.1);--accent-bg-strong:rgba(255,215,0,.2);--accent-border:rgba(255,215,0,.35);
+  --ok-bg:rgba(76,175,80,.1);--ok-bg-strong:rgba(76,175,80,.2);--ok-border:rgba(76,175,80,.32);
+  --warn-bg:rgba(255,160,0,.1);--warn-border:rgba(255,160,0,.3);
+  --danger-bg:rgba(255,68,68,.1);--danger-border:rgba(255,68,68,.3);
+}
+/* === Unified button system (v2). .btn untouched for back-compat === */
+.btn2{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:var(--btn-h);padding:0 12px;font-family:inherit;font-size:var(--fs-sm);font-weight:500;line-height:1;color:var(--text1);background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap;user-select:none;transition:background .12s,border-color .12s,color .12s,transform .06s;}
+.btn2:hover{background:var(--bg3);border-color:var(--border-strong);}
+.btn2:active{transform:translateY(1px);}
+.btn2[disabled],.btn2.is-disabled{opacity:.35;cursor:not-allowed;}
+.btn2 svg{width:14px;height:14px;flex-shrink:0;}
+.btn2.sm{height:var(--btn-h-sm);padding:0 10px;font-size:var(--fs-xs);}
+.btn2.sm svg{width:12px;height:12px;}
+.btn2.lg{height:var(--btn-h-lg);padding:0 18px;font-size:var(--fs-md);font-weight:600;}
+.btn2.lg svg{width:16px;height:16px;}
+.btn2.iconly{padding:0;width:var(--btn-h);}
+.btn2.iconly.sm{width:var(--btn-h-sm);}
+.btn2.primary{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent);}
+.btn2.primary:hover{background:var(--accent-bg-strong);border-color:var(--accent);}
+.btn2.success{background:var(--ok-bg);border-color:var(--ok-border);color:var(--accent2);}
+.btn2.success:hover{background:var(--ok-bg-strong);border-color:var(--accent2);}
+.btn2.danger{background:var(--danger-bg);border-color:var(--danger-border);color:var(--danger);}
+.btn2.danger:hover{background:rgba(248,81,73,.16);border-color:var(--danger);}
+.btn2.warn{background:var(--warn-bg);border-color:var(--warn-border);color:var(--warn);}
+.btn2.ghost{background:transparent;border-color:transparent;color:var(--text2);}
+.btn2.ghost:hover{background:rgba(255,255,255,.05);color:var(--text1);}
+[data-theme="light"] .btn2.ghost:hover{background:rgba(0,0,0,.05);}
+.btn2.solid-success{background:linear-gradient(180deg,#46c25f,#2ea043);border-color:#2ea043;color:#fff;font-weight:600;}
+.btn2.solid-success:hover{background:linear-gradient(180deg,#54d36e,#34af49);border-color:#34af49;}
+.btn2.solid-danger{background:linear-gradient(180deg,#ef5651,#d83a32);border-color:#d83a32;color:#fff;font-weight:600;}
+.btn2.solid-danger:hover{background:linear-gradient(180deg,#ff6661,#e84a42);}
+.btn2.active{background:var(--accent-bg-strong);border-color:var(--accent-border);color:var(--accent);}
+.btn-grp{display:inline-flex;align-items:stretch;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;background:var(--bg2);height:var(--btn-h-sm);}
+.btn-grp .btn2{border:none;border-radius:0;background:transparent;height:auto;padding:0 12px;}
+.btn-grp .btn2+.btn2{border-left:1px solid var(--border);}
+.btn-grp .btn2.active{background:var(--accent-bg);color:var(--accent);font-weight:600;}
+/* === Chips / dots === */
+.chip2{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;font-size:var(--fs-xs);font-weight:500;color:var(--text2);background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-pill);line-height:1;}
+.chip2.ok{background:var(--ok-bg);border-color:var(--ok-border);color:var(--accent2);}
+.chip2.warn{background:var(--warn-bg);border-color:var(--warn-border);color:var(--warn);}
+.chip2.danger{background:var(--danger-bg);border-color:var(--danger-border);color:var(--danger);}
+.chip2.accent{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent);}
+.dot2{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--text3);flex-shrink:0;}
+.dot2.ok{background:var(--accent2);box-shadow:0 0 0 3px var(--ok-bg);}
+.dot2.warn{background:var(--warn);box-shadow:0 0 0 3px var(--warn-bg);}
+.dot2.danger{background:var(--danger);box-shadow:0 0 0 3px var(--danger-bg);}
+.dot2.pulsing{animation:dot2Pulse 2s ease-in-out infinite;}
+@keyframes dot2Pulse{0%,100%{box-shadow:0 0 0 0 rgba(63,185,80,.5);}50%{box-shadow:0 0 0 7px rgba(63,185,80,0);}}
+/* === Card v2 === */
+.card2{background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius-lg);display:flex;flex-direction:column;min-height:0;}
+.card2-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.card2-head .ct{font-size:var(--fs-md);font-weight:600;color:var(--text1);letter-spacing:0;display:flex;align-items:center;gap:7px;}
+.card2-head .ci{color:var(--text2);display:flex;align-items:center;}
+.card2-head .ca{margin-left:auto;display:flex;align-items:center;gap:6px;}
+.card2-head .cc{font-size:var(--fs-xs);font-weight:500;color:var(--text3);background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-pill);padding:1px 8px;font-variant-numeric:tabular-nums;}
+.card2-body{padding:12px 14px;flex:1;min-height:0;display:flex;flex-direction:column;gap:10px;}
+.card2-body.flush{padding:0;}
+/* === Hero status bar === */
+.hero-bar{background:linear-gradient(135deg,var(--ok-bg),var(--accent-bg));border:1px solid var(--ok-border);border-radius:var(--radius-lg);padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:18px;align-items:center;flex-shrink:0;transition:background .25s,border-color .25s;}
+.hero-bar.is-stopped{background:var(--bg1);border-color:var(--border);}
+.hero-bar.is-stopped .hero-icon{background:var(--bg2);border-color:var(--border);color:var(--text3);}
+.hero-bar.is-stopped .hero-icon::after{display:none;}
+.hero-bar.is-stopped .hero-state{color:var(--text2);}
+.hero-bar.is-warn{background:linear-gradient(135deg,var(--warn-bg),rgba(248,81,73,.04));border-color:var(--danger-border);}
+.hero-bar.is-warn .hero-icon{background:var(--warn-bg);border-color:var(--warn-border);color:var(--warn);}
+.hero-bar.is-warn .hero-state{color:var(--warn);}
+.hero-left{display:flex;align-items:center;gap:14px;}
+.hero-icon{width:56px;height:56px;border-radius:16px;background:var(--ok-bg-strong);border:1px solid var(--ok-border);display:flex;align-items:center;justify-content:center;color:var(--accent2);position:relative;flex-shrink:0;}
+.hero-icon::after{content:'';position:absolute;top:-3px;right:-3px;width:14px;height:14px;border-radius:7px;background:var(--accent2);border:2px solid var(--bg0);animation:dot2Pulse 2s ease-in-out infinite;}
+.hero-meta{display:flex;flex-direction:column;}
+.hero-label{font-size:var(--fs-xs);color:var(--text3);letter-spacing:.1em;text-transform:uppercase;font-weight:600;}
+.hero-state{font-size:var(--fs-xl);font-weight:700;color:var(--accent2);line-height:1.15;}
+.hero-sub{font-size:var(--fs-xs);color:var(--text2);margin-top:2px;}
+.hero-mid{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.hero-row1{display:flex;align-items:baseline;gap:14px;font-variant-numeric:tabular-nums;flex-wrap:wrap;}
+.hero-row1 .k{font-size:var(--fs-xs);color:var(--text3);text-transform:uppercase;letter-spacing:.08em;font-weight:600;}
+.hero-ch{font-size:var(--fs-2xl);font-weight:700;color:var(--accent);font-family:var(--font-mono);letter-spacing:-.02em;line-height:1;}
+.hero-progress{height:8px;background:var(--bg3);border-radius:999px;overflow:hidden;}
+.hero-progress > div{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .3s ease;border-radius:999px;}
+.hero-row2{display:flex;gap:14px;font-size:var(--fs-xs);color:var(--text3);flex-wrap:wrap;}
+.hero-row2 b{color:var(--text1);font-weight:500;font-family:var(--font-mono);}
+.hero-actions{display:flex;flex-direction:column;gap:6px;min-width:172px;}
+/* === KPI strip === */
+.kpi-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--border);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;flex-shrink:0;}
+.kpi-tile{background:var(--bg1);padding:10px 14px;display:flex;flex-direction:column;gap:2px;}
+.kpi-tile .kl{font-size:var(--fs-xs);color:var(--text3);text-transform:uppercase;letter-spacing:.08em;font-weight:600;display:flex;align-items:center;gap:5px;}
+.kpi-tile .kl svg{width:12px;height:12px;color:var(--text3);}
+.kpi-tile .kv{font-size:var(--fs-2xl);font-weight:700;font-family:var(--font-mono);letter-spacing:-.02em;line-height:1.1;color:var(--text1);font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:5px;}
+.kpi-tile .kv small{font-size:var(--fs-sm);font-weight:500;color:var(--text3);font-family:var(--font-mono);}
+.kpi-tile .ks{font-size:var(--fs-xs);color:var(--text3);}
+.kpi-tile.warn .kv{color:var(--warn);}
+.kpi-tile.ok .kv{color:var(--accent2);}
+.kpi-tile.accent .kv{color:var(--accent);}
+/* === Channel matrix === */
+.ch-matrix{display:grid;gap:4px;grid-template-columns:repeat(auto-fill,3.2em);justify-content:start;align-content:start;}
+.ch-cell{width:3.2em;height:2.9em;background:var(--bg2);border:1px solid var(--border);border-radius:5px;display:flex;align-items:center;justify-content:center;font-family:inherit;font-size:var(--fs-md);font-weight:600;color:var(--text3);position:relative;transition:background .12s,border-color .12s,color .12s;}
+.ch-cell.queued{color:var(--text1);background:var(--bg3);}
+.ch-cell.done{background:var(--ok-bg);color:var(--accent2);border-color:var(--ok-border);}
+.ch-cell.current{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-bg-strong);}
+.ch-cell.full{background:var(--danger-bg);color:var(--danger);border-color:var(--danger-border);}
+.ch-cell.detected::after{content:'\2605';position:absolute;top:-4px;right:-3px;font-size:13px;color:var(--warn);text-shadow:0 0 3px var(--bg0);font-weight:bold;}
+.ch-legend{display:flex;flex-wrap:wrap;gap:10px;font-size:var(--fs-xs);color:var(--text3);margin-top:6px;}
+.ch-legend .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle;}
+/* === Device pills === */
+.devpill-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;}
+.devpill{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;display:flex;align-items:center;gap:10px;min-width:0;}
+.devpill.offline{background:rgba(248,81,73,.04);border-color:var(--danger-border);}
+.devpill .dp-body{flex:1;min-width:0;}
+.devpill .dp-name{font-size:var(--fs-md);font-weight:500;color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.devpill .dp-sub{font-size:var(--fs-xs);color:var(--text3);font-family:var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.devpill .dp-ch{font-family:var(--font-mono);font-size:var(--fs-lg);font-weight:700;color:var(--accent);min-width:30px;text-align:right;}
+.devpill.offline .dp-ch{color:var(--text3);}
+/* === Dashboard v2 layout === */
+#view-dashboard.v2-dashboard.active{display:flex;flex-direction:column;gap:10px;overflow-y:auto;padding-right:4px;}
+/* Fixed-height middle row so cards never collapse and chat doesn't dominate vertical space */
+#view-dashboard.v2-dashboard .dash-grid2{display:grid;grid-template-columns:1.15fr 1fr;gap:10px;grid-auto-rows:auto;min-height:380px;}
+#view-dashboard.v2-dashboard .dash-grid2 > .dash-col{display:flex;flex-direction:column;gap:10px;min-height:0;}
+#view-dashboard.v2-dashboard #dashboard-grid.dash-grid2{grid-auto-rows:auto;}
+/* Left column (gold history) fills the full row height */
+#view-dashboard.v2-dashboard #card-dash-gold{height:100%;}
+#view-dashboard.v2-dashboard #card-dash-gold > .card2{flex:1;min-height:0;}
+#view-dashboard.v2-dashboard #gold-history-container{flex:1;min-height:0;overflow-y:auto;}
+/* Right column: chat log + report. Limit chat area so it stays compact. */
+#view-dashboard.v2-dashboard #card-dash-chat-col{height:100%;}
+#view-dashboard.v2-dashboard #card-dash-chat{flex:0 0 auto;max-height:200px;overflow:hidden;}
+#view-dashboard.v2-dashboard #card-dash-chat .card2-body{overflow:auto;}
+#view-dashboard.v2-dashboard #card-dash-report{flex:1 1 0;min-height:120px;}
+#view-dashboard.v2-dashboard #dash-chat-area{padding:0;}
+#view-dashboard.v2-dashboard #dash-chat-area .chat-msg{font-size:var(--fs-sm);padding:4px 10px;}
+#view-dashboard.v2-dashboard #dash-chat-report-area{flex:1;min-height:0;}
+/* Prevent top-level cards (hero, KPI, matrix, devices) from being squeezed at small viewports */
+#view-dashboard.v2-dashboard.active > .hero-bar,
+#view-dashboard.v2-dashboard.active > .kpi-strip,
+#view-dashboard.v2-dashboard.active > #card-dash-matrix,
+#view-dashboard.v2-dashboard.active > #card-dash-devices{flex-shrink:0;}
 </style>
 </head>
 <body data-theme="dark-blue" data-fs="xl">
@@ -2232,82 +2531,201 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 <!-- Main content -->
 <div class="main">
 <!-- ===== DASHBOARD ===== -->
-<div class="view active" id="view-dashboard">
-  <div class="status-grid" style="grid-template-columns:repeat(2,1fr)">
-    <div class="stat"><div class="stat-label">検知イベント</div><div class="stat-value warn" id="dash-detect-count">0</div><div class="stat-sub" id="dash-detect-meta">0/hour · --</div></div>
-    <div class="stat" style="position:relative">
-      <div class="stat-label" style="display:flex;align-items:center">稼働時間<button onclick="resetUptime()" title="リセット" style="margin-left:auto;background:transparent;border:none;color:var(--text3);cursor:pointer;padding:0 2px;font-size:var(--fs-sm);line-height:1;transition:color .12s" onmouseover="this.style.color='var(--text1)'" onmouseout="this.style.color='var(--text3)'">&#8635;</button></div>
-      <div class="stat-value ok" id="dash-uptime">00:00:00</div>
-      <div class="stat-sub" id="dash-current-time" style="font-family:monospace;letter-spacing:.04em">--:--:--</div>
+<div class="view active v2-dashboard" id="view-dashboard">
+  <!-- === Status Hero === -->
+  <div class="hero-bar is-stopped" id="dash-hero">
+    <div class="hero-left">
+      <div class="hero-icon" id="dash-hero-icon">
+        <svg width="26" height="26" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="8" r="6"/>
+          <path d="M8 5v3l2 1.5"/>
+        </svg>
+      </div>
+      <div class="hero-meta">
+        <div class="hero-label">巡回ステータス</div>
+        <div class="hero-state" id="dash-ps-state">停止中</div>
+        <div class="hero-sub" id="dash-ps-parallel"></div>
+      </div>
+    </div>
+    <div class="hero-mid">
+      <div class="hero-row1">
+        <span class="k">現在</span>
+        <span class="hero-ch" id="dash-ps-ch">--</span>
+        <span id="dash-ps-prog" style="font-size:11px;color:var(--text3);font-family:var(--font-mono)"></span>
+        <span style="margin-left:auto;font-size:11px;color:var(--text3)">進捗 <b id="dash-patrol-label" style="color:var(--text1)">--</b></span>
+        <span style="font-size:11px;color:var(--accent2);font-family:var(--font-mono);font-weight:600" id="dash-patrol-percent"></span>
+      </div>
+      <div class="hero-progress" id="dash-patrol-progress"><div id="dash-patrol-fill"></div></div>
+      <div class="hero-row2">
+        <span><span>1サイクル</span> <b id="dash-ps-cycle-time">--</b></span>
+        <span><span>速度</span> <b id="dash-ps-cycle-rate" style="color:var(--accent2)">--</b></span>
+        <span id="dash-ps-full-wrap" style="display:none"><span>満員</span> <b id="dash-ps-full" style="color:var(--danger)"></b> <button id="btn-dash-clear-full" class="btn2 ghost sm" onclick="clearFullChannels()" title="満員リストをクリア"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></span>
+        <span style="margin-left:auto">
+          <label style="font-size:11px;color:var(--text3);margin-right:6px">開始Ch:</label>
+          <select id="dash-patrol-start-ch-select" style="width:80px;height:22px;font-size:11px;padding:0 4px"></select>
+          <input type="number" id="dash-patrol-start-ch" min="0" max="9999" value="0" style="width:60px;height:22px;font-size:11px;padding:0 6px;margin-left:4px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
+        </span>
+      </div>
+    </div>
+    <div class="hero-actions">
+      <button class="btn2 solid-success lg" id="dash-btn-patrol-start" onclick="patrolStart()" disabled>
+        <svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M4 3l9 5-9 5z"/></svg>
+        巡回開始
+      </button>
+      <button class="btn2 danger" id="dash-btn-patrol-stop" onclick="patrolStop()" disabled>
+        <svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg>
+        停止
+      </button>
+      <div style="display:flex;gap:6px;justify-content:space-between">
+        <button class="btn2 sm" id="dash-btn-reversed" onclick="toggleReversed()" style="flex:1" title="正順 / 逆順">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 10l4-4 4 4"/></svg>
+          正順
+        </button>
+        <button class="btn2 sm" id="dash-btn-loop" onclick="toggleLoop()" style="flex:1" title="ループ / 1巡">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3v4h-4"/><path d="M14 7A6 6 0 1 0 9 14"/></svg>
+          ループ
+        </button>
+      </div>
     </div>
   </div>
-  <div class="dashboard-grid" id="dashboard-grid">
-    <!-- 接続デバイス -->
-		<div class="card panel-size-1x1" id="card-dash-devices">
-      <div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>接続デバイス</div>
-      <div id="dash-device-list"><div class="no-devices">読み込み中...</div></div>
-      <div class="btn-row">
-        <button class="btn primary" onclick="scanDevices();switchView('devices',document.getElementById('nav-devices'))">🔍 再スキャン</button>
-        <button class="btn" onclick="switchView('devices',document.getElementById('nav-devices'))">管理 →</button>
+  <div id="dash-crash-warning" class="crash-warning"></div>
+
+  <!-- === KPI strip === -->
+  <div class="kpi-strip">
+    <div class="kpi-tile warn">
+      <div class="kl">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5l1.8 4.1 4.5.4-3.4 2.9 1 4.4L8 11l-3.9 2.3 1-4.4-3.4-2.9 4.5-.4z"/></svg>
+        検知イベント
       </div>
+      <div class="kv"><span id="dash-detect-count">0</span></div>
+      <div class="ks" id="dash-detect-meta">0/hour · --</div>
     </div>
-		<!-- 巡回制御 -->
-		<div class="card panel-size-1x1" id="card-dash-patrol">
-			<div class="card-title"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke-linecap="round"/></svg>巡回制御</div>
-      <div class="patrol-status"><span id="dash-ps-state" class="stopped">■ 停止中</span><span id="dash-ps-ch" style="color:var(--accent)"></span><span id="dash-ps-prog" style="color:var(--text3)"></span><span id="dash-ps-parallel"></span></div>
-      <div class="patrol-progress" id="dash-patrol-progress">
-        <div class="progress-line"><div class="progress-fill" id="dash-patrol-fill"></div></div>
-        <div class="progress-text"><span id="dash-patrol-label">--</span><span id="dash-patrol-percent"></span></div>
+    <div class="kpi-tile ok">
+      <div class="kl">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.5"/></svg>
+        稼働時間
+        <button onclick="resetUptime()" title="リセット" style="margin-left:auto;background:transparent;border:none;color:var(--text3);cursor:pointer;padding:0 2px;font-size:14px;line-height:1">&#8635;</button>
       </div>
-      <div id="dash-crash-warning" class="crash-warning"></div>
-      <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">
-        <div id="dash-ps-full" style="font-size:.78em;color:#fca5a5;flex:1"></div>
-        <button id="btn-dash-clear-full" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearFullChannels()">✕ クリア</button>
+      <div class="kv"><span id="dash-uptime">00:00:00</span></div>
+      <div class="ks" id="dash-current-time" style="font-family:var(--font-mono)">--:--:--</div>
+    </div>
+    <div class="kpi-tile accent">
+      <div class="kl">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h8M2 12h10"/></svg>
+        巡回サイクル
       </div>
-			<div class="flex-row" style="margin-bottom:8px">
-				<label style="font-size:var(--fs-sm)">開始Ch:</label>
-				<select id="dash-patrol-start-ch-select" style="width:80px"></select>
-				<input type="number" id="dash-patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
-				<button class="btn toggle-btn" id="dash-btn-reversed" onclick="toggleReversed()">⬆ 正順</button>
-				<button class="btn toggle-btn" id="dash-btn-loop" onclick="toggleLoop()">🔁 ループ</button>
-			</div>
-      <div class="flex-row">
-        <button class="btn success" id="dash-btn-patrol-start" onclick="patrolStart()" disabled>▶ 巡回開始</button>
-        <button class="btn" id="dash-btn-patrol-stop" onclick="patrolStop()" disabled>■ 停止</button>
-        <button class="btn" onclick="switchView('patrol',document.getElementById('nav-patrol'))">詳細 →</button>
+      <div class="kv"><span id="dash-kpi-cycle">--</span><small id="dash-kpi-cycle-sub"></small></div>
+      <div class="ks">1ch あたり <span id="dash-kpi-cycle-per" style="color:var(--text1);font-family:var(--font-mono)">--</span></div>
+    </div>
+    <div class="kpi-tile">
+      <div class="kl">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>
+        接続デバイス
+        <button onclick="scanDevices()" title="再スキャン" style="margin-left:auto;background:transparent;border:none;color:var(--text3);cursor:pointer;padding:0 2px;font-size:13px;line-height:1">&#x21BB;</button>
       </div>
-      <div class="status-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-top:10px">
-        <div class="stat">
-          <div class="stat-label">1サイクル時間</div>
-          <div class="stat-value" id="dash-ps-cycle-time">--</div>
+      <div class="kv"><span id="dash-kpi-dev">--</span><small id="dash-kpi-dev-sub"></small></div>
+      <div class="ks" id="dash-kpi-dev-state">読み込み中</div>
+    </div>
+  </div>
+
+  <!-- === Channel matrix === -->
+  <div class="card2" id="card-dash-matrix">
+    <div class="card2-head">
+      <span class="ci"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 2L1.5 5.5 8 9l6.5-3.5z"/><path d="M1.5 9L8 12.5 14.5 9"/></svg></span>
+      <span class="ct">チャンネルマトリクス</span>
+      <span class="cc" id="dash-matrix-count">0 ch</span>
+      <div class="ca">
+        <div class="ch-legend" style="margin-top:0">
+          <span><span class="sw" style="background:var(--accent)"></span>巡回中</span>
+          <span><span class="sw" style="background:var(--accent2)"></span>完了</span>
+          <span><span class="sw" style="background:var(--bg3)"></span>待機</span>
+          <span><span class="sw" style="background:var(--danger)"></span>満員</span>
+          <span style="color:var(--warn)">&#x2605; 検知済</span>
         </div>
-        <div class="stat">
-          <div class="stat-label">巡回速度</div>
-          <div class="stat-value ok" id="dash-ps-cycle-rate">--</div>
+        <div class="btn-grp" title="表示モード">
+          <button class="btn2 sm" id="btn-matrix-mode-patrol" onclick="setMatrixMode('patrol')" title="巡回対象のみ表示">巡回</button>
+          <button class="btn2 sm" id="btn-matrix-mode-all" onclick="setMatrixMode('all')" title="全chを表示">全ch</button>
+        </div>
+        <button class="btn2 ghost sm" onclick="switchView('patrol',document.getElementById('nav-patrol'))" title="巡回チャンネルを編集">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13h2.5l7-7L10 3.5l-7 7z"/><path d="M9.5 4l2.5 2.5"/></svg>
+          編集
+        </button>
+      </div>
+    </div>
+    <div class="card2-body" style="max-height:280px;overflow:auto;padding:10px 14px;display:block;">
+      <div class="ch-matrix" id="dash-ch-matrix"></div>
+    </div>
+  </div>
+
+  <!-- === 2-column grid === -->
+  <div class="dash-grid2" id="dashboard-grid">
+    <!-- Left col -->
+    <div class="dash-col" id="card-dash-gold">
+      <div class="card2" style="flex:1;min-height:0">
+        <div class="card2-head">
+          <span class="ci"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" style="color:var(--warn)"><path d="M8 1.5l1.8 4.1 4.5.4-3.4 2.9 1 4.4L8 11l-3.9 2.3 1-4.4-3.4-2.9 4.5-.4z"/></svg></span>
+          <span class="ct">レアエネミー検知履歴</span>
+          <span class="cc" id="dash-gold-count">0</span>
+          <div class="ca">
+            <button class="btn2 ghost sm" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')" title="別ウィンドウで開く">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h5v5"/><path d="M14 2L8 8"/><path d="M13 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h4"/></svg>
+            </button>
+            <button class="btn2 ghost sm" onclick="clearAllGoldHistory()" title="一括クリア">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4h10M6.5 4V2.5h3V4M5 4l.5 9.5h5L11 4"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="card2-body" style="padding:0">
+          <div id="gold-history-container"><div class="no-history" style="padding:14px">検知履歴なし</div></div>
         </div>
       </div>
     </div>
-    <!-- レアエネミー検知履歴 -->
-		<div class="card panel-size-1x1" id="card-dash-gold">
-		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:var(--fs-xs)" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
-      <div id="gold-history-container"><div class="no-history">検知履歴なし</div></div>
-    </div>
-    <!-- チャットログ -->
-		<div class="card panel-size-1x1" id="card-dash-chat" style="display:flex;flex-direction:column;padding:0;overflow:hidden;--panel-rows:58">
-      <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg>
-        チャットログ
-        <button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="switchView('chat-log',document.getElementById('nav-chat-log'))">展開 →</button>
+
+    <!-- Right col: chat log + report -->
+    <div class="dash-col" id="card-dash-chat-col">
+      <div class="card2" id="card-dash-chat" style="flex:1;min-height:0">
+        <div class="card2-head">
+          <span class="ci"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg></span>
+          <span class="ct">チャットログ</span>
+          <div class="ca">
+            <button class="btn2 ghost sm" onclick="switchView('chat-log',document.getElementById('nav-chat-log'))" title="展開">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+              展開
+            </button>
+          </div>
+        </div>
+        <div class="card2-body" style="padding:0;overflow:auto"><div id="dash-chat-area"></div></div>
       </div>
-	<div id="dash-chat-area"></div>
-    </div>
-    <!-- 発見報告候補 -->
-		<div class="card panel-size-1x1" id="card-dash-report" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
-      <div class="card-title" style="padding:10px 14px 8px;margin-bottom:0;border-bottom:1px solid var(--border)">
-        発見報告候補
-        <span style="margin-left:auto;font-size:var(--fs-xs);color:var(--text3)">自動抽出</span>
+      <div class="card2" id="card-dash-report" style="flex:1;min-height:0">
+        <div class="card2-head">
+          <span class="ci" style="color:var(--warn)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7a4 4 0 0 1 8 0v3l1.5 2H2.5L4 10z"/><path d="M6.5 13.5a1.5 1.5 0 0 0 3 0"/></svg></span>
+          <span class="ct">発見報告候補</span>
+          <span class="cc">自動抽出</span>
+        </div>
+        <div class="card2-body" style="padding:0;overflow:auto"><div id="dash-chat-report-area" class="chat-report-list"></div></div>
       </div>
-      <div id="dash-chat-report-area" class="chat-report-list"></div>
+    </div>
+  </div>
+
+  <!-- === Device pills (bottom row) === -->
+  <div class="card2" id="card-dash-devices">
+    <div class="card2-head">
+      <span class="ci"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg></span>
+      <span class="ct">接続デバイス</span>
+      <span class="cc" id="dash-dev-count">--</span>
+      <div class="ca">
+        <button class="btn2 ghost sm" onclick="scanDevices()" title="再スキャン">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M14 3v4h-4"/><path d="M14 7A6 6 0 1 0 9 14"/></svg>
+          再スキャン
+        </button>
+        <button class="btn2 ghost sm" onclick="switchView('devices',document.getElementById('nav-devices'))" title="デバイス管理">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+          管理
+        </button>
+      </div>
+    </div>
+    <div class="card2-body">
+      <div id="dash-device-list" class="devpill-grid"><div class="no-devices">読み込み中...</div></div>
     </div>
   </div>
 </div>
@@ -2453,6 +2871,15 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
           <button class="btn" style="padding:3px 10px;font-size:.8em" onclick="bulkImportChannels()">上書き</button>
         </div>
       </div>
+		<div class="card panel-size-1x2 panel-col-1" id="card-patrol-device-status">
+		  <div class="card-title">デバイス監視</div>
+		  <div style="overflow-x:auto">
+		    <table class="dev-stat-table">
+		      <thead><tr><th>シリアル</th><th>ラベル</th><th>ch</th><th>ロード(s)</th><th>状態</th><th>操作</th></tr></thead>
+		      <tbody id="device-status-tbody"><tr><td colspan="6" style="color:var(--text3)">--</td></tr></tbody>
+		    </table>
+		  </div>
+		</div>
 		<div class="card panel-size-1x2 panel-col-2" id="card-patrol-gold">
 		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:var(--fs-xs)" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
         <div id="gold-history-container-patrol"><div class="no-history">検知履歴なし</div></div>
@@ -2628,7 +3055,7 @@ document.addEventListener('DOMContentLoaded',function(){
   }
 });
 // ...既存コード...
-const EDITABLE_LAYOUT_VIEWS=['dashboard','patrol','chat-log'];
+const EDITABLE_LAYOUT_VIEWS=['patrol','chat-log']; // v2: dashboard layout edit frozen during refresh
 let currentViewId='dashboard';
 function isLayoutEditableView(id){
 	return EDITABLE_LAYOUT_VIEWS.includes(id);
@@ -3061,8 +3488,15 @@ async function loadGoldHistory(){
     }
     if(detEl) detEl.textContent = Array.isArray(h) ? String(h.length) : '0';
     if(metaEl) metaEl.textContent = String(perHour) + '/hour · ' + latestAgo;
+    // v2: track detected channels for matrix overlay + update count badge
+    const detSet = new Set();
+    if(Array.isArray(h)) h.forEach(e=>{ if(e && Number.isFinite(e.channel)) detSet.add(Number(e.channel)); });
+    _detectedChannels = detSet;
+    const goldCnt = document.getElementById('dash-gold-count');
+    if(goldCnt) goldCnt.textContent = Array.isArray(h)?String(h.length):'0';
+    if(typeof renderChannelMatrix === 'function') renderChannelMatrix();
     const tbl = (!h || h.length === 0) ? '<div class="no-history">検知履歴なし</div>'
-      : '<table class="gold-table"><colgroup><col class="col-time"><col class="col-name"><col class="col-ch"><col><col class="col-action"></colgroup>'
+      : '<table class="gold-table"><colgroup><col class="col-time"><col class="col-name"><col class="col-ch"><col class="col-loc"><col class="col-action"></colgroup>'
       + '<thead><tr><th>時刻</th><th>名前</th><th>Ch</th><th>場所</th><th></th></tr></thead><tbody>'
       + h.map(e=>{const nm=e.monster_name||'ウリボ・ゴールド';const cls=nm.includes('銀ナッポ')?'name-cell silver':'name-cell';return '<tr><td class="time-cell">'+escHtml(e.time||'')+'</td><td class="'+cls+'">'+escHtml(nm)+'</td><td class="ch-cell">Ch'+Number(e.channel)+'</td><td>'+escHtml(e.location||'')+'</td><td class="action-cell"><button onclick="removeGoldHistory('+Number(e.timestamp)+')">×</button></td></tr>'}).join('')
       + '</tbody></table>';
@@ -3070,18 +3504,116 @@ async function loadGoldHistory(){
     const c2=document.getElementById('gold-history-container-patrol');if(c2)c2.innerHTML=tbl;
   }catch(_){}
 }
+// ── Channel matrix (v2 dashboard) ──
+let _lastPatrolStatus = null;
+let _detectedChannels = new Set();
+// 'patrol' = show only patrol channels; 'all' = show 1..100
+let _matrixMode = localStorage.getItem('dashMatrixMode') || 'patrol';
+function setMatrixMode(mode){
+  _matrixMode = (mode === 'all') ? 'all' : 'patrol';
+  localStorage.setItem('dashMatrixMode', _matrixMode);
+  const bp = document.getElementById('btn-matrix-mode-patrol');
+  const ba = document.getElementById('btn-matrix-mode-all');
+  if(bp)bp.classList.toggle('active', _matrixMode === 'patrol');
+  if(ba)ba.classList.toggle('active', _matrixMode === 'all');
+  renderChannelMatrix();
+}
+function renderChannelMatrix(statusOpt){
+  const grid = document.getElementById('dash-ch-matrix');
+  if(!grid)return;
+  if(statusOpt)_lastPatrolStatus = statusOpt;
+  // sync toggle button active state on first render
+  const bpBtn = document.getElementById('btn-matrix-mode-patrol');
+  const baBtn = document.getElementById('btn-matrix-mode-all');
+  if(bpBtn && baBtn && !bpBtn.classList.contains('active') && !baBtn.classList.contains('active')){
+    if(_matrixMode === 'all') baBtn.classList.add('active');
+    else bpBtn.classList.add('active');
+  }
+  const status = _lastPatrolStatus || {};
+  const chs = Array.isArray(patrolChannels)?patrolChannels.slice():[];
+  if(chs.length===0 && _matrixMode === 'patrol'){
+    grid.innerHTML = '<div style="grid-column:1/-1;color:var(--text3);padding:14px;font-size:var(--fs-sm);text-align:center">巡回チャンネルが登録されていません — <a href="#" onclick="switchView(\'patrol\',document.getElementById(\'nav-patrol\'));return false" style="color:var(--accent)">編集</a></div>';
+    const cntEl = document.getElementById('dash-matrix-count');
+    if(cntEl)cntEl.textContent = '0 ch';
+    return;
+  }
+  const inPatrol = new Set(chs);
+  const fullSet = new Set(Array.isArray(status.full_channels)?status.full_channels:[]);
+  const currentCh = Number(status.current_channel)||0;
+  const currentIdx = Number(status.current_index);
+  const ordered = patrolReversed?chs.slice().sort((a,b)=>b-a):chs.slice().sort((a,b)=>a-b);
+  const doneSet = new Set();
+  if(status.running && Number.isFinite(currentIdx) && currentIdx >= 0){
+    for(let i=0;i<Math.min(currentIdx, ordered.length);i++)doneSet.add(ordered[i]);
+  }
+  let cellsToShow = [];
+  let cols = 10;
+  if(_matrixMode === 'all'){
+    cols = 20;
+    for(let ch=1; ch<=100; ch++)cellsToShow.push(ch);
+  }else{
+    cellsToShow = chs.slice().sort((a,b)=>a-b);
+    const n = cellsToShow.length;
+    if(n <= 6) cols = Math.max(4, n);
+    else if(n <= 16) cols = 8;
+    else if(n <= 30) cols = 10;
+    else if(n <= 60) cols = 12;
+    else cols = 14;
+  }
+  grid.style.setProperty('--ch-cols', cols);
+  let html = '';
+  for(const ch of cellsToShow){
+    const isInPatrol = inPatrol.has(ch);
+    if(!isInPatrol){
+      html += '<div class="ch-cell" title="ch.'+ch+' (巡回対象外)" style="opacity:.22">'+ch+'</div>';
+      continue;
+    }
+    let cls = 'ch-cell queued';
+    let title = 'ch.'+ch;
+    if(ch === currentCh){cls = 'ch-cell current'; title = 'ch.'+ch+' (現在)';}
+    else if(fullSet.has(ch)){cls = 'ch-cell full'; title = 'ch.'+ch+' (満員)';}
+    else if(doneSet.has(ch)){cls = 'ch-cell done'; title = 'ch.'+ch+' (完了)';}
+    if(_detectedChannels.has(ch)){cls += ' detected'; title += ' \u2605検知済';}
+    html += '<div class="'+cls+'" title="'+title+'">'+ch+'</div>';
+  }
+  grid.innerHTML = html;
+  const cntEl = document.getElementById('dash-matrix-count');
+  if(cntEl){
+    const maxCh = chs.reduce((m,c)=>Math.max(m,c),0);
+    cntEl.textContent = (_matrixMode==='all') ? (chs.length+' / 100 ch') : (chs.length+' ch (max '+maxCh+')');
+  }
+}
 // ── Dashboard device summary ──
 function renderDashDevices(devs,deviceMap){
   const el=document.getElementById('dash-device-list');if(!el)return;
-  if(!devs||devs.length===0){el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return;}
+  const cntEl=document.getElementById('dash-dev-count');
+  const kpi=document.getElementById('dash-kpi-dev');
+  const kpiSub=document.getElementById('dash-kpi-dev-sub');
+  const kpiState=document.getElementById('dash-kpi-dev-state');
+  if(!devs||devs.length===0){
+    el.innerHTML='<div class="no-devices" style="padding:8px;color:var(--text3);font-size:var(--fs-sm)">デバイスが見つかりません</div>';
+    if(cntEl)cntEl.textContent='0';
+    if(kpi)kpi.textContent='0';
+    if(kpiSub)kpiSub.textContent='';
+    if(kpiState)kpiState.textContent='検出なし';
+    return;
+  }
+  const connected=devs.length;
   el.innerHTML=devs.map(d=>{
     const info=deviceMap[d]||{};
-    const uid=info.user_uid||'',ch=info.line_id||'',confirmed=info.confirmed||false;
-    const sub=uid?((confirmed?'🔗 ':'')+' UID:'+uid+(ch?' Ch'+ch:'')):'--';
-    return '<div class="device-row"><div class="device-icon">📱</div>'
-      +'<div class="device-info"><div class="device-name">'+escHtml(d)+'</div><div class="device-sub">'+escHtml(sub)+'</div></div>'
-      +'<div class="device-badge '+(confirmed?'connected':'offline')+'">'+escHtml(d)+'</div></div>';
+    const uid=info.user_uid||'',ch=info.current_ch||info.line_id||'',confirmed=info.confirmed||false;
+    const sub=uid?((confirmed?'\u{1F517} ':'')+'UID:'+uid+(ch?' Ch'+ch:'')):(d.split(':')[1]||d);
+    const chDisplay=ch?String(ch):(confirmed?'<span style="color:var(--accent2);font-size:11px">ON</span>':'\u2014');
+    return '<div class="devpill">'
+      +'<span class="dot2 '+(confirmed?'ok':'warn')+'"></span>'
+      +'<div class="dp-body"><div class="dp-name">'+escHtml(d)+'</div><div class="dp-sub">'+escHtml(sub)+'</div></div>'
+      +'<span class="dp-ch">'+chDisplay+'</span>'
+      +'</div>';
   }).join('');
+  if(cntEl)cntEl.textContent=connected+' / '+devs.length;
+  if(kpi)kpi.textContent=String(connected);
+  if(kpiSub)kpiSub.textContent='/'+devs.length;
+  if(kpiState)kpiState.textContent='全台接続中';
 }
 // ── Devices ──
 let selectedDevices=new Set();
@@ -3093,7 +3625,7 @@ function renderDeviceList(){
   const el=document.getElementById('device-list');if(!el)return;
   if(!currentDevices||currentDevices.length===0){el.innerHTML='<div class="no-devices">デバイスが見つかりません</div>';return;}
   el.innerHTML=currentDevices.map(d=>{
-    const info=currentDeviceMap[d]||{};const uid=info.user_uid||'',ch=info.line_id||'',confirmed=info.confirmed||false;
+    const info=currentDeviceMap[d]||{};const uid=info.user_uid||'',ch=info.current_ch||info.line_id||'',confirmed=info.confirmed||false;
     const checked=selectedDevices.has(d)?'checked':'';
     const uidHtml=uid?('<span class="uid">'+(confirmed?'🔗':'')+' UID:'+uid+(ch?' Ch'+ch:'')+'</span>'):'';
     const eid='ch-'+encodeURIComponent(d);
@@ -3509,7 +4041,7 @@ function applyNotifySoundUI(){
 	if(vol){vol.value=notifySoundVolume;vol.disabled=!notifySoundEnabled;}
 }
 function appendChatToPanel(ev){
-  const isDup=chatEvents.slice(-50).some(e=>e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
+  const isDup=chatEvents.slice(-50).some(e=>e.client_ip===ev.client_ip&&e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
   if(isDup)return;
   chatEvents.push(ev);if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
   if(isChatCandidate(ev)){
@@ -3604,13 +4136,21 @@ function stopTapLoopPoll(){
 })();
 // ── Patrol ──
 let patrolChannels=[],patrolReversed=localStorage.getItem('patrolReversed')==='true',patrolLoopMode=localStorage.getItem('patrolLoopMode')!=='false';
-function applyReversedUI(){['btn-reversed','dash-btn-reversed'].forEach(id=>{const b=document.getElementById(id);if(!b)return;b.textContent=patrolReversed?'⬇ 逆順':'⬆ 正順';b.classList.toggle('active',patrolReversed);});}
-function applyLoopUI(){['btn-loop','dash-btn-loop'].forEach(id=>{const b=document.getElementById(id);if(!b)return;b.textContent=patrolLoopMode?'🔁 ループ':'1️⃣ 一巡';b.classList.toggle('active',!patrolLoopMode);});}
+function _setBtnLabel(b,label){
+  // If button uses SVG icon (v2), keep icon and update only the trailing text node.
+  let textNode=null;
+  for(const n of b.childNodes){if(n.nodeType===Node.TEXT_NODE && n.textContent.trim()){textNode=n;break;}}
+  if(textNode){textNode.textContent=' '+label;}
+  else b.textContent=label;
+}
+function applyReversedUI(){['btn-reversed','dash-btn-reversed'].forEach(id=>{const b=document.getElementById(id);if(!b)return;_setBtnLabel(b,patrolReversed?'逆順':'正順');b.classList.toggle('active',patrolReversed);});}
+function applyLoopUI(){['btn-loop','dash-btn-loop'].forEach(id=>{const b=document.getElementById(id);if(!b)return;_setBtnLabel(b,patrolLoopMode?'ループ':'一巡');b.classList.toggle('active',!patrolLoopMode);});}
 async function loadPatrolChannels(){
   const d=await fetch('/api/patrol/channels').then(r=>r.json());
   patrolChannels=d.channels||[];renderChannelEditor();
   const sel=document.getElementById('dash-patrol-start-ch-select');
   if(sel){const cur=sel.value;sel.innerHTML='<option value="0">(前回位置)</option>'+patrolChannels.map(ch=>'<option value="'+ch+'">'+ch+'</option>').join('');sel.value=cur;}
+  if(typeof renderChannelMatrix==='function')renderChannelMatrix();
 }
 function renderChannelEditor(){
   const el=document.getElementById('ch-editor');
@@ -3684,6 +4224,22 @@ function renderPatrolCycleStats(running){
 		timeEl.textContent=formatPatrolCycleDuration(patrolCycleStats.avgCycleMs);
 		if(rateEl)rateEl.textContent=formatPatrolCycleRate(patrolCycleStats.avgCycleMs);
 	});
+	// v2: KPI cycle tile
+	const kpiCycle=document.getElementById('dash-kpi-cycle');
+	const kpiCycleSub=document.getElementById('dash-kpi-cycle-sub');
+	const kpiCyclePer=document.getElementById('dash-kpi-cycle-per');
+	if(kpiCycle){
+		kpiCycle.textContent=formatPatrolCycleDuration(patrolCycleStats.avgCycleMs);
+	}
+	if(kpiCycleSub){
+		const avg=patrolCycleStats.avgCycleMs;
+		const chCount=Array.isArray(patrolChannels)?patrolChannels.length:0;
+		if(avg>0 && chCount>0){
+			const perCh=Math.round(avg/chCount/1000);
+			if(kpiCyclePer)kpiCyclePer.textContent=perCh+'s';
+		}else if(kpiCyclePer){kpiCyclePer.textContent='--';}
+		kpiCycleSub.textContent='';
+	}
 }
 function updatePatrolCycleStats(d,currentPhase){
 	if(!d.running){
@@ -3741,8 +4297,11 @@ async function pollPatrolStatus(){
 			const phaseLabel = phaseState.label + (remainingSecs > 0 ? ' (' + remainingSecs + 's)' : '');
 			const progressText = Math.round(progressPct) + '%';
       updatePatrolCycleStats(d, currentPhase);
-      ['ps-state','dash-ps-state'].forEach(id=>{const e=els(id);if(e){e.className='running';e.textContent='▶ '+phaseState.label+(id==='ps-state'&&d.waiting_move?' ⏳':'');}});
-      ['ps-ch','dash-ps-ch'].forEach(id=>{const e=els(id);if(e)e.textContent='Ch'+d.current_channel;});
+      ['ps-state'].forEach(id=>{const e=els(id);if(e){e.className='running';e.textContent='▶ '+phaseState.label+(d.waiting_move?' ⏳':'');}});
+      { const e=els('dash-ps-state'); if(e){e.className='hero-state';e.textContent=phaseState.label+(d.waiting_move?' ⏳':'');} }
+      { const h=els('dash-hero'); if(h){h.classList.remove('is-stopped','is-warn');} }
+      ['ps-ch'].forEach(id=>{const e=els(id);if(e)e.textContent='Ch'+d.current_channel;});
+      { const e=els('dash-ps-ch'); if(e)e.textContent='ch.'+d.current_channel; }
       ['ps-prog','dash-ps-prog'].forEach(id=>{const e=els(id);if(e)e.textContent=(d.current_index+1)+'/'+d.total_channels;});
       ['dash-patrol-label','ps-patrol-label'].forEach(id=>{const e=els(id);if(e)e.textContent=phaseLabel;});
       ['dash-patrol-percent','ps-patrol-percent'].forEach(id=>{const e=els(id);if(e)e.textContent=progressText;});
@@ -3755,8 +4314,11 @@ async function pollPatrolStatus(){
       });
       updatePatrolUI(true);
     }else{
-      ['ps-state','dash-ps-state'].forEach(id=>{const e=els(id);if(e){e.className='stopped';e.textContent='■ 停止中';}});
-      ['ps-ch','dash-ps-ch','ps-prog','dash-ps-prog'].forEach(id=>{const e=els(id);if(e)e.textContent=id==='ps-ch'&&d.last_channel>0?'前回: Ch'+d.last_channel:'';});
+      ['ps-state'].forEach(id=>{const e=els(id);if(e){e.className='stopped';e.textContent='■ 停止中';}});
+      { const e=els('dash-ps-state'); if(e){e.className='hero-state';e.textContent='停止中';} }
+      { const h=els('dash-hero'); if(h){h.classList.add('is-stopped');h.classList.remove('is-warn');} }
+      ['ps-ch','ps-prog','dash-ps-prog'].forEach(id=>{const e=els(id);if(e)e.textContent=id==='ps-ch'&&d.last_channel>0?'前回: Ch'+d.last_channel:'';});
+      { const e=els('dash-ps-ch'); if(e)e.textContent=d.last_channel>0?'ch.'+d.last_channel:'--'; }
 			['dash-patrol-label','ps-patrol-label'].forEach(id=>{const e=els(id);if(e)e.textContent='--';});
 			['dash-patrol-percent','ps-patrol-percent'].forEach(id=>{const e=els(id);if(e)e.textContent='';});
 			['dash-patrol-fill','ps-progress-fill'].forEach(id=>{const e=els(id);if(e)e.style.width='0%';});
@@ -3766,9 +4328,18 @@ async function pollPatrolStatus(){
     }
     [['ps-full','btn-clear-full'],['dash-ps-full','btn-dash-clear-full']].forEach(([fullId,clearId])=>{
       const fullEl=els(fullId),clearBtn=els(clearId);
-      if(d.full_channels&&d.full_channels.length){if(fullEl)fullEl.textContent='🚫 満員スキップ: Ch'+d.full_channels.join(', Ch');if(clearBtn)clearBtn.style.display='';}
-      else{if(fullEl)fullEl.textContent='';if(clearBtn)clearBtn.style.display='none';}
+      if(d.full_channels&&d.full_channels.length){
+        if(fullEl){
+          if(fullId==='dash-ps-full')fullEl.textContent='ch.'+d.full_channels.join(', ch.');
+          else fullEl.textContent='🚫 満員スキップ: Ch'+d.full_channels.join(', Ch');
+        }
+        if(clearBtn)clearBtn.style.display='';
+      }else{if(fullEl)fullEl.textContent='';if(clearBtn)clearBtn.style.display='none';}
     });
+    // v2: toggle hero-bar full-channels wrapper visibility
+    { const w=els('dash-ps-full-wrap'); if(w)w.style.display=(d.full_channels&&d.full_channels.length)?'':'none'; }
+    // v2: render channel matrix using current patrol status
+    if(typeof renderChannelMatrix==='function')renderChannelMatrix(d);
     const crashed=d.crashed_instances&&d.crashed_instances.length?d.crashed_instances:null;
     const showWarn=!crashed&&d.running&&(d.consecutive_full_count||0)>=3;
     const warnMsg=crashed?'⚠ クラッシュ判定: '+crashed.join(', ')+' (3回連続未応答)':'⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。';
@@ -3777,8 +4348,41 @@ async function pollPatrolStatus(){
       const show=crashed||showWarn;
       e.style.display=show?'':'none';if(show)e.textContent=warnMsg;
     });
+    try{
+      const ds=await fetch('/api/patrol/device-statuses').then(r=>r.json());
+      renderDeviceStatuses(ds);
+    }catch(e){}
   }catch(e){console.warn('patrol status error:',e);}
   finally{setTimeout(pollPatrolStatus,2000);}
+}
+function renderDeviceStatuses(statuses){
+  const tbody=document.getElementById('device-status-tbody');if(!tbody)return;
+  if(!statuses||!statuses.length){tbody.innerHTML='<tr><td colspan="6" style="color:var(--text3)">デバイスデータなし</td></tr>';return;}
+  tbody.innerHTML=statuses.map(function(d){
+    var badge,state;
+    if(d.recovering){badge='dev-stat-recover';state='🔄 復帰中';}
+    else if(d.game_crashed){badge='dev-stat-crash';state='🔴 クラッシュ';}
+    else if(d.adb_failed){badge='dev-stat-adb';state='⚠ ADB失敗';}
+    else if(d.timed_out_last){badge='dev-stat-timeout';state='🟡 タイムアウト';}
+    else{badge='dev-stat-ok';state='🟢 正常';}
+    var recoverBtn=d.game_crashed&&!d.recovering
+      ?'<button class="btn" style="padding:1px 8px;font-size:.75em" onclick="recoverDevice(\''+escHtml(d.serial)+'\')">復帰</button>'
+      :'';
+    var consec=d.consecutive_timeout>1?' x'+d.consecutive_timeout:'';
+    return '<tr>'
+      +'<td style="font-family:var(--font-mono);font-size:.75em">'+escHtml(d.serial)+'</td>'
+      +'<td>'+escHtml(d.label||'--')+'</td>'
+      +'<td>'+(d.current_ch>0?d.current_ch:'--')+'</td>'
+      +'<td>'+(d.last_load_secs>0?d.last_load_secs.toFixed(1):'--')+'</td>'
+      +'<td><span class="dev-stat-badge '+badge+'">'+state+'</span>'+consec+'</td>'
+      +'<td>'+recoverBtn+'</td>'
+      +'</tr>';
+  }).join('');
+}
+async function recoverDevice(serial){
+  const r=await fetch('/api/patrol/recover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial})});
+  const d=await r.json();
+  if(!d.ok)alert('復帰失敗: '+(d.error||''));
 }
 // ── Config ──
 const CHAT_FILTER_FIELDS=[
@@ -3807,8 +4411,15 @@ const CFG_FIELDS=[
   {k:'chat_report_min_length',label:'報告候補 最小文字数',type:'number',desc:'0でデフォルト(4)。これ未満のメッセージを除外'},
   {k:'chat_report_max_length',label:'報告候補 最大文字数',type:'number',desc:'0でデフォルト(80)。これ超のメッセージを除外'},
   {k:'patrol_dwell_secs',label:'滞在時間 (秒)',type:'number',desc:'ch移動完了後〜次ch移動開始までの待機秒数'},
-  {k:'patrol_move_timeout_secs',label:'初回マージ待ちタイムアウト (秒)',type:'number',desc:'1台目のマージを待つ最大秒数。0=無効'},
-  {k:'patrol_merge_timeout_secs',label:'残りマージ待ちタイムアウト (秒)',type:'number',desc:'1台目受信後、残り台数を待つ最大秒数'},
+  {k:'patrol_move_timeout_secs',label:'初回マージ待ちタイムアウト (秒)',type:'number',desc:'1台目のマージを待つ最大秒数。0=無効 (適応型有効時は下限値として機能)'},
+  {k:'patrol_merge_timeout_secs',label:'残りマージ待ちタイムアウト (秒)',type:'number',desc:'1台目受信後、残り台数を待つ最大秒数 (適応型有効時は下限値として機能)'},
+  {k:'patrol_adaptive_timeout',label:'適応型タイムアウト',type:'bool',desc:'実ロード時間を学習してタイムアウトを自動延長。ロード中デバイスへの早期切替を防止'},
+  {k:'patrol_adaptive_timeout_window',label:'適応型: 学習サンプル数',type:'number',desc:'参照する直近ロード回数（デフォルト: 10）'},
+  {k:'game_package_name',label:'ゲームパッケージ名',type:'text',desc:'クラッシュ検知・ADB起動用のパッケージ名。例: com.example.game'},
+  {k:'game_launch_activity',label:'起動アクティビティ',type:'text',desc:'復帰時に使用。空のmonkeyモードで起動'},
+  {k:'crash_recovery_enabled',label:'クラッシュ自動復帰',type:'bool',desc:'ゲームクラッシュ時にADBで自動再起動'},
+  {k:'crash_recovery_delay_secs',label:'復帰待機時間 (秒)',type:'number',desc:'起動コマンド後、当該デバイスを反応待ちする秒数'},
+  {k:'serial_to_label',label:'シリアル→ラベル分配 (JSON)',type:'json',desc:'ADBシリアルとInstance-Nラベルの対応。例: {"127.0.0.1:5555":"Instance-1"}'},
   {k:'parallel_limit',label:'並列切替台数',type:'number',desc:'0=全台同時（ディレイ無効）'},
   {k:'parallel_group_delay_secs',label:'グループ間ディレイ (秒)',type:'number',desc:'並列台数>0のとき有効'},
   {k:'adb_path',label:'ADBパス',type:'text',desc:'adb.exeのフルパスまたは「adb」'},
@@ -3829,6 +4440,10 @@ function renderConfigFields(containerId, fields){
 		if(f.type==='multiline-list'&&Array.isArray(val))val=val.join('\n');
 		if(f.type==='multiline-list'){
 			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><textarea id="cfg-'+f.k+'" rows="10" spellcheck="false" placeholder="'+escHtml(f.desc||'')+'">'+escHtml(String(val))+'</textarea>'+noteHtml+'</div>';
+		}
+		if(f.type==='json'){
+			var jsonStr=typeof val==='object'?JSON.stringify(val,null,2):String(val||'{}');
+			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><textarea id="cfg-'+f.k+'" rows="5" spellcheck="false" style="font-family:monospace;font-size:12px" placeholder="'+escHtml(f.desc||'')+'">'+escHtml(jsonStr)+'</textarea>'+noteHtml+'</div>';
 		}
 		if(f.type==='bool'){
 			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="cfg-'+f.k+'"'+(val?' checked':'')+'>'+escHtml(f.desc||'')+'</label></div>';
@@ -4140,6 +4755,7 @@ async function saveConfig(silent){
 		else if(f.type==='multiline-list')updated[f.k]=el.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 		else if(f.type==='csv')updated[f.k]=el.value.split(',').map(s=>s.trim()).filter(Boolean);
 		else if(f.type==='bool')updated[f.k]=el.checked;
+		else if(f.type==='json'){try{updated[f.k]=JSON.parse(el.value);}catch(e){updated[f.k]={};}}
 		else updated[f.k]=el.value;});
 	// 通知エネミー（{name, enabled} 形式で全件保存）
 	updated.notify_enemies=[];
@@ -4198,10 +4814,11 @@ setInterval(()=>{
 // ── Dashboard layout ──
 const DASH_PANEL_IDS=['card-dash-devices','card-dash-patrol','card-dash-gold','card-dash-chat','card-dash-report'];
 const DASH_SIZE_CLASSES=['panel-size-1x1','panel-size-1x2','panel-size-2x1','panel-size-2x2','panel-size-2x3','panel-size-2x4'];
-const PATROL_LAYOUT_CARD_IDS=['card-patrol-control','card-patrol-channels','card-patrol-gold'];
+const PATROL_LAYOUT_CARD_IDS=['card-patrol-control','card-patrol-channels','card-patrol-device-status','card-patrol-gold'];
 const PATROL_LAYOUT_DEFAULT_COLUMNS={
 	'card-patrol-control':'left',
 	'card-patrol-channels':'left',
+	'card-patrol-device-status':'left',
 	'card-patrol-gold':'right',
 };
 const DASH_GRID_ROW_UNIT=8;
@@ -4498,6 +5115,8 @@ function swapChatPanels(){
 function initChatLayoutEdit(){}
 function saveDashboardLayout(){
   const grid=document.getElementById('dashboard-grid');if(!grid)return;
+  const view=document.getElementById('view-dashboard');
+  if(view && view.classList.contains('v2-dashboard'))return; // v2: layout is fixed
   const order=[...grid.querySelectorAll(':scope > .card')].map(c=>c.id);
   const sizes={};
 	const heights={};
@@ -4513,6 +5132,10 @@ function saveDashboardLayout(){
 }
 function loadDashboardLayout(){
   const grid=document.getElementById('dashboard-grid');if(!grid)return;
+  // v2 dashboard: layout is fixed (hero bar + KPI strip + matrix + 2col grid + devpill row),
+  // skip restoring old saved layout (which referenced removed card-dash-patrol).
+  const view=document.getElementById('view-dashboard');
+  if(view && view.classList.contains('v2-dashboard'))return;
   try{
     const saved=JSON.parse(localStorage.getItem('dashLayout')||'{}');
     if(saved.sizes){Object.entries(saved.sizes).forEach(([id,size])=>applyPanelSizeInternal(id,size,false));}

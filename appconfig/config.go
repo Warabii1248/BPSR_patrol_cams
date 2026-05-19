@@ -122,6 +122,27 @@ type Config struct {
 	// ConsecutiveFullThreshold は連続満員スキップの閾値。クラッシュ検知用。0=無効。
 	ConsecutiveFullThreshold int `json:"consecutive_full_threshold"`
 
+	// PatrolAdaptiveTimeout は実ロード時間を学習して MoveTimeout/MergeTimeout を自動調整する（デフォルト: true）
+	PatrolAdaptiveTimeout bool `json:"patrol_adaptive_timeout"`
+	// PatrolAdaptiveTimeoutWindow は学習に使うサンプル数（デフォルト: 10）
+	PatrolAdaptiveTimeoutWindow int `json:"patrol_adaptive_timeout_window"`
+
+	// SerialToLabel はADBシリアル→インスタンスラベルの手動マッピング。
+	// 例: {"emulator-5556": "Instance-1", "emulator-5558": "Instance-2"}
+	// 空の場合は GetDeviceIP 経由で自動解決を試みる。
+	SerialToLabel map[string]string `json:"serial_to_label"`
+
+	// GamePackageName はゲームのAndroidパッケージ名（空=クラッシュ検知・復帰無効）。
+	// adb shell pidof <package> でプロセス生死を確認する。
+	GamePackageName string `json:"game_package_name"`
+	// GameLaunchActivity はゲーム起動Activity（省略時は monkey -p を使用）。
+	// 例: "com.example.game/.MainActivity"
+	GameLaunchActivity string `json:"game_launch_activity"`
+	// CrashRecoveryEnabled はタイムアウト時のゲームプロセス確認と自動復帰を有効にする。
+	CrashRecoveryEnabled bool `json:"crash_recovery_enabled"`
+	// CrashRecoveryDelaySecs は復帰コマンド後のゲーム起動待機秒数（デフォルト: 30）。
+	CrashRecoveryDelaySecs float64 `json:"crash_recovery_delay_secs"`
+
 	// SceneMapIds はシーン名（中国語）→ mapID のマッピング。
 	// locations.json の mapId と対応させる。空の場合はデフォルト値を使用。
 	SceneMapIds map[string]uint32 `json:"scene_map_ids"`
@@ -163,7 +184,10 @@ func defaultConfig() *Config {
 		PatrolMergeTimeoutSecs:   15,
 		ActiveDeviceCount:        0,
 		FullThreshold:            0.0, // 0=従来通り全台
-		ConsecutiveFullThreshold: 3,   // 3連続満員でクラッシュ判定
+		ConsecutiveFullThreshold:    3,    // 3連続満員でクラッシュ判定
+		PatrolAdaptiveTimeout:       true,
+		PatrolAdaptiveTimeoutWindow: 10,
+		CrashRecoveryDelaySecs:      30,
 		FilterFile:               "config/filter.json",
 		SceneMapIds: map[string]uint32{
 			"阿斯特里亚平原": 7, // アステリア平原

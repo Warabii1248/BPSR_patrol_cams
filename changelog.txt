@@ -3,6 +3,172 @@ BPSR Patrol Cams — 変更履歴
 ================================================================================
 
 --------------------------------------------------------------------------------
+[No.08] 2026/05/20 07:15 — デバイス監視: タイムアウト誤表示・カラム空欄の修正
+--------------------------------------------------------------------------------
+
+■ extractUID → extractInstanceLabel (gui/gui.go)
+
+  問題:
+    - [0x2E] パケット受信ログ "[Instance-7][0x2E] UUID=... (UID=9876543)" から
+      UID 数値文字列 "9876543" を抽出して NotifyChMovePacket に渡していた。
+    - 一方 serialLabels[serial] は resolveLabel() で "Instance-7" 形式を返す。
+    - respondedSet のキーが "9876543" で serialLabels の値が "Instance-7" のため、
+      常にミスマッチ → responded=false → 全デバイスが常にタイムアウト表示。
+
+  修正:
+    - extractUID を extractInstanceLabel に置き換え。
+      ログ行先頭の "[Instance-N]" プレフィックスからラベルを抽出するよう変更。
+    - これにより respondedSet と serialLabels のキーが統一される。
+
+■ ラベル解決不能時のフォールバック (mumu/mumu.go)
+
+  問題:
+    - serial_to_label 未設定 ＋ MuMu NAT 環境では resolveLabel が "" を返す。
+    - label="" のとき responded := !isFull && label != "" && ... で常に false。
+    - 全デバイスが ch・ロード時間・ラベル未表示でタイムアウト表示になっていた。
+
+  修正:
+    - responded := !isFull && (label == "" || respondedSet[label]) に変更。
+    - label="" （ラベル照合不能）の場合、巡回成功（!isFull）ならば responded と見なす。
+    - CurrentCh・LastLoadSecs が正常に更新され、状態が「正常」と表示される。
+
+--------------------------------------------------------------------------------
+[No.07] 2026/05/20 00:30 — ダッシュボード接続デバイスに現在Ch表示
+--------------------------------------------------------------------------------
+
+■ per-device 現在Ch表示 (mumu/mumu.go, gui/gui.go)
+
+  背景:
+    - MuMu Playerの全エミュレータは Windows ホストNAT経由で通信するため、
+      パケットキャプチャ側の clientIP が全て同一ホストIPに集約される。
+      このためIPベースでの per-device セッション照合は原理的に不可能。
+    - DeviceStatus.CurrentCh（ADB serial 単位）はすでに存在していたが、
+      handleDeviceMap で未使用だった。
+
+  変更:
+    - mumu/mumu.go: Patroller.SetDeviceCh(serial, ch) を追加。
+      手動切替時に DeviceStatus.CurrentCh を即時更新するための exported メソッド。
+    - gui/gui.go handleDeviceMap: wg.Wait() 後に GetDeviceStatuses() で
+      serial→CurrentCh マップを作成し、DeviceEntry.CurrentCh に最優先でマージ。
+      デバイス別データが無い場合のみ巡回全体 CurrentChannel をフォールバック利用。
+    - gui/gui.go handleSwitch: 切替成功したシリアルに SetDeviceCh を呼び、
+      次回 device-map 取得で即座に新Chが返るよう対応。
+
+--------------------------------------------------------------------------------
+[No.06] 2026/05/19 23:58 — 検知履歴×で巡回リスト復元
+--------------------------------------------------------------------------------
+
+■ 誤報取消: 履歴×クリックで巡回リストへ復元 (gui/gui.go)
+
+  変更:
+    - handleDeleteGoldHistory で履歴削除時に以下を追加実行:
+      1. cooldownChs から対象chを削除（30分クールダウンを解除）
+      2. patrolChannels に対象chを復元（未登録の場合のみ末尾追加）
+      3. channels.txt を保存してPatrollerのホットリロードへ反映
+    - チャット検知・パケット検知どちらの誤報にも対応。
+    - 既にpatrols listに存在するchは重複追加しない。
+
+--------------------------------------------------------------------------------
+[No.05] 2026/05/19 19:50 — チャット全デバイス取得・重複排除修正
+--------------------------------------------------------------------------------
+
+■ ポート5003チャット接続修正 (ncap/cap_device.go)
+
+  修正:
+    - ゲームセッション確定前にポート5003接続が到着した場合、接続を破棄していた。
+    - 確定セッションが存在すればそれを使用し、未存在の場合は即座に仮セッションを作成して
+      チャット処理を継続するよう変更（ゲームログインタイミングに依存しない）。
+    - 未確定セッション(serverConfirmed=false,userUID=0)でもport 5003はブロックせず
+      そのまま reassembleTcpStream まで通過させる。
+
+■ チャット重複排除の修正 (ncap/cap_device.go, gui/gui.go)
+
+  変更:
+    - バックエンドのdedupKey: clientIP+channel+sender+message のまま維持。
+      各デバイスの同一メッセージは独立して通過し、フロントエンドに届く。
+    - フロントエンドの appendChatToPanel isDupチェックを
+      コンテンツのみ → client_ip+コンテンツ に変更。
+      同一デバイスの重複は引き続きブロック、異なるデバイスからの同じ内容は別イベントとして保持。
+    - renderChatPanel の dedupeChatEvents でコンテンツdedup、デバイスフィルタで
+      各デバイス別にチャットを表示できるようになった。
+
+--------------------------------------------------------------------------------
+[No.04] 2026/05/19 19:30 — デバイス監視・クラッシュ検知・自動復帰
+--------------------------------------------------------------------------------
+
+■ デバイス別監視ステータス (mumu/mumu.go, gui/gui.go)
+
+  追加:
+    - DeviceStatus 構造体: シリアル・ラベル・現在ch・最終ロード時間・タイムアウト回数
+      ・ADB失敗・クラッシュ・復帰中フラグを保持。
+    - Patroller.GetDeviceStatuses() — 全デバイスの状態を一覧取得。
+    - 巡回ループ内でシリアルごとに updateDeviceStatus() を呼び出し、
+      各サイクルの結果（応答有無・ロード時間・ADB失敗）を記録。
+
+■ ADBシリアル ↔ インスタンスラベル解決 (mumu/mumu.go, ncap/cap_device.go)
+
+  追加:
+    - CapDevice.GetLabelByClientIP(ip) — デバイスIPからインスタンスラベルを取得。
+    - Patroller.resolveLabel(ctx, serial, cfg) — シリアル→IP→ラベルの2段解決。
+      手動マップ（SerialToLabel 設定）優先、自動検出にフォールバック。
+    - Patroller.getCachedIP(ctx, serial, cfg) — GetDeviceIP の5分TTLキャッシュ。
+      巡回ループ内の過剰なADB呼び出しを抑制。
+    - 巡回開始時にターゲット一覧のIPを並列解決して serialLabels マップを構築。
+    - GetLabelByIP コールバックを main.go・gui.go(ホットリロード) から注入。
+
+■ クラッシュ検知・自動復帰 (mumu/mumu.go)
+
+  追加:
+    - Patroller.checkAndRecover(ctx, serial, cfg):
+      - `adb shell pidof <package>` でゲームプロセスの存在確認。
+      - プロセス消失 = GameCrashed フラグを立て、CrashRecoveryEnabled 時は
+        `am force-stop` → 2s待機 → `am start -n <activity>` (または monkey) で再起動。
+      - CrashRecoveryDelaySecs 秒待機後にクラッシュフラグをリセット。
+    - Patroller.RecoverDevice(ctx, serial) — GUIから手動トリガー可能。
+    - クラッシュ確認は `!isFull && !responded && !adbFailed` の場合のみ実行。
+      満員チャンネルや一時ADB失敗では起動しない。
+
+■ 新API・GUI (gui/gui.go)
+
+  追加:
+    - GET  /api/patrol/device-statuses — 全デバイスの DeviceStatus 一覧を返す。
+    - POST /api/patrol/recover — serial 指定でゲーム再起動を手動トリガー。
+    - 巡回パネルに「デバイス監視」カードを追加:
+        シリアル / ラベル / 現在ch / ロード時間 / 状態バッジ / 手動復帰ボタン
+      2秒ごとの pollPatrolStatus に連動して自動更新。
+    - 状態バッジ: 🟢 正常 / 🟡 タイムアウト / 🔴 クラッシュ / 🔄 復帰中 / ⚠ ADB失敗
+
+■ 新設定項目 (appconfig/config.go, gui/gui.go)
+
+    - game_package_name (string): クラッシュ検知・ADB起動用パッケージ名
+    - game_launch_activity (string): 復帰時の起動アクティビティ（空でmonkey使用）
+    - crash_recovery_enabled (bool, デフォルト: false): 自動復帰の有効/無効
+    - crash_recovery_delay_secs (float64, デフォルト: 30): 復帰後の待機秒数
+    - serial_to_label (map[string]string): シリアル→ラベルの手動バインド
+
+--------------------------------------------------------------------------------
+[No.03] 2026/05/19 18:30 — 適応型タイムアウト・ロード中デバイス早期切替防止
+--------------------------------------------------------------------------------
+
+■ 適応型タイムアウト (mumu/mumu.go, appconfig/config.go, main.go, gui/gui.go)
+
+  問題:
+    - PCの負荷によりゲームロードが長引くと MoveTimeout 内に [0x2E] が届かず
+      満員と誤判定されチャンネルをスキップしていた。
+    - タイムアウト後の dwell 中も他デバイスがロード中の場合に次チャンネルへの
+      切替コマンドが送られ ADB操作が失敗していた。
+
+  変更:
+    - Patroller が直近N回（デフォルト10回）の全台ロード完了時間を記録。
+    - 実効 MoveTimeout / MergeTimeout = max(記録最大値×1.5, 設定値) として自動延長。
+      設定値はタイムアウトの下限値として機能する。
+    - タイムアウト発火時でも「推定最大ロード時間 − 経過時間」を dwell に加算する
+      ロード猶予を導入。ロード中デバイスが次の切替コマンドを受け取らないよう保護。
+    - 新設定項目: patrol_adaptive_timeout (bool, デフォルト: true)
+                  patrol_adaptive_timeout_window (int, デフォルト: 10)
+    - GUI設定パネルに上記2項目を追加。
+
+--------------------------------------------------------------------------------
 [No.02] 2026/05/19 00:00 — ADB操作改善・GUI整理・チャット重複排除修正
 --------------------------------------------------------------------------------
 
