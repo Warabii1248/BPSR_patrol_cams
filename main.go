@@ -180,6 +180,7 @@ func main() {
 
 	// GUI サーバーを作成
 	guiServer := gui.New(cfg.GUIPort, mumuCfg, patrolChannels, cfg.PatrolChannelsFile)
+	guiServer.SetShowNoDeviceDialog(cfg.ShowNoDeviceDialog)
 
 	// 全ログ行をGUIのSSEにも流す
 	log.SetOutput(guiServer.LogWriter(log.Writer()))
@@ -232,7 +233,7 @@ func main() {
 				}
 			}
 		}
-		log.Println("[DETECTION]\n" + notifier.Format(det))
+		log.Printf("[検知] %s", notifier.Format(det))
 		if err3 := discord.Send(det); err3 != nil {
 			log.Printf("discord send error: %v", err3)
 		}

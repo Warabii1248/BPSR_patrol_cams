@@ -68,7 +68,8 @@ type Server struct {
 	chatLog     []ChatEvent   // チャットログ（最大500件）
 	chatClients []chan string // チャットSSEクライアント
 
-	gasTargetEnemy string // Chrome拡張から受信したchのフィルタ対象エネミー名
+	gasTargetEnemy     string // Chrome拡張から受信したchのフィルタ対象エネミー名
+	showNoDeviceDialog bool   // 起動時デバイス未検出ダイアログを表示するか
 
 	pendingPortMapMu  sync.Mutex
 	pendingPortMaps   []PendingPortMapChange
@@ -286,6 +287,13 @@ func (s *Server) filterCooldown(chs []uint32) []uint32 {
 func (s *Server) SetGASTargetEnemy(target string) {
 	s.mu.Lock()
 	s.gasTargetEnemy = target
+	s.mu.Unlock()
+}
+
+// SetShowNoDeviceDialog は起動時デバイス未検出ダイアログの表示フラグを設定する。
+func (s *Server) SetShowNoDeviceDialog(v bool) {
+	s.mu.Lock()
+	s.showNoDeviceDialog = v
 	s.mu.Unlock()
 }
 
@@ -659,42 +667,26 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 		}
 	}()
 
-	// 巡回モード時のみ、起動後15秒間デバイスを1回だけ待機する
+	// 巡回モード時のみ、起動後にデバイスを1回確認する
 	if s.patrolEnabled {
 		go func() {
+			time.Sleep(2 * time.Second)
 			cfg := s.patroller.Config()
-			for attempt := 1; attempt <= 3; attempt++ {
-				time.Sleep(1 * time.Second)
-				log.Printf("[MuMu] 起動時デバイス確認 (%d/3)...", attempt)
-				mumu.ConnectConfiguredSerials(context.Background(), cfg)
-				devices, err := mumu.ListDevices(context.Background(), cfg)
-				if err != nil {
-					log.Printf("[MuMu] 起動時デバイス取得失敗 (%d/3): %v", attempt, err)
-					continue
-				}
-				if len(devices) == 0 {
-					log.Printf("[MuMu] 起動時デバイスが見つかりません (%d/3)。MuMu Playerを起動してadb connectで接続してください", attempt)
-					continue
-				}
-				log.Printf("[MuMu] 起動時デバイス: %v", devices)
-				return // デバイス確認完了
-			}
-			// 3回全て失敗 → まず非破壊の ADB 復旧を試す
-			log.Println("[MuMu] デバイスが見つからないため ADB 復旧を試みます...")
-			if err := mumu.RecoverServer(context.Background(), cfg); err != nil {
-				log.Printf("[MuMu] ADB 復旧失敗: %v", err)
-				return
-			}
-			time.Sleep(1 * time.Second)
 			devices, err := mumu.ListDevices(context.Background(), cfg)
 			if err != nil {
-				log.Printf("[MuMu] ADB 再起動後のデバイス取得失敗: %v", err)
+				log.Printf("[MuMu] 起動時デバイス確認失敗: %v", err)
 				return
 			}
 			if len(devices) == 0 {
-				log.Println("[MuMu] ADB 再起動後もデバイスが見つかりません。MuMu Player が起動しているか確認してください")
-			} else {
-				log.Printf("[MuMu] ADB 再起動後にデバイスを検出: %v", devices)
+				log.Println("[MuMu] デバイスが見つかりません。MuMu Player が起動しているか確認してください")
+				s.mu.RLock()
+				show := s.showNoDeviceDialog
+				clients := make([]chan string, len(s.clients))
+				copy(clients, s.clients)
+				s.mu.RUnlock()
+				if show {
+					broadcastSSE(clients, "[NO_DEVICE]")
+				}
 			}
 		}()
 	}
@@ -1965,7 +1957,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 /* Gold table */
 .gold-table{width:100%;border-collapse:collapse;font-size:.82em;table-layout:fixed}
 .gold-table th{color:var(--text2);text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0;background:var(--bg1);z-index:1;font-size:.88em;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-.gold-table col.col-time{width:90px}.gold-table col.col-ch{width:46px}.gold-table col.col-name{width:110px}.gold-table col.col-action{width:38px}
+.gold-table col.col-time{width:6.5em}.gold-table col.col-ch{width:5em}.gold-table col.col-name{width:8em}.gold-table col.col-action{width:2.8em}
 .gold-table td{padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:middle;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gold-table .action-cell{padding:0;white-space:normal;text-align:center}
 .gold-table .action-cell button{background:transparent;border:none;color:var(--danger);font-size:1em;cursor:pointer;padding:0 4px;line-height:1.5}
@@ -2966,12 +2958,19 @@ async function testDetect(monster){
   const src=new EventSource('/events');
   src.onmessage=e=>{
     appendLog(e.data);
-    if(e.data.includes('[GUI] 金ウリボ')||e.data.includes('[DETECTION]')){loadGoldHistory();loadPatrolChannels();playNotifyBeep();}
+    if(e.data.includes('[DETECTION]')){loadGoldHistory();loadPatrolChannels();playNotifyBeep();}
+    else if(e.data.includes('[GUI] 金ウリボ')){loadGoldHistory();loadPatrolChannels();}
     if(e.data.includes('channels.txt')){loadPatrolChannels();}
     if(e.data.includes('[PORTMAP_PENDING]')){pmCheckPending();}
+    if(e.data.includes('[NO_DEVICE]')){showNoDeviceDialog();}
   };
   fetch('/api/logs').then(r=>r.json()).then(lines=>(lines||[]).forEach(appendLog));
 })();
+// ── デバイス未検出ダイアログ ──
+function showNoDeviceDialog(){
+  const ov=document.getElementById('no-device-overlay');
+  if(ov)ov.style.display='flex';
+}
 // ── PortMap 変更確認モーダル ──
 let _pmChanges=[];
 async function pmCheckPending(){
@@ -3811,6 +3810,7 @@ const CFG_FIELDS=[
   {k:'mumu_tap_y',label:'タップY座標',type:'number',desc:'チャンネル入力欄のタップY'},
   {k:'mumu_pre_keycode',label:'プリキーコード',type:'text',desc:'チャンネル入力欄を開くキーコード'},
   {k:'gas_target_enemy',label:'GAS 対象エネミー',type:'select',options:['金ウリボ','金ナッポ'],desc:'Chrome拡張から受信するエネミー種別'},
+  {k:'show_no_device_dialog',label:'デバイス未検出ダイアログ',type:'bool',desc:'起動時にADBデバイスが見つからない場合ダイアログを表示する'},
 ];
 let cfgData={};
 function renderConfigFields(containerId, fields){
@@ -4631,6 +4631,16 @@ syncLayoutEditState();
 })();
 </script>
 
+<!-- デバイス未検出ダイアログ -->
+<div id="no-device-overlay" class="pm-overlay" style="display:none">
+  <div class="pm-modal">
+    <div class="pm-modal-title">ADB デバイスが見つかりません</div>
+    <div class="pm-body" style="line-height:1.7">MuMu Player が起動していないか、ADB 接続が確立されていません。<br>MuMu Player を起動して接続してから再度お試しください。<br><br><span style="font-size:var(--fs-sm);opacity:.7">このダイアログは設定の「デバイス未検出ダイアログ」チェックで無効化できます。</span></div>
+    <div class="pm-btns">
+      <button class="btn primary" onclick="document.getElementById('no-device-overlay').style.display='none'">閉じる</button>
+    </div>
+  </div>
+</div>
 <!-- PortMap 変更確認モーダル -->
 <div id="pm-overlay" class="pm-overlay" style="display:none">
   <div class="pm-modal">
