@@ -1,4 +1,25 @@
 ﻿====--------------------------------------------------------------------------------
+[No.13] 2026/05/21 00:00 — 接続デバイスカードのch表示が自動更新されないバグ修正
+
+【バグ】ダッシュボードの「接続デバイス」カード内のch番号が、巡回中に更新されない。
+        手動で「再スキャン」を押さないと最新のchが反映されなかった。
+【原因】ダッシュボードの .devpill カードの ch 表示は /api/device-map を取得した際に
+        renderDashDevices() でのみ更新される。
+        /api/device-map はページロード時・手動再スキャン時にしか呼ばれない。
+        一方、既存の pollPatrolStatus() は2秒ごとに /api/patrol/device-statuses を
+        取得して renderDeviceStatuses() を呼んでいるが、
+        こちらはデバイス状態テーブル（#device-status-tbody）しか更新していなかった。
+【修正】renderDashDevices() で各 devpill に data-serial 属性を追加。
+        renderDeviceStatuses() の末尾に updateDashDeviceCh() の呼び出しを追加。
+        updateDashDeviceCh() は DeviceStatus の actual_ch（優先）または current_ch を
+        各 devpill の .dp-ch スパンに反映する。
+        既存の2秒ポーリングを再利用するため追加のポーリングは不要。
+
+変更ファイル:
+  gui/gui.go … renderDashDevices: devpill に data-serial 属性追加
+  gui/gui.go … renderDeviceStatuses: updateDashDeviceCh() 呼び出し追加
+  gui/gui.go … updateDashDeviceCh() 関数を新規追加
+====--------------------------------------------------------------------------------
 [No.12] 2026/05/20 21:30 — ch移動完了シグナル欠落バグ修正（2件）
 
 【バグ】バインド確立後、0x2E パケットが moveSignal チャンネルに届かず毎回満員判定になる

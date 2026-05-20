@@ -3714,7 +3714,7 @@ function renderDashDevices(devs,deviceMap){
     const uid=info.user_uid||'',ch=info.current_ch||info.line_id||'',confirmed=info.confirmed||false;
     const sub=uid?((confirmed?'\u{1F517} ':'')+'UID:'+uid+(ch?' Ch'+ch:'')):(d.split(':')[1]||d);
     const chDisplay=ch?String(ch):(confirmed?'<span style="color:var(--accent2);font-size:11px">ON</span>':'\u2014');
-    return '<div class="devpill">'
+    return '<div class="devpill" data-serial="'+escHtml(d)+'">'
       +'<span class="dot2 '+(confirmed?'ok':'warn')+'"></span>'
       +'<div class="dp-body"><div class="dp-name">'+escHtml(d)+'</div><div class="dp-sub">'+escHtml(sub)+'</div></div>'
       +'<span class="dp-ch">'+chDisplay+'</span>'
@@ -4500,6 +4500,18 @@ function renderDeviceStatuses(statuses){
       +'<td>'+recoverBtn+'</td>'
       +'</tr>';
   }).join('');
+  updateDashDeviceCh(statuses);
+}
+function updateDashDeviceCh(statuses){
+  if(!statuses||!statuses.length)return;
+  statuses.forEach(function(ds){
+    const pill=document.querySelector('.devpill[data-serial="'+CSS.escape(ds.serial)+'"]');
+    if(!pill)return;
+    const chEl=pill.querySelector('.dp-ch');if(!chEl)return;
+    const ch=ds.actual_ch>0?ds.actual_ch:(ds.current_ch>0?ds.current_ch:0);
+    chEl.textContent=ch?String(ch):'—';
+    if(currentDeviceMap[ds.serial])currentDeviceMap[ds.serial].current_ch=ch;
+  });
 }
 async function recoverDevice(serial){
   const r=await fetch('/api/patrol/recover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial})});
