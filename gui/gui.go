@@ -568,7 +568,7 @@ func (w *guiWriter) Write(p []byte) (int, error) {
 			// - "[Instance-N][0x2E] UUID=..." は実パケット → カウント対象
 			// - "[Instance-N][0x2E] lineID補完: ..." は補助情報 → 二重カウント防止
 			// - "[MuMu] 巡回: Ch%d [0x2E] ..." は自ログ → フィードバックループ防止
-			if w.srv.patrolEnabled && strings.Contains(line, "[0x2E] UUID=") && !w.srv.patroller.HasBinding() {
+			if w.srv.patrolEnabled && strings.Contains(line, "[0x2E] UUID=") {
 				w.srv.patroller.NotifyChMovePacket(extractInstanceLabel(line))
 			}
 		}
@@ -576,21 +576,20 @@ func (w *guiWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// extractInstanceLabel は "[Instance-7][0x2E] UUID=..." 形式のログ行から
+// extractInstanceLabel は "... [Instance-7][0x2E] UUID=..." 形式のログ行から
 // インスタンスラベル文字列（"Instance-7"）を抽出する。見つからない場合は空文字列を返す。
+// log.Printf が先頭にタイムスタンプを付けるため、行頭からではなく "[Instance-" を検索する。
 func extractInstanceLabel(line string) string {
-	if len(line) == 0 || line[0] != '[' {
+	idx := strings.Index(line, "[Instance-")
+	if idx < 0 {
 		return ""
 	}
-	end := strings.Index(line, "]")
-	if end <= 1 {
+	rest := line[idx+1:]
+	end := strings.Index(rest, "]")
+	if end < 0 {
 		return ""
 	}
-	label := line[1:end]
-	if !strings.HasPrefix(label, "Instance-") {
-		return ""
-	}
-	return label
+	return rest[:end]
 }
 
 // getDeviceIPCtx は mumu.GetDeviceIP をコンテキストのキャンセルに対応させるラッパー。
