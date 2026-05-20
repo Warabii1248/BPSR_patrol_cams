@@ -1,4 +1,96 @@
-﻿================================================================================
+﻿====--------------------------------------------------------------------------------
+[No.10] 2026/05/20 20:30 — 識別シーケンス改善・タブ自動スクロール・デバイス認識ボタン・デバッグログ
+--------------------------------------------------------------------------------
+
+■ 変更点
+
+  mumu/mumu.go:
+    - runStaggerProbe(): 識別フェーズを「ADBコマンド送信」→「全台 probeCh ロード完了待ち」に拡張。
+      完了判定は DeviceStatus.CurrentCh == probeCh（0x2E受信=ロード完了）。
+      タイムアウトを固定15sから cfg.MoveTimeout（最低15s）に変更。
+      待機後に recordLoadTime() で初回ロード時間を記録し adaptiveMaxLoad を初期化。
+    - Start() から runStaggerProbe() の自動呼び出しを削除。
+      巡回開始ごとに識別フェーズが走る問題を修正。
+    - Identify() メソッド追加。外部から明示的に識別フェーズを起動できる。
+    - MatchLineChange(): バインド成立・既バインド更新のタイミングを [DBG] ログで詳細化。
+
+  gui/gui.go:
+    - switchView() にタブ切替後のスクロール処理を追加。
+      「検知ログ」「チャットログ」タブに切り替えた際に最新行へ自動スクロール。
+    - POST /api/patrol/identify エンドポイント追加（handlePatrolIdentify）。
+      巡回中は 409、識別実行中は 429 を返す。識別はバックグラウンドで実行し即座に 200 を返す。
+    - デバイス管理ビューに「デバイス認識」ボタン追加（runIdentify()）。
+    - 設定タブに「詳細デバッグログ (debug_verbose)」トグル追加。
+    - config 保存時に debuglog.Verbose をリアルタイム反映。
+
+  appconfig/config.go:
+    - Config.DebugVerbose bool フィールド追加（json:"debug_verbose"）。
+      既存 config.json では未設定のため false（従来動作）のまま。
+
+  debuglog/debuglog.go:
+    - Verbose bool パッケージ変数追加。
+    - Vlogf(tag, format, args...) 関数追加。Verbose=true のとき [DBG][tag] プレフィックスで出力。
+
+  main.go:
+    - 起動時に debuglog.Verbose = cfg.DebugVerbose を設定。
+
+  ncap/cap_device.go:
+    - processSyncToMeDeltaInfo(): UUID変化・lineID補完のタイミングに Vlogf 追加。
+
+■ 注意事項
+
+  ・デバイス認識（Stagger Probe）は巡回開始で自動実行されなくなった。
+    初回起動時または再接続後は「デバイス管理」→「🔎 デバイス認識」ボタンを押すこと。
+    serial_to_uid が config.json に保存済みであれば次回以降は不要。
+
+====--------------------------------------------------------------------------------
+====--------------------------------------------------------------------------------
+[No.09] 2026/05/20 18:30 — パケット監視主導の per-device CH 追跡 再設計（NAT 対応・8台独立）
+--------------------------------------------------------------------------------
+
+■ 設計コンセプト
+
+  MuMu NAT 環境では全エミュレータの clientIP がホストIPに集約されるため、
+  IP ベースのデバイス識別が不可能だった。本変更では以下の3段リンクを確立する:
+    ADB serial  →  userUID (CharId, パケット内プレイヤー不変ID)  →  LineId (実CH)
+
+■ 変更点
+
+  ncap/cap_device.go:
+    - Sessions() の重複除去キーを clientIP から "uid:<userUID>" / "ep:<endpoint>" に変更。
+      → NAT 環境でも各エミュレータが独立したセッションとして認識される。
+    - CapDevice.onLineIDObserved フック追加。0x15/0x16 の LineId 確定時に Patroller に通知。
+    - SetLineIDObserver() メソッド追加。
+
+  mumu/mumu.go:
+    - DeviceStatus に ExpectedCh / ActualCh / Mismatch / LastObservedAt フィールド追加。
+    - chPendingProbe 型と Patroller の serial↔UID バインドマップ追加。
+    - RecordPatrolMove(): 巡回切替直後に serial の targetCh を記録（Probe-and-Match の準備）。
+    - MatchLineChange(): uid+lineID 観測時に pendingProbes と突合、候補が1件ならバインド確立。
+    - NotifyLineIDChange(): 巡回中・停止中を問わず常時 CH 観測を処理。
+    - updateActualCh(): ActualCh 更新・Mismatch 検出・CurrentCh への反映。
+    - GetSerialUID() / GetUIDSerial() / HasBinding() アクセサ追加。
+    - LoadSerialUIDMap() / SetSaveSerialUIDFn(): serial_to_uid の起動時ロードと永続化。
+    - runStaggerProbe(): 未バインド serial が2台以上の場合に巡回開始前の識別フェーズ実行。
+    - 巡回ループの switchDoneAt 直後に RecordPatrolMove() を全 target 分呼び出し。
+
+  appconfig/config.go:
+    - SerialToUID フィールド (serial_to_uid, omitempty) 追加。後方互換あり。
+
+  gui/gui.go:
+    - NotifyLineIDChange() 委譲メソッド追加（main.go から呼び出し）。
+    - LoadSerialUIDMap() / SetSaveSerialUIDFn() 委譲メソッド追加。
+    - handleDeviceMap: ipToSess に加え uidToSess (uid→session) を追加。
+      serial→UID バインドを最優先で参照し、IP照合は非 NAT 環境のフォールバックに降格。
+    - handleDeviceMap: DeviceStatus.ActualCh を最優先で CurrentCh に反映。
+      偽フォールバック（巡回全体CHを未解決デバイスに上書き）を削除。
+    - LogWriter の [0x2E] grep → NotifyChMovePacket パスに HasBinding() ガードを追加。
+      バインド確立後は新パス（SetLineIDObserver 経由）のみが有効になる。
+
+  main.go:
+    - capDevice.SetLineIDObserver() で Patroller.NotifyLineIDChange() に配線。
+    - cfg.SerialToUID の起動時ロードと appconfig.Save() による書き戻しを設定。
+============================================================================
 BPSR Patrol Cams — 変更履歴
 ================================================================================
 

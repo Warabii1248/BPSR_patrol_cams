@@ -174,3 +174,16 @@ func truncate(s string, max int) string {
 	}
 	return s[:max] + "..."
 }
+
+// Verbose が true のとき Vlogf がログを出力する。
+// main() 起動時に cfg.DebugVerbose の値で設定する。
+var Verbose bool
+
+// Vlogf は Verbose が true の時のみ log.Printf でデバッグログを出力する。
+// tag は "[DBG][tag]" プレフィックスとして使われる（例: "Probe", "巡回", "0x2E"）。
+func Vlogf(tag, format string, args ...interface{}) {
+	if !Verbose {
+		return
+	}
+	log.Printf("[DBG]["+tag+"] "+format, args...)
+}

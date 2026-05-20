@@ -23,6 +23,7 @@ import (
 	webview "github.com/jchv/go-webview2"
 
 	"github.com/balrogsxt/StarResonanceAPI/appconfig"
+	"github.com/balrogsxt/StarResonanceAPI/debuglog"
 	"github.com/balrogsxt/StarResonanceAPI/mumu"
 	"github.com/balrogsxt/StarResonanceAPI/notifier"
 )
@@ -82,6 +83,8 @@ type Server struct {
 	chatReportDedup   map[string]time.Time
 
 	getLabelByIPFn func(string) string // デバイスIP → インスタンスラベル解決コールバック
+
+	identifyRunning bool // デバイス識別フェーズ実行中フラグ
 }
 
 // PortMapEntry はポートマップの1エントリ（GUI向け）
@@ -349,6 +352,28 @@ func (s *Server) NotifyChMovePacket(label string) {
 	s.patroller.NotifyChMovePacket(label)
 }
 
+// NotifyLineIDChange は ncap が 0x15/0x16 で LineID を観測したとき main.go から呼ぶ。
+// per-device CH 追跡のため Patroller に転送する（巡回中・停止中を問わない）。
+func (s *Server) NotifyLineIDChange(uid uint64, lineID uint32, t time.Time) {
+	if s.patrolEnabled {
+		s.patroller.NotifyLineIDChange(uid, lineID, t)
+	}
+}
+
+// LoadSerialUIDMap は config.json の serial_to_uid を Patroller に初期設定する。
+func (s *Server) LoadSerialUIDMap(m map[string]uint64) {
+	if s.patrolEnabled {
+		s.patroller.LoadSerialUIDMap(m)
+	}
+}
+
+// SetSaveSerialUIDFn は serialu2194UID u30D0u30A4u30F3u30C9u6210u7ACBu6642u306Eu30B3u30FCu30EBu30D0u30C3u30AFu3092 Patroller u306Bu8A2Du5B9Au3059u308Bu3002
+func (s *Server) SetSaveSerialUIDFn(fn func(map[string]uint64)) {
+	if s.patrolEnabled {
+		s.patroller.SetSaveSerialUIDFn(fn)
+	}
+}
+
 // UpdatePatrollerCfg は Patroller の設定をリアルタイムで更新する。
 func (s *Server) UpdatePatrollerCfg(cfg mumu.Config) {
 	if !s.patrolEnabled {
@@ -543,7 +568,7 @@ func (w *guiWriter) Write(p []byte) (int, error) {
 			// - "[Instance-N][0x2E] UUID=..." は実パケット → カウント対象
 			// - "[Instance-N][0x2E] lineID補完: ..." は補助情報 → 二重カウント防止
 			// - "[MuMu] 巡回: Ch%d [0x2E] ..." は自ログ → フィードバックループ防止
-			if w.srv.patrolEnabled && strings.Contains(line, "[0x2E] UUID=") {
+			if w.srv.patrolEnabled && strings.Contains(line, "[0x2E] UUID=") && !w.srv.patroller.HasBinding() {
 				w.srv.patroller.NotifyChMovePacket(extractInstanceLabel(line))
 			}
 		}
@@ -633,6 +658,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/api/patrol/start", s.handlePatrolStart)
 	mux.HandleFunc("/api/patrol/stop", s.handlePatrolStop)
+	mux.HandleFunc("/api/patrol/identify", s.handlePatrolIdentify)
 	mux.HandleFunc("/api/patrol/status", s.handlePatrolStatus)
 	mux.HandleFunc("/api/patrol/device-statuses", s.handlePatrolDeviceStatuses)
 	mux.HandleFunc("/api/patrol/recover", s.handlePatrolRecover)
@@ -877,9 +903,13 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	uidToSess := make(map[uint64]DeviceSessionInfo)
 	ipToSess := make(map[string]DeviceSessionInfo)
 	if s.getSessions != nil {
 		for _, sess := range s.getSessions() {
+			if sess.UserUID != 0 {
+				uidToSess[sess.UserUID] = sess
+			}
 			if sess.ClientIP != "" {
 				ipToSess[sess.ClientIP] = sess
 			}
@@ -907,7 +937,20 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			devIP := getDeviceIPCtx(ctx, ser, cfg)
 			entries[idx].DeviceIP = devIP
-			if devIP != "" {
+			// u512Au5148u9806u4F8D1: serialu2192UID u30D0u30A4u30F3u30C9u3067u76F4u63A5u7167u5408uFF08NAT u74B0u5883u5BFEu5FDCuFF09
+			if uid := s.patroller.GetSerialUID(ser); uid != 0 {
+				if sess, ok := uidToSess[uid]; ok {
+					entries[idx].UserUID = sess.UserUID
+					entries[idx].Label = sess.Label
+					entries[idx].MapID = sess.MapID
+					entries[idx].LineID = sess.LineID
+					entries[idx].CurrentCh = sess.CurrentCh
+					entries[idx].Confirmed = sess.Confirmed
+				} else {
+					entries[idx].UserUID = uid
+				}
+			} else if devIP != "" {
+				// u512Au5148u9806u4F8D2: IP u7167u5408uFF08u975E NAT u74B0u5883u30D5u30A9u30FCu30EBu30D0u30C3u30AFuFF09
 				if sess, ok := ipToSess[devIP]; ok {
 					entries[idx].UserUID = sess.UserUID
 					entries[idx].Label = sess.Label
@@ -921,26 +964,22 @@ func (s *Server) handleDeviceMap(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	// DeviceStatus（ADB serial ベース）を最優先で CurrentCh にマージする。
-	// NAT 環境では IP 照合が失敗するため、これが唯一の per-device Ch ソースになる。
+	// DeviceStatusuFF08ADB serial u30D9u30FCu30B9uFF09u3067 CurrentCh u3092u4E0Au66F8u304Du3059u308Bu3002
+	// ActualChuFF08u30D1u30B1u30C3u30C8u89B3u6E2Cu306Eu5B9FCHuFF09u3092u6700u512Au5148u3057u3001u6B21u3044u3067 CurrentChuFF08ADBu547Du4EE4u5024uFF09u3092u4F7Fu3046u3002
+	// u507Du30D5u30A9u30FCu30EBu30D0u30C3u30AFuFF08u5DE1u56DEu5168u4F53CHu3092u672Au89E3u6C7Au30C7u30D0u30A4u30B9u306Bu4E0Au66F8u304DuFF09u306Fu610Fu56F3u7684u306Bu524Au9664u3002
 	if s.patroller != nil {
-		deviceChMap := make(map[string]uint32)
-		for _, ds := range s.patroller.GetDeviceStatuses() {
-			if ds.CurrentCh > 0 {
-				deviceChMap[ds.Serial] = ds.CurrentCh
-			}
-		}
+		statuses := s.patroller.GetDeviceStatuses()
 		for i := range entries {
-			if ch, ok := deviceChMap[entries[i].Serial]; ok {
-				entries[i].CurrentCh = ch
-			}
-		}
-		// デバイス別データが無ければ巡回全体の現在Chをフォールバックにする
-		if patrolCh := s.patroller.Status().CurrentChannel; patrolCh > 0 {
-			for i := range entries {
-				if entries[i].CurrentCh == 0 {
-					entries[i].CurrentCh = patrolCh
+			for _, ds := range statuses {
+				if ds.Serial != entries[i].Serial {
+					continue
 				}
+				if ds.ActualCh > 0 {
+					entries[i].CurrentCh = ds.ActualCh
+				} else if ds.CurrentCh > 0 {
+					entries[i].CurrentCh = ds.CurrentCh
+				}
+				break
 			}
 		}
 	}
@@ -1286,6 +1325,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 					GameLaunchActivity          string            `json:"game_launch_activity"`
 					CrashRecoveryEnabled        bool              `json:"crash_recovery_enabled"`
 					CrashRecoveryDelaySecs      float64           `json:"crash_recovery_delay_secs"`
+					DebugVerbose                bool              `json:"debug_verbose"`
 				}
 				if json.Unmarshal(savedData, &appCfg) == nil {
 					newCfg := mumu.Config{
@@ -1311,9 +1351,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 						CrashRecoveryDelaySecs: appCfg.CrashRecoveryDelaySecs,
 					}
 					s.UpdatePatrollerCfg(newCfg)
-					log.Printf("[GUI] 巡回設定を即時反映: 滞在=%.0fs, 初回待ち=%.0fs, マージ待ち=%.0fs, グループ間=%.0fs, 並列=%d",
+					debuglog.Verbose = appCfg.DebugVerbose
+					log.Printf("[GUI] 巡回設定を即時反映: 滞在=%.0fs, 初回待ち=%.0fs, マージ待ち=%.0fs, グループ間=%.0fs, 並列=%d, デバッグ=%v",
 						appCfg.PatrolDwellSecs, appCfg.PatrolMoveTimeoutSecs, appCfg.PatrolMergeTimeoutSecs,
-						appCfg.ParallelGroupDelaySecs, appCfg.ParallelLimit)
+						appCfg.ParallelGroupDelaySecs, appCfg.ParallelLimit, appCfg.DebugVerbose)
 				}
 			}
 		}
@@ -1415,6 +1456,73 @@ func (s *Server) handlePatrolStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.patroller.Stop()
+	writeOK(w)
+}
+
+// handlePatrolIdentify はデバイス識別フェーズ（Stagger Probe）を手動実行する。
+// 巡回中は 409、識別実行中は 429 を返す。
+// 識別はバックグラウンドで実行され、即座に 200 を返す。
+func (s *Server) handlePatrolIdentify(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		http.Error(w, "patrol disabled", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	if s.patroller.Status().Running {
+		http.Error(w, "巡回中は識別できません", http.StatusConflict)
+		return
+	}
+	s.mu.Lock()
+	if s.identifyRunning {
+		s.mu.Unlock()
+		http.Error(w, "識別フェーズ実行中です", http.StatusTooManyRequests)
+		return
+	}
+	s.identifyRunning = true
+	s.mu.Unlock()
+
+	var req struct {
+		Serials  []string `json:"serials"`
+		Channels []uint32 `json:"channels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.mu.Lock()
+		s.identifyRunning = false
+		s.mu.Unlock()
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	channels := req.Channels
+	if len(channels) == 0 {
+		s.mu.RLock()
+		channels = make([]uint32, len(s.patrolChannels))
+		copy(channels, s.patrolChannels)
+		s.mu.RUnlock()
+	}
+	if len(channels) == 0 {
+		s.mu.Lock()
+		s.identifyRunning = false
+		s.mu.Unlock()
+		writeJSON(w, map[string]interface{}{"ok": false, "error": "チャンネルリストが空です"})
+		return
+	}
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.identifyRunning = false
+			s.mu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := s.patroller.Identify(ctx, req.Serials, channels); err != nil {
+			log.Printf("[GUI] デバイス識別失敗: %v", err)
+		}
+	}()
+
 	writeOK(w)
 }
 
@@ -2774,6 +2882,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <div class="flex-row" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">
       <button class="btn primary" id="btn-adb-scan" onclick="scanDevices()">🔍 再スキャン</button>
       <button class="btn" id="btn-adb-restart" onclick="restartADB()">🔄 ADB再起動</button>
+      <button class="btn" id="btn-identify" onclick="runIdentify()" title="デバイスとUID(インスタンス番号)を紐付けます。巡回停止中に実行してください">🔎 デバイス認識</button>
       <button class="btn danger" id="btn-adb-kill" onclick="killADB()" style="margin-left:auto">⏹ ADB停止</button>
     </div>
     <div class="flex-row" style="gap:6px">
@@ -3083,6 +3192,8 @@ function switchView(id,navEl){
   if(navEl)navEl.classList.add('active');
 	currentViewId=id;
 	syncLayoutEditState();
+	if(id==='detect-log'){const la=document.getElementById('log-area');if(la)la.scrollTop=la.scrollHeight;}
+	else if(id==='chat-log'){const ca=document.getElementById('chat-area');if(ca)ca.scrollTop=ca.scrollHeight;}
 }
 function initPanelDragAndCollapse(){
   const cards=document.querySelectorAll('.card');
@@ -3662,6 +3773,18 @@ async function scanDevices(){
   renderDeviceList();
   if(st)st.textContent=devs.length>0?'✓ '+devs.length+'台検出':'デバイスが見つかりません';
   setTimeout(()=>{if(st)st.textContent='';},3000);
+}
+async function runIdentify(){
+  const btn=document.getElementById('btn-identify');
+  const st=document.getElementById('adb-op-status');
+  if(btn){btn.disabled=true;btn.textContent='🔎 識別中...';}
+  if(st)st.textContent='デバイス識別フェーズ実行中（完了まで最大30s）...';
+  try{
+    const res=await fetch('/api/patrol/identify',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json()).catch(()=>({ok:false}));
+    if(st){st.textContent=res.ok?'✓ 識別開始（バックグラウンド実行中）':'✗ '+(res.error||'識別失敗');setTimeout(()=>st.textContent='',6000);}
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='🔎 デバイス認識';}
+  }
 }
 async function restartADB(){
   const st=document.getElementById('adb-op-status');if(st)st.textContent='ADB再起動中...';
@@ -4428,6 +4551,7 @@ const CFG_FIELDS=[
   {k:'mumu_tap_y',label:'タップY座標',type:'number',desc:'チャンネル入力欄のタップY'},
   {k:'mumu_pre_keycode',label:'プリキーコード',type:'text',desc:'チャンネル入力欄を開くキーコード'},
   {k:'gas_target_enemy',label:'GAS 対象エネミー',type:'select',options:['金ウリボ','金ナッポ'],desc:'Chrome拡張から受信するエネミー種別'},
+  {k:'debug_verbose',label:'詳細デバッグログ',type:'bool',desc:'true にすると [DBG][...] プレフィックスの詳細ログを出力。不具合調査用。本番運用では false を推奨'},
   {k:'show_no_device_dialog',label:'デバイス未検出ダイアログ',type:'bool',desc:'起動時にADBデバイスが見つからない場合ダイアログを表示する'},
 ];
 let cfgData={};

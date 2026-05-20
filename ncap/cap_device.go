@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/balrogsxt/StarResonanceAPI/debuglog"
 	"github.com/balrogsxt/StarResonanceAPI/global"
 	"github.com/balrogsxt/StarResonanceAPI/location"
 	"github.com/balrogsxt/StarResonanceAPI/notifier"
@@ -192,6 +193,9 @@ type CapDevice struct {
 	// チャット通知コールバック（GUI へのリアルタイム配信用）
 	chatNotifyFn func(clientIP, sender, message string, channel uint32, hasCh bool)
 
+	// LineID 観測コールバック（per-device CH 追跡用）userUID と実 CH を Patroller に通知する
+	onLineIDObserved func(uid uint64, lineID uint32, t time.Time)
+
 	// チャンネルデバッグモード
 	// --ch-debug で有効: 全methodIdとシーン変更パケットをログ出力する
 	chDebug bool
@@ -237,6 +241,12 @@ func (cd *CapDevice) SetChatExclude(keywords []string) {
 // SetChatNotifier はチャット受信時に呼び出すコールバックを設定する
 func (cd *CapDevice) SetChatNotifier(fn func(clientIP, sender, message string, channel uint32, hasCh bool)) {
 	cd.chatNotifyFn = fn
+}
+
+// SetLineIDObserver は 0x15/0x16 で LineID が確定したときに呼ばれるコールバックを設定する。
+// uid はプレイヤー固有ID (CharId)、lineID はゲーム内の実チャンネル番号。
+func (cd *CapDevice) SetLineIDObserver(fn func(uid uint64, lineID uint32, t time.Time)) {
+	cd.onLineIDObserved = fn
 }
 
 // nextInstanceNum は再利用可能な最小のインスタンス番号を返す
@@ -468,14 +478,20 @@ func (cd *CapDevice) Sessions() []CaptureSession {
 	cd.sessionsMu.RLock()
 	defer cd.sessionsMu.RUnlock()
 
-	seen := make(map[string]CaptureSession) // key = clientIP
+	seen := make(map[string]CaptureSession) // key = "uid:<userUID>" or "ep:<clientEndpoint>"
 	for _, s := range cd.sessions {
 		s.mu.Lock()
-		if s.clientIP == "" {
+		if s.clientIP == "" && s.clientEndpoint == "" {
 			s.mu.Unlock()
 			continue
 		}
-		cur, exists := seen[s.clientIP]
+		var key string
+		if s.userUID != 0 {
+			key = fmt.Sprintf("uid:%d", s.userUID)
+		} else {
+			key = "ep:" + s.clientEndpoint
+		}
+		cur, exists := seen[key]
 		// confirmed または UID あり を優先して上書き
 		if !exists || (!cur.Confirmed && s.serverConfirmed) || (cur.UserUID == 0 && s.userUID != 0) {
 			// CurrentCh: lineID（0x15パケット由来）→ portMap → patrolCh の優先順
@@ -488,7 +504,7 @@ func (cd *CapDevice) Sessions() []CaptureSession {
 			if currentCh == 0 {
 				currentCh = patrolCh
 			}
-			seen[s.clientIP] = CaptureSession{
+			seen[key] = CaptureSession{
 				Label:     s.label,
 				ClientIP:  s.clientIP,
 				ServerIP:  s.serverIP,
@@ -1457,6 +1473,9 @@ func (cd *CapDevice) processSyncContainerData(sess *session, payload []byte) {
 		sess.confirmedAt = time.Now() // 最初の0x15確定時のみ記録（チャット紐付けの優先度用）
 	}
 	cd.tryPortMapLineID(sess) // lineID=0 のとき portMap から補完
+	if cd.onLineIDObserved != nil && sess.userUID != 0 {
+		go cd.onLineIDObserved(sess.userUID, lineID, time.Now())
+	}
 
 	if oldCh == 0 {
 		log.Printf("[%s][Ch確定] Ch %d に入りました (mapID=%d)", sess.label, lineID, mapID)
@@ -1559,6 +1578,7 @@ func (cd *CapDevice) processSyncToMeDeltaInfo(sess *session, payload []byte) {
 		if uid := uint64(info.GetUuid()); uid != 0 && uid != sess.userUID {
 			sess.userUID = uid
 			log.Printf("[%s][0x2E] UUID=%d (UID=%d)", sess.label, uid, uid>>16)
+			debuglog.Vlogf("0x2E", "[%s] UUID変化 uid=%d UID=%d lineID=%d", sess.label, uid, uid>>16, sess.lineID)
 			cd.mergeSessionIfDuplicate(sess) // 同一キャラの既存セッションがあれば統合
 		}
 	}
@@ -1597,7 +1617,11 @@ func (cd *CapDevice) processSyncToMeDeltaInfo(sess *session, payload []byte) {
 				if sess.confirmedAt.IsZero() {
 					sess.confirmedAt = time.Now()
 				}
+				debuglog.Vlogf("0x2E", "[%s] lineID補完試行: donorLine=%d donorMap=%d donor=%s", sess.label, donorLine, donorMap, donor.label)
 				log.Printf("[%s][0x2E] lineID補完: Ch%d (mapID=%d) <- [%s]", sess.label, donorLine, donorMap, donor.label)
+				if cd.onLineIDObserved != nil && sess.userUID != 0 {
+					go cd.onLineIDObserved(sess.userUID, donorLine, time.Now())
+				}
 			}
 		}
 	}

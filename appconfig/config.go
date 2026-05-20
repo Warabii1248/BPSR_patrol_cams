@@ -1,4 +1,4 @@
-package appconfig
+﻿package appconfig
 
 import (
 	"encoding/json"
@@ -132,6 +132,10 @@ type Config struct {
 	// 空の場合は GetDeviceIP 経由で自動解決を試みる。
 	SerialToLabel map[string]string `json:"serial_to_label"`
 
+	// SerialToUID は Probe-and-Match で自動確立した ADB シリアル→userUID のバインドマップ。
+	// 起動時に読み込まれ、バインド成立のたびに書き戻される。手動編集も可。
+	SerialToUID map[string]uint64 `json:"serial_to_uid,omitempty"`
+
 	// GamePackageName はゲームのAndroidパッケージ名（空=クラッシュ検知・復帰無効）。
 	// adb shell pidof <package> でプロセス生死を確認する。
 	GamePackageName string `json:"game_package_name"`
@@ -156,6 +160,10 @@ type Config struct {
 	// ShowNoDeviceDialog は起動時にADBデバイスが見つからない場合にダイアログを表示するかどうか。
 	// デフォルト: true
 	ShowNoDeviceDialog bool `json:"show_no_device_dialog"`
+
+	// DebugVerbose は詳細デバッグログを有効にする（デフォルト: false）。
+	// true にすると [DBG][...] プレフィックスのログが出力される。
+	DebugVerbose bool `json:"debug_verbose"`
 }
 
 func defaultConfig() *Config {

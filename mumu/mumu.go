@@ -16,6 +16,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/balrogsxt/StarResonanceAPI/debuglog"
 )
 
 // Config はADB操作の設定
@@ -722,6 +724,17 @@ type DeviceStatus struct {
 	GameCrashed        bool    `json:"game_crashed"`          // pidof でゲームプロセス死亡確認済み
 	Recovering         bool    `json:"recovering"`            // 復帰処理実行中
 	LastRecoveredAtMs  int64   `json:"last_recovered_at_ms"`  // 最後の復帰試行完了時刻
+	ExpectedCh         uint32  `json:"expected_ch"`           // 直近 ADB 命令CH
+	ActualCh           uint32  `json:"actual_ch"`             // パケット観測の実CH（LineId）
+	Mismatch           bool    `json:"mismatch"`              // ExpectedCh != ActualCh かつ観測済み
+	LastObservedAt     int64   `json:"last_observed_at_ms"`   // ActualCh 最終観測時刻(UnixMilli)
+}
+
+// chPendingProbe は ADB 切替コマンドと 0x15/0x16 LineID 観測を突合するための暫定記録
+type chPendingProbe struct {
+	serial   string
+	targetCh uint32
+	sentAt   time.Time
 }
 
 // moveSignalMsg は [0x2E] パケット受信時のシグナル（インスタンスラベル付き）
@@ -783,6 +796,16 @@ type Patroller struct {
 	serialIPCache    map[string]string        // serial → IP（TTLキャッシュ）
 	serialIPCacheAt  map[string]time.Time
 	serialIPCacheMu  sync.Mutex
+
+	// serial ↔ userUID 動的バインドマップ（Probe-and-Match で確立）
+	serialToUID     map[string]uint64
+	uidToSerial     map[uint64]string
+	serialUIDMu     sync.RWMutex
+	pendingProbes   map[string]chPendingProbe // serial → 直近の切替予約
+	pendingProbesMu sync.Mutex
+
+	// serial_to_uid 永続化コールバック
+	saveSerialUIDFn func(map[string]uint64)
 }
 
 // NotifyChMovePacket は ncap が [0x2E] パケットを受信したときに呼び出す。
@@ -900,11 +923,261 @@ func (p *Patroller) SetDeviceCh(serial string, ch uint32) {
 	defer p.deviceStatusesMu.Unlock()
 	if ds, ok := p.deviceStatuses[serial]; ok {
 		ds.CurrentCh = ch
+		ds.ExpectedCh = ch
 	}
 }
 
-// resolveLabel はADBシリアルからインスタンスラベルを解決する。
-// 手動マッピング（SerialToLabel）→ GetLabelByIP の順で試みる。
+// GetSerialUID は serial に紐付いた userUID を返す（未バインドは 0）。
+func (p *Patroller) GetSerialUID(serial string) uint64 {
+	p.serialUIDMu.RLock()
+	defer p.serialUIDMu.RUnlock()
+	return p.serialToUID[serial]
+}
+
+// GetUIDSerial は userUID に紐付いた serial を返す（未バインドは ""）。
+func (p *Patroller) GetUIDSerial(uid uint64) string {
+	p.serialUIDMu.RLock()
+	defer p.serialUIDMu.RUnlock()
+	return p.uidToSerial[uid]
+}
+
+// HasBinding は少なくとも 1 件の serial↔UID バインドが確立しているか返す。
+func (p *Patroller) HasBinding() bool {
+	p.serialUIDMu.RLock()
+	defer p.serialUIDMu.RUnlock()
+	return len(p.serialToUID) > 0
+}
+
+// LoadSerialUIDMap は config.json から読み込んだ serial_to_uid マップを初期設定する。
+func (p *Patroller) LoadSerialUIDMap(m map[string]uint64) {
+	if len(m) == 0 {
+		return
+	}
+	p.serialUIDMu.Lock()
+	defer p.serialUIDMu.Unlock()
+	if p.serialToUID == nil {
+		p.serialToUID = make(map[string]uint64)
+	}
+	if p.uidToSerial == nil {
+		p.uidToSerial = make(map[uint64]string)
+	}
+	for serial, uid := range m {
+		p.serialToUID[serial] = uid
+		p.uidToSerial[uid] = serial
+	}
+	log.Printf("[Patroller] serial_to_uid: %d 件ロード済み", len(m))
+}
+
+// SetSaveSerialUIDFn は serial↔UID バインド成立時に config.json へ書き戻す関数を設定する。
+func (p *Patroller) SetSaveSerialUIDFn(fn func(map[string]uint64)) {
+	p.serialUIDMu.Lock()
+	p.saveSerialUIDFn = fn
+	p.serialUIDMu.Unlock()
+}
+
+// RecordPatrolMove は巡回ループが ADB 切替コマンドを完了した直後に呼ばれる。
+// Probe-and-Match の突合に備えて serial の切替予約を記録する。
+func (p *Patroller) RecordPatrolMove(serial string, targetCh uint32, t time.Time) {
+	p.pendingProbesMu.Lock()
+	if p.pendingProbes == nil {
+		p.pendingProbes = make(map[string]chPendingProbe)
+	}
+	p.pendingProbes[serial] = chPendingProbe{serial: serial, targetCh: targetCh, sentAt: t}
+	p.pendingProbesMu.Unlock()
+
+	p.deviceStatusesMu.Lock()
+	if p.deviceStatuses != nil {
+		if ds, ok := p.deviceStatuses[serial]; ok {
+			ds.ExpectedCh = targetCh
+			ds.Mismatch = false
+		}
+	}
+	p.deviceStatusesMu.Unlock()
+}
+
+// MatchLineChange は ncap が 0x15/0x16 で (uid, lineID) を観測したときに呼ばれる。
+// 未バインドの uid は pendingProbes と突合し、候補が 1 件なら serial↔UID バインドを確立する。
+// バインド済みの uid は ActualCh を更新しミスマッチを検出する。
+func (p *Patroller) MatchLineChange(uid uint64, lineID uint32, t time.Time) {
+	if uid == 0 || lineID == 0 {
+		return
+	}
+
+	// 既バインド: ActualCh 更新
+	p.serialUIDMu.RLock()
+	serial := p.uidToSerial[uid]
+	p.serialUIDMu.RUnlock()
+	if serial != "" {
+		debuglog.Vlogf("0x2E", "既バインド: serial=%s lineID=%d", serial, lineID)
+		p.updateActualCh(serial, lineID, t)
+		return
+	}
+
+	// 未バインド: pendingProbes から候補を探す
+	const probeWindow = 15 * time.Second
+	p.pendingProbesMu.Lock()
+	var matched []chPendingProbe
+	for _, probe := range p.pendingProbes {
+		if probe.targetCh == lineID && t.Sub(probe.sentAt) <= probeWindow {
+			p.serialUIDMu.RLock()
+			alreadyBound := p.serialToUID[probe.serial] != 0
+			p.serialUIDMu.RUnlock()
+			if !alreadyBound {
+				matched = append(matched, probe)
+			}
+		}
+	}
+	p.pendingProbesMu.Unlock()
+
+	debuglog.Vlogf("Probe", "uid=%d lineID=%d: matched %d pending probes", uid, lineID, len(matched))
+	if len(matched) == 1 {
+		bindSerial := matched[0].serial
+		p.serialUIDMu.Lock()
+		if p.serialToUID == nil {
+			p.serialToUID = make(map[string]uint64)
+		}
+		if p.uidToSerial == nil {
+			p.uidToSerial = make(map[uint64]string)
+		}
+		p.serialToUID[bindSerial] = uid
+		p.uidToSerial[uid] = bindSerial
+		saveFn := p.saveSerialUIDFn
+		snapshot := make(map[string]uint64, len(p.serialToUID))
+		for k, v := range p.serialToUID {
+			snapshot[k] = v
+		}
+		p.serialUIDMu.Unlock()
+		log.Printf("[Patroller][Bind] serial=%s ↔ uid=%d (targetCh=%d, lineID=%d)",
+			bindSerial, uid, matched[0].targetCh, lineID)
+		p.updateActualCh(bindSerial, lineID, t)
+		if saveFn != nil {
+			go saveFn(snapshot)
+		}
+	}
+}
+
+// NotifyLineIDChange は巡回状態に関係なく uid→lineID 観測を常時処理する。
+func (p *Patroller) NotifyLineIDChange(uid uint64, lineID uint32, t time.Time) {
+	p.MatchLineChange(uid, lineID, t)
+}
+
+// updateActualCh はバインド済み serial の ActualCh を更新しミスマッチを検出する。
+func (p *Patroller) updateActualCh(serial string, lineID uint32, t time.Time) {
+	p.deviceStatusesMu.Lock()
+	defer p.deviceStatusesMu.Unlock()
+	if p.deviceStatuses == nil {
+		return
+	}
+	ds, ok := p.deviceStatuses[serial]
+	if !ok {
+		ds = &DeviceStatus{Serial: serial}
+		p.deviceStatuses[serial] = ds
+	}
+	ds.ActualCh = lineID
+	ds.LastObservedAt = t.UnixMilli()
+	ds.CurrentCh = lineID
+	if ds.ExpectedCh != 0 && ds.ExpectedCh != lineID {
+		if !ds.Mismatch {
+			log.Printf("[Patroller][Mismatch] serial=%s expected=%d actual=%d",
+				serial, ds.ExpectedCh, lineID)
+		}
+		ds.Mismatch = true
+	} else {
+		ds.Mismatch = false
+	}
+}
+
+// runStaggerProbe は未バインド serial が複数ある場合に識別フェーズを実行する。
+// 各未バインド serial に異なる CH を割り当て、Probe-and-Match で全台のバインドを確立する。
+// 識別後は全台が probeCh にロード完了するまで待機し、adaptiveMaxLoad の初期値を設定する。
+func (p *Patroller) runStaggerProbe(ctx context.Context, serials []string, channels []uint32, cfg Config) {
+	p.serialUIDMu.RLock()
+	var unbound []string
+	for _, ser := range serials {
+		if p.serialToUID[ser] == 0 {
+			unbound = append(unbound, ser)
+		}
+	}
+	p.serialUIDMu.RUnlock()
+	if len(unbound) < 2 {
+		return
+	}
+	n := len(unbound)
+	log.Printf("[Patroller][Probe] %d台が未バインド - Stagger Probe 開始", n)
+
+	// 各未バインド serial に異なる CH を割り当てる（CH プールを均等分割）
+	step := len(channels) / n
+	if step < 1 {
+		step = 1
+	}
+	serialProbeCh := make(map[string]uint32, n)
+	var switchMu sync.Mutex
+	switchRes := make(map[string]error)
+	switchT := time.Now()
+	for i, ser := range unbound {
+		probeCh := channels[(i*step)%len(channels)]
+		serialProbeCh[ser] = probeCh
+		SwitchGroup(ctx, []string{ser}, 0, 1, probeCh, cfg, switchRes, &switchMu)
+		p.RecordPatrolMove(ser, probeCh, switchT)
+		log.Printf("[Patroller][Probe] serial=%s → Ch%d", ser, probeCh)
+	}
+
+	// 全台が probeCh にロード完了するまで待つ。
+	// ロード完了 = 0x2E 受信 = updateActualCh 経由で ds.CurrentCh が probeCh に更新済み。
+	// タイムアウトは MoveTimeout（最低 15s）を使用する。
+	probeTimeout := cfg.MoveTimeout
+	if probeTimeout < 15*time.Second {
+		probeTimeout = 15 * time.Second
+	}
+	loadStart := time.Now()
+	deadline := time.Now().Add(probeTimeout)
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		statuses := p.GetDeviceStatuses()
+		statusMap := make(map[string]uint32, len(statuses))
+		for _, ds := range statuses {
+			statusMap[ds.Serial] = ds.CurrentCh
+		}
+		loaded := 0
+		for _, ser := range unbound {
+			if statusMap[ser] == serialProbeCh[ser] {
+				loaded++
+			}
+		}
+		debuglog.Vlogf("Probe", "ロード完了待ち: %d/%d台 (%.1fs経過)", loaded, n, time.Since(loadStart).Seconds())
+		if loaded >= n {
+			break
+		}
+	}
+
+	elapsed := time.Since(loadStart).Seconds()
+
+	// バインド数を最終確認してログ出力
+	p.serialUIDMu.RLock()
+	bound := 0
+	for _, ser := range unbound {
+		if p.serialToUID[ser] != 0 {
+			bound++
+		}
+	}
+	p.serialUIDMu.RUnlock()
+	log.Printf("[Patroller][Probe] 識別フェーズ完了: %d/%d 台バインド成立 (%.1fs)", bound, n, elapsed)
+
+	// 初回ロード時間を adaptiveMaxLoad 用履歴に反映する
+	if elapsed > 0 {
+		window := cfg.AdaptiveTimeoutWindow
+		if window <= 0 {
+			window = 10
+		}
+		p.recordLoadTime(elapsed, window)
+	}
+}
+
 func (p *Patroller) resolveLabel(ctx context.Context, serial string, cfg Config) string {
 	if cfg.SerialToLabel != nil {
 		if label, ok := cfg.SerialToLabel[serial]; ok && label != "" {
@@ -1086,6 +1359,29 @@ func (p *Patroller) Stop() {
 	log.Println("[MuMu] 巡回停止")
 }
 
+// Identify は未バインドデバイスの識別フェーズ（Stagger Probe）を明示的に実行する。
+// 巡回が実行中の場合でも呼び出せるが、巡回停止中に使用することを推奨する。
+// serials が空の場合は ListDevices で自動取得する。
+// channels が空の場合は fmt.Errorf で即座にエラーを返す。
+func (p *Patroller) Identify(ctx context.Context, serials []string, channels []uint32) error {
+	cfg := p.Config()
+	if len(serials) == 0 {
+		lCtx, lCancel := context.WithTimeout(ctx, 10*time.Second)
+		var err error
+		serials, err = ListDevices(lCtx, cfg)
+		lCancel()
+		if err != nil {
+			return fmt.Errorf("デバイス一覧取得失敗: %w", err)
+		}
+	}
+	if len(channels) == 0 {
+		return fmt.Errorf("チャンネルリストが空です")
+	}
+	log.Printf("[Patroller][Identify] 識別開始: %d台, %d ch", len(serials), len(channels))
+	p.runStaggerProbe(ctx, serials, channels, cfg)
+	return nil
+}
+
 // findResumeIndex はチャンネルリストから再開インデックスを決定する。
 // lastCh がリストに存在すればそのインデックスを返す。
 // 存在しない場合は lastCh に最も近い値のインデックスを返す。
@@ -1222,6 +1518,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 		log.Printf("[MuMu] 巡回開始: %d ch, 滞在=%.1fs, 方向=%s, モード=%s, 開始idx=%d",
 			len(channels), dwell.Seconds(), dirStr, modeStr, resumeIdx)
 
+
 		idx := resumeIdx
 		visited := 0 // 一巡モード用カウンタ
 
@@ -1350,6 +1647,11 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			// 全台切替完了時刻を記録（この時刻以降の[0x2E]のみカウント）
 			switchDoneAt := time.Now()
 
+			// per-device CH バインド用: 各 serial の切替予約を記録
+			for _, ser := range targets {
+				p.RecordPatrolMove(ser, ch, switchDoneAt)
+			}
+
 			// チャンネル切替完了を CapDevice に通知（lineIDパケットが来ない場合のフォールバック用）
 			p.mu.RLock()
 			notifyFn := p.onChannelSwitch
@@ -1401,6 +1703,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 						}
 					}
 				}
+				debuglog.Vlogf("巡回", "Ch%d: effectiveMove=%.0fs effectiveMerge=%.0fs adaptiveTimeout=%v need=%d", ch, effectiveMove.Seconds(), effectiveMerge.Seconds(), currentCfg.AdaptiveTimeout, need)
 				p.mu.Lock()
 				p.status.WaitingMove = true
 				p.status.Phase = "loading"
@@ -1418,6 +1721,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 							got++
 							respondedSet[msg.label] = true
 							log.Printf("[MuMu] 巡回: Ch%d [0x2E] buffered %s (%d/%d台)", ch, msg.label, got, need)
+								debuglog.Vlogf("巡回", "  → 受信遅延 %.2fs (switchDoneAt基準)", msg.t.Sub(switchDoneAt).Seconds())
 						}
 					default:
 						draining = false

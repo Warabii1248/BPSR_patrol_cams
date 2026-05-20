@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"bufio"
@@ -18,6 +18,7 @@ import (
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/balrogsxt/StarResonanceAPI/appconfig"
+	"github.com/balrogsxt/StarResonanceAPI/debuglog"
 	"github.com/balrogsxt/StarResonanceAPI/gui"
 	"github.com/balrogsxt/StarResonanceAPI/location"
 	"github.com/balrogsxt/StarResonanceAPI/mumu"
@@ -69,6 +70,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("config load error: %v", err)
 	}
+	debuglog.Verbose = cfg.DebugVerbose
 	if *networkFlag != "" {
 		cfg.Network = *networkFlag
 	}
@@ -286,6 +288,25 @@ func main() {
 	// Patroller がチャンネル切替時に capDevice へ現在チャンネルを通知する
 	guiServer.SetChannelNotifyFn(func(ch uint32) {
 		capDevice.SetCurrentChannel(ch)
+	})
+
+	// 0x15/0x16 の LineID 観測を Patroller に通知し per-device CH 追跡を実現する
+	capDevice.SetLineIDObserver(func(uid uint64, lineID uint32, t time.Time) {
+		guiServer.NotifyLineIDChange(uid, lineID, t)
+	})
+
+	// serial_to_uid: u8D77u52D5u6642u30EDu30FCu30C9u3068u3001u30D0u30A4u30F3u30C9u6210u7ACBu6642u306E config.json u66F8u304Du623Bu3057u8A2Du5B9A
+	guiServer.LoadSerialUIDMap(cfg.SerialToUID)
+	guiServer.SetSaveSerialUIDFn(func(m map[string]uint64) {
+		c, err := appconfig.Load(*configPath)
+		if err != nil {
+			log.Printf("[Patroller] serial_to_uid save: config load error: %v", err)
+			return
+		}
+		c.SerialToUID = m
+		if err := appconfig.Save(*configPath, c); err != nil {
+			log.Printf("[Patroller] serial_to_uid save error: %v", err)
+		}
 	})
 
 	// ADBデバイス ↔ キャプチャUID の対応表をGUIに提供
