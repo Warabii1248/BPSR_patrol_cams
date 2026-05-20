@@ -1,4 +1,12 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(Get-Content \"c:\\\\Users\\\\mlwl1\\\\Documents\\\\GitHub\\\\BPSR_patrol_cams\\\\logs\\\\log.txt\")",
+      "Bash(Select-Object -Last 150)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -6,8 +14,8 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git commit*)",
             "command": "Write-Output '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"changelog.txtを更新・ステージしましたか？　未更新ならコミット前に必ず記入してください。\"}}'",
+            "if": "Bash(git commit*)",
             "shell": "powershell"
           }
         ]

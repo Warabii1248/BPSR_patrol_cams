@@ -1822,6 +1822,8 @@ func (cd *CapDevice) tryScanChatPayload(sess *session, payload []byte) {
 	if message == "" {
 		return
 	}
+	log.Printf("[CHAT-RAW][%s] clientIP=%s ch=%d hasCh=%v sender=%q msg=%q",
+		sess.label, sess.clientIP, channel, channelFound, sender, message)
 	// 除外ワードが含まれていればスキップ
 	for _, kw := range cd.chatExclude {
 		if kw != "" && strings.Contains(message, kw) {
