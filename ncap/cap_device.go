@@ -1,4 +1,4 @@
-package ncap
+﻿package ncap
 
 import (
 	"bytes"
@@ -193,7 +193,7 @@ type CapDevice struct {
 	chatDedup   map[string]time.Time // key=clientIP+channel+sender+message, value=最終受信時刻
 
 	// チャット通知コールバック（GUI へのリアルタイム配信用）
-	chatNotifyFn func(clientIP, sender, message string, channel uint32, hasCh bool)
+	chatNotifyFn func(clientIP, label string, userUID uint64, sender, message string, channel uint32, hasCh bool)
 
 	// LineID 観測コールバック（per-device CH 追跡用）userUID と実 CH を Patroller に通知する
 	onLineIDObserved func(uid uint64, lineID uint32, t time.Time)
@@ -241,7 +241,7 @@ func (cd *CapDevice) SetChatExclude(keywords []string) {
 }
 
 // SetChatNotifier はチャット受信時に呼び出すコールバックを設定する
-func (cd *CapDevice) SetChatNotifier(fn func(clientIP, sender, message string, channel uint32, hasCh bool)) {
+func (cd *CapDevice) SetChatNotifier(fn func(clientIP, label string, userUID uint64, sender, message string, channel uint32, hasCh bool)) {
 	cd.chatNotifyFn = fn
 }
 
@@ -815,6 +815,60 @@ func (cd *CapDevice) findConfirmedSessionByClientIP(clientIP string) *session {
 	return best
 }
 
+// claimSessionForChat は新しいチャット接続 chatEndpoint を、同 clientIP の確認済みセッションの中で
+// sessions マップへの参照が最も少ない（チャット未割当の）セッションに割り当てて返す。
+// NAT 等で複数インスタンスが同一 clientIP を共有する環境で各インスタンスへ分散させる。
+func (cd *CapDevice) claimSessionForChat(chatEndpoint, clientIP string) *session {
+	cd.sessionsMu.Lock()
+	defer cd.sessionsMu.Unlock()
+
+	seen := make(map[*session]struct{})
+	var candidates []*session
+	for _, s := range cd.sessions {
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		if s.clientIP != clientIP {
+			continue
+		}
+		// serverIP が確定している = fast-path でゲームパケット確認済み = 実ゲームセッション
+		if !s.serverConfirmed && s.userUID == 0 && s.serverIP == "" {
+			continue
+		}
+		candidates = append(candidates, s)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	refCount := make(map[*session]int)
+	for _, c := range candidates {
+		refCount[c] = 0
+	}
+	for _, s := range cd.sessions {
+		if _, ok := refCount[s]; ok {
+			refCount[s]++
+		}
+	}
+
+	var best *session
+	bestCount := int(^uint(0) >> 1)
+	for _, c := range candidates {
+		if cnt := refCount[c]; cnt < bestCount {
+			bestCount = cnt
+			best = c
+		}
+	}
+
+	if best != nil {
+		cd.sessions[chatEndpoint] = best
+		log.Printf("[CHAT-CLAIM] chat-ep=%s → label=%s uid=%d clientIP=%s (refCount=%d candidates=%d)",
+			chatEndpoint, best.label, best.userUID, clientIP, bestCount, len(candidates))
+	}
+	return best
+}
+
 // GetLabelByClientIP はクライアントIPに対応するセッションラベル（"Instance-N"等）を返す。
 // 確認済みセッションが見つからない場合は空文字列を返す。
 // ADBシリアル → IP → ラベル の変換チェーンで巡回デバイスとの紐づけに使用する。
@@ -1129,16 +1183,12 @@ func (cd *CapDevice) handleServerToClientFast(srcIP, dstIP, srcKey, revKey strin
 			if tcp.SrcPort != 5003 {
 				return
 			}
-			// 確定済みセッションを優先して紐付け。未存在の場合は仮セッションを即時作成して
-			// チャットをそのまま処理する（ゲームログインタイミングに依存しない）。
-			if confirmed := cd.findConfirmedSessionByClientIP(clientIP); confirmed != nil {
-				sess = confirmed
-				cd.sessionsMu.Lock()
-				if _, exists := cd.sessions[clientEndpoint]; !exists {
-					cd.sessions[clientEndpoint] = sess
-				}
-				cd.sessionsMu.Unlock()
+			// 確定済みセッションを優先して紐付け。同 clientIP に複数インスタンスがある場合は
+			// 参照数が最小のセッションに割り当てて分散する。未存在なら仮セッションを作成。
+			if claimed := cd.claimSessionForChat(clientEndpoint, clientIP); claimed != nil {
+				sess = claimed
 			} else {
+				log.Printf("[CHAT-BIND] no-confirmed-session clientIP=%s ep=%s → 仮セッション", clientIP, clientEndpoint)
 				sess = cd.getOrCreateSession(clientEndpoint, clientIP)
 			}
 		}
@@ -1473,10 +1523,13 @@ func (cd *CapDevice) processSyncContainerData(sess *session, payload []byte) {
 	//   field1 (bytes): scene attribute list
 	//   field2 (bytes): CharBaseInfo (charId, name等)
 	// バージョンアップ後、VData に SceneData(field3) が含まれなくなった。
-	// lineID は Patroller のチャンネル切替コールバックで補完する (triggerDetection 内)。
+	// portMap が serverIP → ch を解決済みなら onLineIDObserved を発火してバインドに使う。
 
 	sd := vdata.GetSceneData()
 	if sd == nil {
+		if cd.onLineIDObserved != nil && sess.userUID != 0 && sess.lineID != 0 {
+			go cd.onLineIDObserved(sess.userUID, sess.lineID, time.Now())
+		}
 		return
 	}
 
@@ -1881,10 +1934,12 @@ func (cd *CapDevice) tryScanChatPayload(sess *session, payload []byte) {
 
 	// 重複排除：同一デバイスの同一メッセージを10秒以内に再受信した場合のみスキップ
 	// 複数デバイスが同じ内容を受信しても各デバイス分をフロントエンドに渡す（フロント側でコンテンツdedup）
-	dedupKey := fmt.Sprintf("%s\x00%d\x00%s\x00%s", sess.clientIP, channel, senderDisplay, message)
+	log.Printf("[CHAT-RAW] sess.label=%s uid=%d clientIP=%s ch=%d sender=%q msg=%q", sess.label, sess.userUID, sess.clientIP, channel, senderDisplay, message)
+	dedupKey := fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s", sess.label, sess.clientIP, channel, senderDisplay, message)
 	cd.chatDedupMu.Lock()
 	now := time.Now()
 	if t, seen := cd.chatDedup[dedupKey]; seen && now.Sub(t) < 10*time.Second {
+		log.Printf("[CHAT-DEDUP] DROP key=%q age=%s", dedupKey, now.Sub(t))
 		cd.chatDedupMu.Unlock()
 		return
 	}
@@ -1902,7 +1957,7 @@ func (cd *CapDevice) tryScanChatPayload(sess *session, payload []byte) {
 
 	// GUI へのリアルタイム通知
 	if cd.chatNotifyFn != nil {
-		cd.chatNotifyFn(sess.clientIP, senderDisplay, message, channel, channelFound)
+		cd.chatNotifyFn(sess.clientIP, sess.label, sess.userUID, senderDisplay, message, channel, channelFound)
 	}
 }
 

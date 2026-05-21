@@ -130,6 +130,8 @@ type PendingPortMapChange struct {
 type ChatEvent struct {
 	Time     string `json:"time"`
 	ClientIP string `json:"client_ip"`
+	Label    string `json:"label"`
+	UserUID  uint64 `json:"user_uid,omitempty"`
 	Sender   string `json:"sender"`
 	Message  string `json:"message"`
 	Channel  uint32 `json:"channel"`
@@ -574,10 +576,12 @@ func (s *Server) AddPortMapPending(ch uint32, newIP, oldIP string, voteCount int
 }
 
 // OnChat はチャット受信イベントをログに追加しSSEで配信する
-func (s *Server) OnChat(clientIP, sender, message string, channel uint32, hasCh bool) {
+func (s *Server) OnChat(clientIP, label string, userUID uint64, sender, message string, channel uint32, hasCh bool) {
 	ev := ChatEvent{
 		Time:     time.Now().Format("15:04:05"),
 		ClientIP: clientIP,
+		Label:    label,
+		UserUID:  userUID,
 		Sender:   sender,
 		Message:  message,
 		Channel:  channel,
@@ -4195,7 +4199,7 @@ async function addADBDevice(){
 function toggleDevice(s,c){c?selectedDevices.add(s):selectedDevices.delete(s);}
 // ── Continuous Tap ──
 // ── Chat Panel ──
-let chatEvents=[],chatIPToSerial={},chatKnownSerials=[];
+let chatEvents=[],chatIPToSerial={},chatKnownSerials=[],chatKnownLabels=new Set();
 let notifySoundEnabled=localStorage.getItem('notifySoundEnabled')!=='false';
 let notifySoundVolume=parseFloat(localStorage.getItem('notifySoundVolume')||'0.5');
 const DEFAULT_CHAT_LOCATION_RULES=[];
@@ -4395,7 +4399,7 @@ function isChatCandidate(ev){
 }
 function dedupeChatEvents(source){
 	const seen=new Set();
-	return (source||[]).filter(ev=>{const k=ev.channel+'|'+ev.sender+'|'+ev.message;if(seen.has(k))return false;seen.add(k);return true;});
+	return (source||[]).filter(ev=>{const k=(ev.label||ev.client_ip)+'|'+ev.channel+'|'+ev.sender+'|'+ev.message;if(seen.has(k))return false;seen.add(k);return true;});
 }
 function getPickedChatEvents(source){
 	return dedupeChatEvents((source||[]).filter(isChatCandidate));
@@ -4412,7 +4416,7 @@ function chatCandidateMetaHtml(ev){
 }
 function chatMsgHtml(ev,opts){
 	opts=opts||{};
-  const serial=chatIPToSerial[ev.client_ip]||ev.client_ip;
+  const serial=ev.label||chatIPToSerial[ev.client_ip]||ev.client_ip;
   const ch=ev.has_ch?'<span style="color:#4f8ef7;margin-right:3px;font-size:.88em">Ch'+ev.channel+'</span>':'';
 	const scoreBadge=opts.report?'<span class="chat-report-score">score '+getChatCandidateScore(ev)+'</span>':'';
 	const rowClass='chat-msg'+(opts.report?' report':'');
@@ -4474,12 +4478,14 @@ function refreshChatDeviceDropdown(){
   const sel=document.getElementById('chat-device-select');if(!sel)return;
   const current=sel.value;
   const serials=chatKnownSerials.length?[...chatKnownSerials]:[...new Set(Object.values(chatIPToSerial))].sort();
-  sel.innerHTML='<option value="">すべて</option>'+serials.map(s=>'<option value="'+escHtml(s)+'">'+escHtml(s)+'</option>').join('');
-  if(serials.includes(current))sel.value=current;
+  const labels=[...chatKnownLabels].sort();
+  const list=[...new Set([...labels,...serials])].sort();
+  sel.innerHTML='<option value="">すべて</option>'+(list.length?list:serials).map(s=>'<option value="'+escHtml(s)+'">'+escHtml(s)+'</option>').join('');
+  if((list.length?list:serials).includes(current))sel.value=current;
 }
 function chatMatchFilter(ev){
   const sel=document.getElementById('chat-device-select');const filterSerial=sel?sel.value:'';
-  if(filterSerial){const serial=chatIPToSerial[ev.client_ip];if(!serial||serial!==filterSerial)return false;}
+  if(filterSerial){const serial=ev.label||chatIPToSerial[ev.client_ip];if(!serial||serial!==filterSerial)return false;}
   const q=document.getElementById('chat-search')?document.getElementById('chat-search').value.toLowerCase():'';
   if(q&&!(ev.sender.toLowerCase().includes(q)||ev.message.toLowerCase().includes(q)))return false;
   return true;
@@ -4548,8 +4554,9 @@ function applyNotifySoundUI(){
 	if(vol){vol.value=notifySoundVolume;vol.disabled=!notifySoundEnabled;}
 }
 function appendChatToPanel(ev){
-  const isDup=chatEvents.slice(-50).some(e=>e.client_ip===ev.client_ip&&e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
+  const isDup=chatEvents.slice(-50).some(e=>(e.label||e.client_ip)===(ev.label||ev.client_ip)&&e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
   if(isDup)return;
+  if(ev.label&&!chatKnownLabels.has(ev.label)){chatKnownLabels.add(ev.label);refreshChatDeviceDropdown();}
   chatEvents.push(ev);if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
   if(isChatCandidate(ev)){
     const facts=extractChatCandidateFacts(ev);

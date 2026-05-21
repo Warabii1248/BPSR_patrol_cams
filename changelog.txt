@@ -1,4 +1,57 @@
 ﻿====--------------------------------------------------------------------------------
+[No.25] 2026/05/21 22:30 — 複数インスタンス チャット接続割当修正（NAT 環境 claimSessionForChat）
+
+【変更】
+  - ncap/cap_device.go: claimSessionForChat() 新関数追加
+    同 clientIP のセッション群から sessions マップ参照数が最小のものにチャット接続を割当、
+    NAT 共有環境（MuMu 複数インスタンス全て同一IP）でインスタンスごとに分散させる
+    候補条件: serverConfirmed || userUID!=0 || serverIP!="" （fast-path 確認済みも対象）
+  - ncap/cap_device.go: チャット binding を findConfirmedSessionByClientIP → claimSessionForChat に変更
+  - ncap/cap_device.go: [CHAT-RESOLVE] ログを削除（0x2E ハンドラからも呼ばれ大量出力していたため）
+    → [CHAT-CLAIM] に置き換え（claimSessionForChat 内のみで出力）
+
+【原因】
+  MuMu 複数インスタンスは全て同一 clientIP (192.168.0.7) を使用する NAT 環境。
+  (1) findConfirmedSessionByClientIP は confirmedAt 最新の1セッションのみを返すため、全チャット接続が
+      1インスタンスに集約されていた。
+  (2) チャット接続到着時点で UID/lineID 未受信のインスタンスは候補外となり候補が1つしかなかった
+      → serverIP 確定済みセッションも候補に含めることで起動直後も全インスタンスに分散可能。
+
+====--------------------------------------------------------------------------------
+[No.24] 2026/05/21 -- — 複数インスタンス チャット受信問題修正（dedup・シグネチャ・ラベル対応）
+
+【変更】
+  - ncap/cap_device.go: chatNotifyFn / SetChatNotifier シグネチャに label・userUID を追加
+  - ncap/cap_device.go: dedupKey を clientIP のみ→ label+clientIP に変更（同IP別インスタンスで重複排除しない）
+  - ncap/cap_device.go: [CHAT-RAW][CHAT-DEDUP][CHAT-BIND][CHAT-RESOLVE] デバッグログ追加
+  - gui/gui.go: ChatEvent 構造体に Label・UserUID フィールド追加（SSE JSON に含める）
+  - gui/gui.go: OnChat() シグネチャ拡張・ev に Label/UserUID をセット
+  - gui/gui.go JS: dedupeChatEvents() の dedup キーを label||client_ip+ch+sender+msg に修正（主因修正）
+  - gui/gui.go JS: appendChatToPanel() isDup 判定を label||client_ip ベースに変更
+  - gui/gui.go JS: chatMsgHtml() のシリアル表示を ev.label 優先に変更
+  - gui/gui.go JS: chatMatchFilter() フィルタを ev.label 優先に変更
+  - gui/gui.go JS: chatKnownLabels セット追加・refreshChatDeviceDropdown() にラベルを統合
+
+【原因】
+  dedupeChatEvents() のキーが channel+sender+message のみで clientIP/label を含まず、
+  別インスタンスからの同一発言を必ず1件に潰していた。さらにサーバー側 dedupKey も
+  clientIP のみで label を含まず、同 IP 環境では別インスタンスの重複除去が過剰だった。
+  chatNotifyFn に label が含まれなかったため GUI 側でインスタンス識別が不可能だった。
+
+====--------------------------------------------------------------------------------
+[No.23] 2026/05/21 -- — 識別フェーズ バインド未確立バグ修正（0x15 SceneData なし時の onLineIDObserved 未発火）
+
+【変更】
+  - ncap/cap_device.go: processSyncContainerData において sd==nil（ゲームバージョンアップ後）の
+    早期リターン前に、portMap 補完済みの sess.lineID が取れている場合は onLineIDObserved を発火する
+    ようにした。これにより Stagger Probe の serial↔UID バインドが正常に確立されるようになった。
+
+【原因】
+  ゲームのバージョンアップで 0x15(VData) に SceneData が含まれなくなり sd==nil で即リターン。
+  tryPortMapLineID は serverIP 設定時に呼ばれ sess.lineID は解決済みだったが、
+  onLineIDObserved が呼ばれず MatchLineChange が発火しないためバインドが 0/N台のまま停止。
+
+====--------------------------------------------------------------------------------
 [No.22] 2026/05/21 -- — データ管理ページ：記憶済みデバイス情報表示・セクション折りたたみ追加
 
 【変更】
