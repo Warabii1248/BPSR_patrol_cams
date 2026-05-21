@@ -2697,7 +2697,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 #view-dashboard.v2-dashboard #gold-history-container{flex:1;min-height:0;overflow-y:auto;}
 /* Right column: chat log + report. Limit chat area so it stays compact. */
 #view-dashboard.v2-dashboard #card-dash-chat-col{height:100%;}
-#view-dashboard.v2-dashboard #card-dash-chat{flex:0 0 auto;max-height:200px;overflow:hidden;}
+#view-dashboard.v2-dashboard #card-dash-chat{flex-shrink:0;max-height:180px;}
 #view-dashboard.v2-dashboard #card-dash-chat .card2-body{overflow:auto;}
 #view-dashboard.v2-dashboard #card-dash-report{flex:1 1 0;min-height:120px;}
 #view-dashboard.v2-dashboard #dash-chat-area{padding:0;}
@@ -2707,6 +2707,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 #view-dashboard.v2-dashboard.active > .hero-bar,
 #view-dashboard.v2-dashboard.active > .kpi-strip,
 #view-dashboard.v2-dashboard.active > #card-dash-matrix,
+#view-dashboard.v2-dashboard.active > #card-dash-chat,
 #view-dashboard.v2-dashboard.active > #card-dash-devices{flex-shrink:0;}
 </style>
 </head>
@@ -2952,21 +2953,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       </div>
     </div>
 
-    <!-- Right col: chat log + report -->
+    <!-- Right col: report only -->
     <div class="dash-col" id="card-dash-chat-col">
-      <div class="card2" id="card-dash-chat" style="flex:1;min-height:0">
-        <div class="card2-head">
-          <span class="ci"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg></span>
-          <span class="ct">チャットログ</span>
-          <div class="ca">
-            <button class="btn2 ghost sm" onclick="switchView('chat-log',document.getElementById('nav-chat-log'))" title="展開">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
-              展開
-            </button>
-          </div>
-        </div>
-        <div class="card2-body" style="padding:0;overflow:auto"><div id="dash-chat-area"></div></div>
-      </div>
       <div class="card2" id="card-dash-report" style="flex:1;min-height:0">
         <div class="card2-head">
           <span class="ci" style="color:var(--warn)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7a4 4 0 0 1 8 0v3l1.5 2H2.5L4 10z"/><path d="M6.5 13.5a1.5 1.5 0 0 0 3 0"/></svg></span>
@@ -2976,6 +2964,21 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         <div class="card2-body" style="padding:0;overflow:auto"><div id="dash-chat-report-area" class="chat-report-list"></div></div>
       </div>
     </div>
+  </div>
+
+  <!-- === Chat log (above devices) === -->
+  <div class="card2" id="card-dash-chat">
+    <div class="card2-head">
+      <span class="ci"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 2V4a1 1 0 0 1 1-1z"/></svg></span>
+      <span class="ct">チャットログ</span>
+      <div class="ca">
+        <button class="btn2 ghost sm" onclick="switchView('chat-log',document.getElementById('nav-chat-log'))" title="展開">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+          展開
+        </button>
+      </div>
+    </div>
+    <div class="card2-body" style="padding:0;overflow:auto"><div id="dash-chat-area"></div></div>
   </div>
 
   <!-- === Device pills (bottom row) === -->
@@ -5523,24 +5526,21 @@ function swapChatPanels(){
 }
 function initChatLayoutEdit(){}
 function swapDashColumns(){
-  const grid=document.getElementById('dashboard-grid');if(!grid)return;
-  const left=document.getElementById('card-dash-gold');
-  const right=document.getElementById('card-dash-chat-col');
-  if(!left||!right)return;
-  const handle=document.getElementById('dash-swap-handle');
-  if(grid.children[1]===left){
-    grid.appendChild(handle);
-    grid.appendChild(left);
+  const gold=document.getElementById('card-dash-gold');
+  const chatCol=document.getElementById('card-dash-chat-col');
+  if(!gold||!chatCol)return;
+  const goldIsLeft=!!(gold.compareDocumentPosition(chatCol)&Node.DOCUMENT_POSITION_FOLLOWING);
+  if(goldIsLeft){
+    chatCol.parentNode.appendChild(gold);
   } else {
-    grid.appendChild(handle);
-    grid.appendChild(right);
+    chatCol.parentNode.appendChild(chatCol);
   }
   saveDashboardLayout();
 }
 function saveDashboardLayout(){
-  const grid=document.getElementById('dashboard-grid');if(!grid)return;
-  const left=document.getElementById('card-dash-gold');
-  const goldOnLeft=left&&grid.children[1]===left;
+  const gold=document.getElementById('card-dash-gold');
+  const chatCol=document.getElementById('card-dash-chat-col');
+  const goldOnLeft=!!(gold&&chatCol&&gold.compareDocumentPosition(chatCol)&Node.DOCUMENT_POSITION_FOLLOWING);
   localStorage.setItem('dashLayoutV2',JSON.stringify({goldOnLeft}));
 }
 function loadDashboardLayout(){
