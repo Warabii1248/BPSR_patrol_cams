@@ -873,6 +873,11 @@ type Patroller struct {
 	// serial_to_uid 永続化コールバック
 	saveSerialUIDFn func(map[string]uint64)
 
+	// serial_to_label 自動確立マップと永続化コールバック
+	serialToLabel    map[string]string
+	serialLabelMu    sync.RWMutex
+	saveSerialLabelFn func(map[string]string)
+
 	// deviceAssignments はデバイスペア別のch分担設定。空の場合は全デバイスが全chを巡回。
 	deviceAssignments   []GroupAssignment
 	deviceAssignmentsMu sync.RWMutex
@@ -1050,6 +1055,47 @@ func (p *Patroller) SetSaveSerialUIDFn(fn func(map[string]uint64)) {
 	p.serialUIDMu.Lock()
 	p.saveSerialUIDFn = fn
 	p.serialUIDMu.Unlock()
+}
+
+// LoadSerialLabelMap は config.json から読み込んだ serial_to_label マップを初期設定する。
+func (p *Patroller) LoadSerialLabelMap(m map[string]string) {
+	if len(m) == 0 {
+		return
+	}
+	p.serialLabelMu.Lock()
+	defer p.serialLabelMu.Unlock()
+	if p.serialToLabel == nil {
+		p.serialToLabel = make(map[string]string)
+	}
+	for serial, label := range m {
+		p.serialToLabel[serial] = label
+	}
+	log.Printf("[Patroller] serial_to_label: %d 件ロード済み", len(m))
+}
+
+// GetSerialMaps は serial→uid と serial→label の両マップのコピーを返す。
+func (p *Patroller) GetSerialMaps() (uidMap map[string]uint64, labelMap map[string]string) {
+	p.serialUIDMu.RLock()
+	uidMap = make(map[string]uint64, len(p.serialToUID))
+	for k, v := range p.serialToUID {
+		uidMap[k] = v
+	}
+	p.serialUIDMu.RUnlock()
+
+	p.serialLabelMu.RLock()
+	labelMap = make(map[string]string, len(p.serialToLabel))
+	for k, v := range p.serialToLabel {
+		labelMap[k] = v
+	}
+	p.serialLabelMu.RUnlock()
+	return
+}
+
+// SetSaveSerialLabelFn は serial→label の自動確立時に config.json へ書き戻す関数を設定する。
+func (p *Patroller) SetSaveSerialLabelFn(fn func(map[string]string)) {
+	p.serialLabelMu.Lock()
+	p.saveSerialLabelFn = fn
+	p.serialLabelMu.Unlock()
 }
 
 // RecordPatrolMove は巡回ループが ADB 切替コマンドを完了した直後に呼ばれる。
@@ -1256,19 +1302,57 @@ func (p *Patroller) runStaggerProbe(ctx context.Context, serials []string, chann
 }
 
 func (p *Patroller) resolveLabel(ctx context.Context, serial string, cfg Config) string {
+	// 1) 自動確立済みマップ（永続保存済み）
+	p.serialLabelMu.RLock()
+	if p.serialToLabel != nil {
+		if label, ok := p.serialToLabel[serial]; ok && label != "" {
+			p.serialLabelMu.RUnlock()
+			return label
+		}
+	}
+	saveFn := p.saveSerialLabelFn
+	p.serialLabelMu.RUnlock()
+
+	// 2) Config の手動設定
 	if cfg.SerialToLabel != nil {
 		if label, ok := cfg.SerialToLabel[serial]; ok && label != "" {
 			return label
 		}
 	}
-	if cfg.GetLabelByIP != nil {
-		if ip := p.getCachedIP(ctx, serial, cfg); ip != "" {
-			if label := cfg.GetLabelByIP(ip); label != "" {
-				return label
-			}
-		}
+
+	// 3) 動的解決（IP経由）
+	if cfg.GetLabelByIP == nil {
+		return ""
 	}
-	return ""
+	ip := p.getCachedIP(ctx, serial, cfg)
+	if ip == "" {
+		return ""
+	}
+	label := cfg.GetLabelByIP(ip)
+	if label == "" {
+		return ""
+	}
+
+	// 新規確立 → 確定マップに追加して永続保存
+	p.serialLabelMu.Lock()
+	if p.serialToLabel == nil {
+		p.serialToLabel = make(map[string]string)
+	}
+	if p.serialToLabel[serial] == "" {
+		p.serialToLabel[serial] = label
+		snapshot := make(map[string]string, len(p.serialToLabel))
+		for k, v := range p.serialToLabel {
+			snapshot[k] = v
+		}
+		p.serialLabelMu.Unlock()
+		log.Printf("[Patroller][Label] serial=%s → %s (自動確立)", serial, label)
+		if saveFn != nil {
+			go saveFn(snapshot)
+		}
+	} else {
+		p.serialLabelMu.Unlock()
+	}
+	return label
 }
 
 // getCachedIP はADBシリアルのIPをキャッシュ付きで取得する（TTL: 5分）。
@@ -1291,6 +1375,30 @@ func (p *Patroller) getCachedIP(ctx context.Context, serial string, cfg Config) 
 		p.serialIPCacheAt[serial] = time.Now()
 	}
 	return ip
+}
+
+// ResolveAllIPs は serials の各シリアルに対して GetDeviceIP を並列実行し、
+// serial → IP のマップを返す。取得できなかったシリアルはマップに含まれない。
+func ResolveAllIPs(ctx context.Context, serials []string, cfg Config) map[string]string {
+	result := make(map[string]string, len(serials))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, serial := range serials {
+		wg.Add(1)
+		go func(s string) {
+			defer wg.Done()
+			ipCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			ip, err := GetDeviceIP(ipCtx, s, cfg)
+			if err == nil && ip != "" {
+				mu.Lock()
+				result[s] = ip
+				mu.Unlock()
+			}
+		}(serial)
+	}
+	wg.Wait()
+	return result
 }
 
 // updateDeviceStatus はシリアル単位のデバイス状態を更新する。

@@ -1,4 +1,36 @@
 ﻿====--------------------------------------------------------------------------------
+[No.22] 2026/05/21 -- — データ管理ページ：記憶済みデバイス情報表示・セクション折りたたみ追加
+
+【変更】
+  - mumu/mumu.go: Patroller.GetSerialMaps() 追加（serial→uid/label マップのコピーを返す）
+  - gui/gui.go: /api/devices/memory エンドポイント追加（記憶済みデバイス情報をJSON返却）
+  - gui/gui.go: データ管理ページに「記憶済みデバイス情報」カード追加（serial/label/UID/ch/確認状態）
+  - gui/gui.go: chマッピング管理・記憶済みデバイス情報 の両カードを折りたたみ可能に変更
+  - gui/gui.go: localStorage で折りたたみ状態を永続化（dm-minimized-portmap / dm-minimized-devmem）
+
+====--------------------------------------------------------------------------------
+[No.21] 2026/05/21 -- — serial_to_label 自動判定・永続保存・採番リザーブ実装
+
+【変更】
+  - mumu/mumu.go: resolveLabel を3段階優先に変更
+      1) 確定済みマップ（永続保存済み）
+      2) Config の手動設定
+      3) GetLabelByIP 動的解決 → 新規確立時に config.json へ自動書き戻し
+  - mumu/mumu.go: Patroller に serialToLabel・saveSerialLabelFn 追加
+      LoadSerialLabelMap / SetSaveSerialLabelFn メソッドを追加
+  - mumu/mumu.go: ResolveAllIPs 追加（複数シリアルのIPを並列取得）
+  - ncap/cap_device.go: 採番リザーブ機能追加（SetReservedLabels / assignLabel）
+      - 起動時に保存済みラベルから IP→番号マップを構築し ncap に渡す
+      - 該当IPのセッション作成時は指定番号を優先採番
+      - リザーブ済み番号は releaseInstanceLabel でフリーリストに戻さない
+  - main.go: 起動時セットアップ追加
+      - LoadSerialLabelMap / SetSaveSerialLabelFn 設定
+      - 非同期で ResolveAllIPs → SetReservedLabels を実行
+      - buildIPToNumFromSerialLabel ヘルパー追加
+  - gui/gui.go: LoadSerialLabelMap / SetSaveSerialLabelFn メソッドを追加
+  - gui/gui.go: serial_to_label 設定欄の説明文を更新（自動判定・保存の旨を追記）
+
+====--------------------------------------------------------------------------------
 [No.20] 2026/05/21 -- — ダッシュボード レイアウト変更・入れ替えバグ修正
 
 【変更】

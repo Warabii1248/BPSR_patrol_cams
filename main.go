@@ -303,7 +303,7 @@ func main() {
 		guiServer.NotifyLineIDChange(uid, lineID, t)
 	})
 
-	// serial_to_uid: u8D77u52D5u6642u30EDu30FCu30C9u3068u3001u30D0u30A4u30F3u30C9u6210u7ACBu6642u306E config.json u66F8u304Du623Bu3057u8A2Du5B9A
+	// serial_to_uid: 起動時ロードと、バインド成立時の config.json 書き戻し設定
 	guiServer.LoadSerialUIDMap(cfg.SerialToUID)
 	guiServer.SetSaveSerialUIDFn(func(m map[string]uint64) {
 		c, err := appconfig.Load(*configPath)
@@ -316,6 +316,33 @@ func main() {
 			log.Printf("[Patroller] serial_to_uid save error: %v", err)
 		}
 	})
+
+	// serial_to_label: 起動時ロード・採番リザーブ・自動確立時の config.json 書き戻し設定
+	guiServer.LoadSerialLabelMap(cfg.SerialToLabel)
+	guiServer.SetSaveSerialLabelFn(func(m map[string]string) {
+		c, err := appconfig.Load(*configPath)
+		if err != nil {
+			log.Printf("[Patroller] serial_to_label save: config load error: %v", err)
+			return
+		}
+		c.SerialToLabel = m
+		if err := appconfig.Save(*configPath, c); err != nil {
+			log.Printf("[Patroller] serial_to_label save error: %v", err)
+		}
+	})
+	// 保存済みラベルから IP→番号マップを構築して ncap に採番リザーブを設定する（非同期）
+	if len(cfg.MumuSerials) > 0 && len(cfg.SerialToLabel) > 0 {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			serialIPs := mumu.ResolveAllIPs(ctx, cfg.MumuSerials, mumuCfg)
+			ipToNum := buildIPToNumFromSerialLabel(cfg.SerialToLabel, serialIPs)
+			if len(ipToNum) > 0 {
+				capDevice.SetReservedLabels(ipToNum)
+				log.Printf("[main] serial_to_label: %d 件の採番リザーブを設定", len(ipToNum))
+			}
+		}()
+	}
 
 	// ADBデバイス ↔ キャプチャUID の対応表をGUIに提供
 	guiServer.SetSessionProvider(func() []gui.DeviceSessionInfo {
@@ -544,6 +571,24 @@ func runChMapCollector(mapFile string, getSessions func() []ncap.CaptureSession)
 			log.Printf("[ChMap] ch=%d: ServerIPが空のセッションのみ（接続待ち?）", ch)
 		}
 	}
+}
+
+// buildIPToNumFromSerialLabel は serial_to_label マップと serial→IP マップから
+// clientIP → インスタンス番号 のマップを構築する（"Instance-3" → 3 を抽出）。
+func buildIPToNumFromSerialLabel(serialToLabel map[string]string, serialIPs map[string]string) map[string]int {
+	result := make(map[string]int)
+	for serial, label := range serialToLabel {
+		var n int
+		if _, err := fmt.Sscanf(label, "Instance-%d", &n); err != nil || n <= 0 {
+			continue
+		}
+		ip, ok := serialIPs[serial]
+		if !ok || ip == "" {
+			continue
+		}
+		result[ip] = n
+	}
+	return result
 }
 
 func openByDescription(devices []pcap.Interface, desc string) (*pcap.Handle, error) {

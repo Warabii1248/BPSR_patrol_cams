@@ -161,7 +161,9 @@ type CapDevice struct {
 	sessions         map[string]*session // key = clientEndpoint ("ip:port")
 	activeConns      map[string]string   // key = "src:port->dst:port", value = clientEndpoint
 	instanceCounter  int
-	freeInstanceNums []int // 解放済みのインスタンス番号プール（再利用）
+	freeInstanceNums []int              // 解放済みのインスタンス番号プール（再利用）
+	reservedByIP     map[string]int     // clientIP → リザーブ済みインスタンス番号（sessionsMu で保護）
+	reservedNums     map[int]bool       // リザーブ済み番号セット（解放時に freeリスト戻し不可）
 
 	// パケットキュー
 	packetQueue *Queue[gopacket.Packet]
@@ -262,13 +264,51 @@ func (cd *CapDevice) nextInstanceNum() int {
 }
 
 // releaseInstanceLabel はラベル文字列からインスタンス番号を抽出してフリーリストに戻す
+// リザーブ済み番号は戻さない（次回も同 IP に割り当てるため）。
 // (sessionsMu を保持した状態で呼ぶこと)
 func (cd *CapDevice) releaseInstanceLabel(label string) {
 	var n int
 	if _, err := fmt.Sscanf(label, "Instance-%d", &n); err == nil && n > 0 {
+		if cd.reservedNums[n] {
+			return
+		}
 		cd.freeInstanceNums = append(cd.freeInstanceNums, n)
 		sort.Ints(cd.freeInstanceNums)
 	}
+}
+
+// assignLabel は clientIP の予約番号があればそれを使い、なければ nextInstanceNum() で採番する。
+// (sessionsMu を保持した状態で呼ぶこと)
+func (cd *CapDevice) assignLabel(clientIP string) string {
+	if n, ok := cd.reservedByIP[clientIP]; ok {
+		return fmt.Sprintf("Instance-%d", n)
+	}
+	return fmt.Sprintf("Instance-%d", cd.nextInstanceNum())
+}
+
+// SetReservedLabels は起動時に保存済み serial_to_label から構築した
+// clientIP → インスタンス番号の予約マップを設定する。
+// instanceCounter を予約番号の最大値に底上げして衝突を防ぐ。
+func (cd *CapDevice) SetReservedLabels(ipToNum map[string]int) {
+	cd.sessionsMu.Lock()
+	defer cd.sessionsMu.Unlock()
+	cd.reservedByIP = make(map[string]int, len(ipToNum))
+	cd.reservedNums = make(map[int]bool, len(ipToNum))
+	for ip, n := range ipToNum {
+		cd.reservedByIP[ip] = n
+		cd.reservedNums[n] = true
+		if n > cd.instanceCounter {
+			cd.instanceCounter = n
+		}
+	}
+	// freeInstanceNums から予約番号を除去
+	filtered := cd.freeInstanceNums[:0]
+	for _, f := range cd.freeInstanceNums {
+		if !cd.reservedNums[f] {
+			filtered = append(filtered, f)
+		}
+	}
+	cd.freeInstanceNums = filtered
 }
 
 // SetLocations はロケーションストアを設定する
@@ -716,8 +756,7 @@ func (cd *CapDevice) getOrCreateSession(clientEndpoint, clientIP string) *sessio
 	if sess, ok := cd.sessions[clientEndpoint]; ok {
 		return sess
 	}
-	num := cd.nextInstanceNum()
-	label := fmt.Sprintf("Instance-%d", num)
+	label := cd.assignLabel(clientIP)
 	sess := newSession(clientEndpoint, clientIP, label)
 	cd.sessions[clientEndpoint] = sess
 	log.Printf("[%s] 新セッション作成: clientEndpoint=%s", label, clientEndpoint)
@@ -737,8 +776,7 @@ func (cd *CapDevice) reuseOrCreateSession(clientEndpoint, clientIP string) (*ses
 	}
 
 	// 新規作成
-	num := cd.nextInstanceNum()
-	label := fmt.Sprintf("Instance-%d", num)
+	label := cd.assignLabel(clientIP)
 	sess := newSession(clientEndpoint, clientIP, label)
 	cd.sessions[clientEndpoint] = sess
 	log.Printf("[%s] 新セッション作成: clientEndpoint=%s", label, clientEndpoint)

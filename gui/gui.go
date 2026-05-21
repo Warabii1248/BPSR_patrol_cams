@@ -390,10 +390,24 @@ func (s *Server) LoadSerialUIDMap(m map[string]uint64) {
 	}
 }
 
-// SetSaveSerialUIDFn は serialu2194UID u30D0u30A4u30F3u30C9u6210u7ACBu6642u306Eu30B3u30FCu30EBu30D0u30C3u30AFu3092 Patroller u306Bu8A2Du5B9Au3059u308Bu3002
+// SetSaveSerialUIDFn は serial↔UID バインド成立時のコールバックを Patroller に設定する。
 func (s *Server) SetSaveSerialUIDFn(fn func(map[string]uint64)) {
 	if s.patrolEnabled {
 		s.patroller.SetSaveSerialUIDFn(fn)
+	}
+}
+
+// LoadSerialLabelMap は config.json の serial_to_label を Patroller に初期設定する。
+func (s *Server) LoadSerialLabelMap(m map[string]string) {
+	if s.patrolEnabled {
+		s.patroller.LoadSerialLabelMap(m)
+	}
+}
+
+// SetSaveSerialLabelFn は serial→label の自動確立時のコールバックを Patroller に設定する。
+func (s *Server) SetSaveSerialLabelFn(fn func(map[string]string)) {
+	if s.patrolEnabled {
+		s.patroller.SetSaveSerialLabelFn(fn)
 	}
 }
 
@@ -726,6 +740,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/portmap/map-all", s.handlePortMapMapAll)
 	mux.HandleFunc("/api/portmap/manual", s.handlePortMapManual)
 	mux.HandleFunc("/api/devices/identified", s.handleDevicesIdentified)
+	mux.HandleFunc("/api/devices/memory", s.handleDevicesMemory)
 	mux.HandleFunc("/api/devices/assignments/compute", s.handleComputeAssignments)
 	mux.HandleFunc("/spawn-log", s.handleSpawnLog)
 	mux.HandleFunc("/chat-log", s.handleChatLogPage)
@@ -1967,6 +1982,53 @@ func (s *Server) handleDevicesIdentified(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// handleDevicesMemory は Patroller が記憶している serial→uid/label マップを返す。
+func (s *Server) handleDevicesMemory(w http.ResponseWriter, r *http.Request) {
+	uidMap, labelMap := s.patroller.GetSerialMaps()
+
+	allSerials := make(map[string]struct{})
+	for serial := range uidMap {
+		allSerials[serial] = struct{}{}
+	}
+	for serial := range labelMap {
+		allSerials[serial] = struct{}{}
+	}
+
+	uidToSess := make(map[uint64]DeviceSessionInfo)
+	if s.getSessions != nil {
+		for _, sess := range s.getSessions() {
+			if sess.UserUID != 0 {
+				uidToSess[sess.UserUID] = sess
+			}
+		}
+	}
+
+	type DeviceMemoryEntry struct {
+		Serial    string `json:"serial"`
+		UID       uint64 `json:"uid"`
+		Label     string `json:"label"`
+		CurrentCh uint32 `json:"current_ch"`
+		Confirmed bool   `json:"confirmed"`
+	}
+
+	entries := make([]DeviceMemoryEntry, 0, len(allSerials))
+	for serial := range allSerials {
+		e := DeviceMemoryEntry{
+			Serial: serial,
+			UID:    uidMap[serial],
+			Label:  labelMap[serial],
+		}
+		if e.UID != 0 {
+			if sess, ok := uidToSess[e.UID]; ok {
+				e.CurrentCh = sess.CurrentCh
+				e.Confirmed = sess.Confirmed
+			}
+		}
+		entries = append(entries, e)
+	}
+	writeJSON(w, entries)
+}
+
 // handleComputeAssignments は現在のデバイス台数からch分担を計算してファイルに保存し、Patrollerへ反映する。
 func (s *Server) handleComputeAssignments(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -2408,6 +2470,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .cfg-card-title-collapsible{display:flex;align-items:center;gap:8px}
 .cfg-card-title-collapsible .btn{margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)}
 .chat-filter-card.minimized #chat-filter-content{display:none}
+#dm-portmap-card.minimized #dm-portmap-body{display:none}
+#dm-devmem-card.minimized #dm-devmem-body{display:none}
 .chat-score-threshold-box{padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg2);margin-bottom:10px}
 .chat-score-threshold-title{font-size:var(--fs-sm);font-weight:600;color:var(--text1);margin-bottom:8px}
 .chat-score-threshold-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -2760,7 +2824,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round"/></svg>
     設定
   </div>
-  <div class="nav-item" id="nav-data-management" onclick="switchView('data-management',this);loadPortMapEntries();updateIdentifiedBadge()">
+  <div class="nav-item" id="nav-data-management" onclick="switchView('data-management',this);loadPortMapEntries();loadDeviceMemory();updateIdentifiedBadge()">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="8" cy="4.5" rx="5.5" ry="2"/><path d="M2.5 4.5v3c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-3"/><path d="M2.5 7.5v3c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-3"/></svg>
     データ管理
   </div>
@@ -3214,48 +3278,105 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 <!-- ===== データ管理 ===== -->
 <div class="view" id="view-data-management">
   <div class="cfg-stack">
-    <div class="card cfg-card">
-      <div class="cfg-card-title">chマッピング管理</div>
-      <div id="devices-id-badge" style="margin-bottom:10px;font-size:var(--fs-sm);padding:4px 8px;border-radius:4px;display:inline-block">-- デバイス認識状態を読み込み中...</div>
-      <!-- 操作パネル -->
-      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
-        <div>
-          <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:4px">全chマッピング（現在セッションのLineIDを自動登録）</div>
-          <button class="btn primary" onclick="portmapMapAll()">⚡ 全chマッピング</button>
-        </div>
-        <div style="border-left:1px solid var(--border);padding-left:12px">
-          <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:4px">手動マッピング</div>
-          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <label style="font-size:var(--fs-sm)">Ch:<input type="number" id="manual-ch" min="1" max="9999" placeholder="例: 40" style="width:72px;margin-left:4px"></label>
-            <label style="font-size:var(--fs-sm)">IP:<input type="text" id="manual-ip" placeholder="43.167.183.39" style="width:130px;margin-left:4px"></label>
-            <label style="font-size:var(--fs-sm)">ポート:<input type="number" id="manual-port" min="1" max="65535" placeholder="10194" style="width:80px;margin-left:4px"></label>
-            <button class="btn success" onclick="portmapManualUpdate()">📌 更新</button>
+    <!-- 記憶済みデバイス情報 -->
+    <div class="card cfg-card" id="dm-devmem-card">
+      <div class="cfg-card-title cfg-card-title-collapsible"><span>記憶済みデバイス情報</span><button id="dm-devmem-toggle-btn" type="button" class="btn" onclick="toggleDMSection('devmem')">－ 最小化</button></div>
+      <div id="dm-devmem-body">
+        <div class="device-list" id="devmem-list"><div class="no-devices">読み込み中...</div></div>
+        <div id="devmem-count" style="font-size:var(--fs-sm);color:var(--text3);margin-top:6px"></div>
+      </div>
+    </div>
+    <!-- chマッピング管理 -->
+    <div class="card cfg-card" id="dm-portmap-card">
+      <div class="cfg-card-title cfg-card-title-collapsible"><span>chマッピング管理</span><button id="dm-portmap-toggle-btn" type="button" class="btn" onclick="toggleDMSection('portmap')">－ 最小化</button></div>
+      <div id="dm-portmap-body">
+        <div id="devices-id-badge" style="margin-bottom:10px;font-size:var(--fs-sm);padding:4px 8px;border-radius:4px;display:inline-block">-- デバイス認識状態を読み込み中...</div>
+        <!-- 操作パネル -->
+        <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
+          <div>
+            <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:4px">全chマッピング（現在セッションのLineIDを自動登録）</div>
+            <button class="btn primary" onclick="portmapMapAll()">⚡ 全chマッピング</button>
+          </div>
+          <div style="border-left:1px solid var(--border);padding-left:12px">
+            <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:4px">手動マッピング</div>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <label style="font-size:var(--fs-sm)">Ch:<input type="number" id="manual-ch" min="1" max="9999" placeholder="例: 40" style="width:72px;margin-left:4px"></label>
+              <label style="font-size:var(--fs-sm)">IP:<input type="text" id="manual-ip" placeholder="43.167.183.39" style="width:130px;margin-left:4px"></label>
+              <label style="font-size:var(--fs-sm)">ポート:<input type="number" id="manual-port" min="1" max="65535" placeholder="10194" style="width:80px;margin-left:4px"></label>
+              <button class="btn success" onclick="portmapManualUpdate()">📌 更新</button>
+            </div>
           </div>
         </div>
+        <div id="portmap-status" style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:8px;min-height:1.4em"></div>
+        <!-- エントリ一覧テーブル -->
+        <div style="overflow-x:auto">
+          <table id="portmap-table" style="width:100%;border-collapse:collapse;font-size:var(--fs-md)">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border)">
+                <th style="text-align:left;padding:6px 10px;color:var(--text2);font-weight:500;white-space:nowrap">Ch</th>
+                <th style="text-align:left;padding:6px 10px;color:var(--text2);font-weight:500;white-space:nowrap">サーバーIP:ポート</th>
+                <th style="text-align:left;padding:6px 10px;color:var(--text2);font-weight:500;white-space:nowrap">更新日時</th>
+              </tr>
+            </thead>
+            <tbody id="portmap-tbody">
+              <tr><td colspan="3" style="padding:12px 10px;color:var(--text3);text-align:center">読み込み中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="portmap-count" style="font-size:var(--fs-sm);color:var(--text3);margin-top:6px"></div>
       </div>
-      <div id="portmap-status" style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:8px;min-height:1.4em"></div>
-      <!-- エントリ一覧テーブル -->
-      <div style="overflow-x:auto">
-        <table id="portmap-table" style="width:100%;border-collapse:collapse;font-size:var(--fs-md)">
-          <thead>
-            <tr style="border-bottom:1px solid var(--border)">
-              <th style="text-align:left;padding:6px 10px;color:var(--text2);font-weight:500;white-space:nowrap">Ch</th>
-              <th style="text-align:left;padding:6px 10px;color:var(--text2);font-weight:500;white-space:nowrap">サーバーIP:ポート</th>
-              <th style="text-align:left;padding:6px 10px;color:var(--text2);font-weight:500;white-space:nowrap">更新日時</th>
-            </tr>
-          </thead>
-          <tbody id="portmap-tbody">
-            <tr><td colspan="3" style="padding:12px 10px;color:var(--text3);text-align:center">読み込み中...</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div id="portmap-count" style="font-size:var(--fs-sm);color:var(--text3);margin-top:6px"></div>
     </div>
   </div>
 </div>
 </div><!-- /main -->
 </div><!-- /app -->
 <script>
+// ===== データ管理 / 折りたたみ =====
+function toggleDMSection(name){
+  const card=document.getElementById('dm-'+name+'-card');
+  const btn=document.getElementById('dm-'+name+'-toggle-btn');
+  if(!card)return;
+  const minimized=card.classList.toggle('minimized');
+  if(btn)btn.textContent=minimized?'＋ 展開':'－ 最小化';
+  localStorage.setItem('dm-minimized-'+name,String(minimized));
+}
+function applyDMSectionState(name){
+  const minimized=localStorage.getItem('dm-minimized-'+name)==='true';
+  const card=document.getElementById('dm-'+name+'-card');
+  const btn=document.getElementById('dm-'+name+'-toggle-btn');
+  if(card)card.classList.toggle('minimized',minimized);
+  if(btn)btn.textContent=minimized?'＋ 展開':'－ 最小化';
+}
+// ===== データ管理 / 記憶済みデバイス情報 =====
+function loadDeviceMemory(){
+  fetch('/api/devices/memory').then(r=>r.json()).then(entries=>{
+    const list=document.getElementById('devmem-list');
+    const count=document.getElementById('devmem-count');
+    if(!list)return;
+    if(!entries||entries.length===0){
+      list.innerHTML='<div class="no-devices">記憶データなし</div>';
+      if(count)count.textContent='';
+      return;
+    }
+    entries.sort((a,b)=>(a.serial<b.serial?-1:1));
+    list.innerHTML=entries.map(e=>{
+      const uid=e.uid?'UID: '+e.uid:'UID: --';
+      const label=e.label||'--';
+      const ch=e.current_ch>0?'Ch'+e.current_ch:'--';
+      const dot=e.confirmed?'<span style="color:var(--accent2)">●</span>':'<span style="color:var(--text3)">○</span>';
+      return '<div class="device-entry">'+
+        dot+' <span class="serial">'+e.serial+'</span> '+
+        '<span style="color:var(--accent);font-weight:600;margin-left:6px">'+label+'</span> '+
+        '<span class="uid" style="margin-left:6px">'+uid+'</span> '+
+        '<span style="margin-left:auto;color:var(--text2);font-size:.85em">'+ch+'</span>'+
+        '</div>';
+    }).join('');
+    if(count)count.textContent='合計 '+entries.length+' 件';
+  }).catch(()=>{
+    const list=document.getElementById('devmem-list');
+    if(list)list.innerHTML='<div class="no-devices" style="color:#f87171">取得失敗</div>';
+  });
+}
 // ===== データ管理 / chマッピング =====
 function loadPortMapEntries() {
   fetch('/api/portmap/entries').then(r=>r.json()).then(entries=>{
@@ -3420,6 +3541,8 @@ document.addEventListener('DOMContentLoaded',function(){
     sel.addEventListener('change',function(){syncPatrolStartCh(sel.value);});
     inp.addEventListener('input',function(){syncPatrolStartCh(inp.value);});
   }
+  applyDMSectionState('portmap');
+  applyDMSectionState('devmem');
 });
 // ...既存コード...
 const EDITABLE_LAYOUT_VIEWS=['patrol','chat-log','dashboard'];
@@ -4823,7 +4946,7 @@ const CFG_FIELDS_GAME=[
   {k:'crash_recovery_delay_secs',label:'復帰待機時間 (秒)',type:'number',desc:'起動コマンド後、当該デバイスを反応待ちする秒数'},
 ];
 const CFG_FIELDS_ADB=[
-  {k:'serial_to_label',label:'シリアル→ラベル分配 (JSON)',type:'json',desc:'ADBシリアルとInstance-Nラベルの対応。例: {"127.0.0.1:5555":"Instance-1"}'},
+  {k:'serial_to_label',label:'シリアル→ラベル分配 (JSON)',type:'json',desc:'ADBシリアルとInstance-Nラベルの対応。巡回中に自動判定・保存される。手動設定も可。例: {"127.0.0.1:5555":"Instance-1"}'},
   {k:'parallel_limit',label:'並列切替台数',type:'number',desc:'0=全台同時（ディレイ無効）'},
   {k:'parallel_group_delay_secs',label:'グループ間ディレイ (秒)',type:'number',desc:'並列台数>0のとき有効'},
   {k:'adb_path',label:'ADBパス',type:'text',desc:'adb.exeのフルパスまたは「adb」'},
