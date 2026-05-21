@@ -15,6 +15,12 @@ type PortMapEntryInfo struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// portMapEntry はJSONファイル保存用の内部エントリ。
+type portMapEntry struct {
+	Ch        uint32    `json:"ch"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // PortMap はサーバーアドレス("ip:port")とch番号の対応を管理する。
 // 巡回モードで訪れたchを自動記録し、ポートが変わった場合は自動更新する。
 type PortMap struct {
@@ -25,7 +31,8 @@ type PortMap struct {
 }
 
 // LoadPortMap は既存のJSONファイルを読み込んでPortMapを返す。
-// ファイルが存在しない場合は空のPortMapを返す。
+// 新フォーマット {"ip:port": {"ch": N, "updated_at": "..."}} と
+// 旧フォーマット {"ip:port": N} の両方に対応する。
 func LoadPortMap(path string) *PortMap {
 	pm := &PortMap{
 		portToCh:  make(map[string]uint32),
@@ -33,21 +40,52 @@ func LoadPortMap(path string) *PortMap {
 		file:      path,
 	}
 	data, err := os.ReadFile(path)
-	if err == nil {
-		if jsonErr := json.Unmarshal(data, &pm.portToCh); jsonErr != nil {
-			log.Printf("[PortMap] 読み込みエラー (%s): %v", path, jsonErr)
-		} else {
-			log.Printf("[PortMap] %d件読み込み: %s", len(pm.portToCh), path)
-			// ファイルの更新日時を全エントリの初期タイムスタンプとして設定
-			if fi, statErr := os.Stat(path); statErr == nil {
-				mt := fi.ModTime()
-				for ip := range pm.portToCh {
-					pm.updatedAt[ip] = mt
-				}
-			}
+	if err != nil {
+		return pm
+	}
+
+	// 新フォーマットを試みる
+	newFmt := make(map[string]portMapEntry)
+	if jsonErr := json.Unmarshal(data, &newFmt); jsonErr == nil && isNewFormat(newFmt) {
+		for ip, e := range newFmt {
+			pm.portToCh[ip] = e.Ch
+			pm.updatedAt[ip] = e.UpdatedAt
+		}
+		log.Printf("[PortMap] %d件読み込み: %s", len(pm.portToCh), path)
+		return pm
+	}
+
+	// 旧フォーマット {"ip:port": N} にフォールバック
+	oldFmt := make(map[string]uint32)
+	if jsonErr := json.Unmarshal(data, &oldFmt); jsonErr != nil {
+		log.Printf("[PortMap] 読み込みエラー (%s): %v", path, jsonErr)
+		return pm
+	}
+	for ip, ch := range oldFmt {
+		pm.portToCh[ip] = ch
+	}
+	// 旧フォーマット: ファイル更新日時をタイムスタンプとして使う（仕方なし）
+	if fi, statErr := os.Stat(path); statErr == nil {
+		mt := fi.ModTime()
+		for ip := range pm.portToCh {
+			pm.updatedAt[ip] = mt
 		}
 	}
+	log.Printf("[PortMap] %d件読み込み (旧フォーマット→自動移行): %s", len(pm.portToCh), path)
+	// 移行後すぐ新フォーマットで上書き保存
+	pm.save()
 	return pm
+}
+
+// isNewFormat は新フォーマット判定（空マップの場合は新フォーマット扱い）。
+func isNewFormat(m map[string]portMapEntry) bool {
+	for _, e := range m {
+		if e.Ch > 0 {
+			return true
+		}
+	}
+	// すべてChが0の場合は旧フォーマットの可能性があるが、エントリなしなら新扱いで問題なし
+	return true
 }
 
 // LookupByPort はサーバーアドレスからch番号を返す。
@@ -96,6 +134,7 @@ func (pm *PortMap) Update(ch uint32, serverIP string) {
 		if c == ch && ip != serverIP {
 			log.Printf("[PortMap] ★ ch=%d ポート変更検出: %s → %s", ch, ip, serverIP)
 			delete(pm.portToCh, ip)
+			delete(pm.updatedAt, ip)
 			break
 		}
 	}
@@ -128,7 +167,14 @@ func (pm *PortMap) Entries() []PortMapEntryInfo {
 
 // save はWriteロック保持中に呼び出す。
 func (pm *PortMap) save() {
-	data, err := json.MarshalIndent(pm.portToCh, "", "  ")
+	out := make(map[string]portMapEntry, len(pm.portToCh))
+	for ip, ch := range pm.portToCh {
+		out[ip] = portMapEntry{
+			Ch:        ch,
+			UpdatedAt: pm.updatedAt[ip],
+		}
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		log.Printf("[PortMap] JSON変換エラー: %v", err)
 		return

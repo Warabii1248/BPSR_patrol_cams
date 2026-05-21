@@ -3151,7 +3151,7 @@ function updateStartChDropdown() {
     // 入力値と同期
     var inp = document.getElementById('dash-patrol-start-ch');
     sel.value = inp.value;
-  });
+  }).catch(()=>{});
 }
 document.addEventListener('DOMContentLoaded',function(){
   updateStartChDropdown();
@@ -3745,21 +3745,6 @@ function renderDeviceList(){
   }).join('');
 }
 let currentDeviceMap={};
-async function refreshDevices(){
-  const bar=document.getElementById('status-bar');if(bar)bar.textContent='ADB再起動中...';
-  await fetch('/api/adb/restart',{method:'POST'});
-  let devs=[];
-  let deviceMap={};
-  const r=await fetch('/api/devices');const res=await r.json();
-  devs=Array.isArray(res)?res:(res.devices||[]);
-  const mapRes=await fetch('/api/device-map').then(r=>r.json()).catch(()=>({}));
-  deviceMap={};if(mapRes.devices)mapRes.devices.forEach(e=>{if(e.serial)deviceMap[e.serial]=e;if(e.device_ip&&e.serial)chatIPToSerial[e.device_ip]=e.serial;});
-  if(devs&&devs.length>0){chatKnownSerials=devs;refreshChatDeviceDropdown();}
-  renderDashDevices(devs,deviceMap);
-  if(bar)bar.textContent='';
-  currentDevices=devs||[];currentDeviceMap=deviceMap;
-  renderDeviceList();
-}
 async function scanDevices(){
   const st=document.getElementById('adb-op-status');if(st)st.textContent='スキャン中...';
   const r=await fetch('/api/devices');const res=await r.json();
@@ -4274,27 +4259,28 @@ async function loadPatrolChannels(){
   if(sel){const cur=sel.value;sel.innerHTML='<option value="0">(前回位置)</option>'+patrolChannels.map(ch=>'<option value="'+ch+'">'+ch+'</option>').join('');sel.value=cur;}
   if(typeof renderChannelMatrix==='function')renderChannelMatrix();
 }
+function _setChSaveBtnDisabled(v){const b=document.getElementById('btn-ch-save');if(b)b.disabled=v;}
 function renderChannelEditor(){
   const el=document.getElementById('ch-editor');
-  if(patrolChannels.length===0){el.innerHTML='<div class="no-devices">チャンネルなし</div>';document.getElementById('btn-ch-save').disabled=true;return;}
-  el.innerHTML=patrolChannels.map((ch,i)=>'<div class="ch-row"><span class="ch-num">'+(i+1)+'.</span>'
-    +'<input type="number" value="'+ch+'" min="1" max="9999" style="width:75px" onchange="patrolChannels['+i+']=parseInt(this.value)||1;document.getElementById(\'btn-ch-save\').disabled=false">'
+  if(patrolChannels.length===0){if(el)el.innerHTML='<div class="no-devices">チャンネルなし</div>';_setChSaveBtnDisabled(true);return;}
+  if(el)el.innerHTML=patrolChannels.map((ch,i)=>'<div class="ch-row"><span class="ch-num">'+(i+1)+'.</span>'
+    +'<input type="number" value="'+ch+'" min="1" max="9999" style="width:75px" onchange="patrolChannels['+i+']=parseInt(this.value)||1;_setChSaveBtnDisabled(false)">'
     +'<button class="btn" style="padding:2px 8px;font-size:.8em" onclick="removeChannel('+i+')">✕</button></div>').join('');
-  document.getElementById('btn-ch-save').disabled=false;
+  _setChSaveBtnDisabled(false);
 }
 function addChannel(){const v=parseInt(prompt('追加するチャンネル番号:',''))||0;if(v>0){patrolChannels.push(v);renderChannelEditor();}}
-function removeChannel(i){patrolChannels.splice(i,1);renderChannelEditor();document.getElementById('btn-ch-save').disabled=false;}
-function sortChannels(dir){patrolChannels.sort((a,b)=>dir==='asc'?a-b:b-a);renderChannelEditor();document.getElementById('btn-ch-save').disabled=false;}
+function removeChannel(i){patrolChannels.splice(i,1);renderChannelEditor();_setChSaveBtnDisabled(false);}
+function sortChannels(dir){patrolChannels.sort((a,b)=>dir==='asc'?a-b:b-a);renderChannelEditor();_setChSaveBtnDisabled(false);}
 function bulkImportChannels(){
   const nums=document.getElementById('ch-bulk-input').value.split(/[,\s]+/).map(s=>parseInt(s)).filter(n=>n>0);
   if(!nums.length)return;
-  patrolChannels=nums;renderChannelEditor();document.getElementById('ch-bulk-input').value='';document.getElementById('btn-ch-save').disabled=false;
+  patrolChannels=nums;renderChannelEditor();document.getElementById('ch-bulk-input').value='';_setChSaveBtnDisabled(false);
 }
 async function saveChannels(){
   const r=await fetch('/api/patrol/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:patrolChannels})});
   const d=await r.json();const st=document.getElementById('ch-save-status');
   st.textContent=d.ok?'✓ 保存済':'✗ 失敗';
-  if(d.ok){document.getElementById('btn-ch-save').disabled=true;loadPatrolChannels();}
+  if(d.ok){_setChSaveBtnDisabled(true);loadPatrolChannels();}
   setTimeout(()=>st.textContent='',3000);
 }
 function toggleReversed(){patrolReversed=!patrolReversed;localStorage.setItem('patrolReversed',patrolReversed);applyReversedUI();}

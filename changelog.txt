@@ -1,4 +1,38 @@
 ﻿====--------------------------------------------------------------------------------
+[No.15] 2026/05/21 12:00 — chマッピング更新日時がすべて起動時刻になるバグ修正
+
+【バグ】ポートマップタブの「更新日時」列がすべて最新起動時の時刻になってしまう。
+【原因】port_ch_map.json の保存フォーマットが {"ip:port": ch} だけで
+        updated_at タイムスタンプを含まなかった。
+        ロード時にファイル自体のModTime（≒最後にいずれかのエントリが変わった時刻）を
+        全エントリに一律設定していたため、個別の更新履歴が失われていた。
+【修正】JSONフォーマットを {"ip:port": {"ch": N, "updated_at": "..."}} に変更し、
+        エントリごとにタイムスタンプを永続化するようにした。
+        旧フォーマットは起動時に自動検出・新フォーマットへ移行して上書き保存する。
+        Update()でポート変更時に古いIPのupdatedAtも削除するよう合わせて修正。
+
+変更ファイル:
+  ncap/portmap.go … JSONフォーマット変更・LoadPortMap旧フォーマット互換・save()更新
+====--------------------------------------------------------------------------------
+[No.14] 2026/05/21 12:00 — GUIフロントエンド機能不全箇所の修正（デッドコード削除・null安全化・エラーハンドリング）
+
+【修正1】refreshDevices() デッドコード削除
+        呼び出し箇所が無く、内部で /api/adb/restart を無条件実行する危険な関数。
+        全UIは scanDevices() で代替済みのため削除。
+
+【修正2】updateStartChDropdown の fetch エラーハンドリング追加
+        .catch()が無く、サーバー未起動タイミングで unhandled promise rejection が発生。
+        .catch(()=>{}) を追加してサイレント失敗させる。
+
+【修正3】renderChannelEditor の btn-ch-save null 安全化
+        document.getElementById('btn-ch-save').disabled=... を null チェックなしで呼ぶ
+        箇所が複数あった。_setChSaveBtnDisabled() ヘルパーに集約し null 安全化。
+        関連する removeChannel / sortChannels / bulkImportChannels / saveChannels も同様に統一。
+
+変更ファイル:
+  gui/gui.go … refreshDevices() 削除、updateStartChDropdown の catch 追加、
+                _setChSaveBtnDisabled() 追加・各関数の btn-ch-save 参照を置換
+====--------------------------------------------------------------------------------
 [No.13] 2026/05/21 00:00 — 接続デバイスカードのch表示が自動更新されないバグ修正
 
 【バグ】ダッシュボードの「接続デバイス」カード内のch番号が、巡回中に更新されない。
