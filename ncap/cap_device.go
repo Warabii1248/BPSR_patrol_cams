@@ -1860,7 +1860,7 @@ func (cd *CapDevice) tryScanChatPayload(sess *session, payload []byte) {
 	cd.chatDedupMu.Unlock()
 
 	// チャット全件ログ
-	log.Printf("[チャット ch=%s] %s: %s", chLabel, senderDisplay, message)
+	log.Printf("[チャット][%s ch=%s] %s: %s", sess.label, chLabel, senderDisplay, message)
 
 	// GUI へのリアルタイム通知
 	if cd.chatNotifyFn != nil {

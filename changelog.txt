@@ -1,4 +1,104 @@
 ﻿====--------------------------------------------------------------------------------
+[No.19] 2026/05/21 22:00 — 巡回分担ロジック・デバイス認識完了判定 実装
+
+【変更】
+  E-1. デバイス認識完了判定
+    - GET /api/devices/identified: シリアル別に Confirmed && LineID > 0 を確認し {identified, total, ready, missing} を返す
+    - データ管理タブにデバイス認識状態バッジ追加（✅/⚠ 表示）
+
+  E-2. 全chマッピング後の自動セット
+    - 「全chマッピング」実行後、5秒ごとに /api/devices/identified をポーリング
+    - 全デバイス認識完了で確認ダイアログ → OK で 1〜100ch を巡回リストに自動反映
+    - 同時にデバイス分担設定も自動計算・保存
+
+  E-3. デバイス数に応じたch分担計算
+    - mumu.ComputeDeviceAssignments(deviceCount, totalCh): ペア単位で ch を等分割
+      - 1台: 全範囲 / 2台: 1ペア全範囲 / 4台: 2ペア各50ch / 6台: 3ペア各33ch
+      - 奇数台: floor(N/2)ペアが担当、残り1台アイドル
+    - POST /api/devices/assignments/compute: 計算→ config/device_assignments.json 保存 → Patroller反映
+    - 巡回ループ: channelSerials マップにより各チャンネルに割り当てられたデバイスのみ移動
+    - 起動時に config/device_assignments.json があれば自動ロード
+
+変更ファイル:
+  mumu/mumu.go … GroupAssignment 型・ComputeDeviceAssignments・Save/LoadDeviceAssignments・Patroller フィルタ
+  gui/gui.go … handleDevicesIdentified・handleComputeAssignments・バッジUI・ポーリングJS
+  main.go … 起動時分担設定ロード
+====--------------------------------------------------------------------------------
+[No.18] 2026/05/21 20:00 — UI/巡回ロジック 大規模改修
+
+【変更】
+  A. 表示・ラベル整理
+    - chリスト: 「(max 99)」表示を削除
+    - chリスト: カード見出しを「チャンネルマトリクス」→「chリスト」にリネーム
+    - ダッシュボード: 稼働時間タイル内の現在時刻表示を削除
+    - サイドバー: 現在時刻表示を削除
+
+  B. 用語統一: 「満員」→「移動失敗」
+    - Go フィールド: FullChannels → MoveFailedChannels, ConsecutiveFullCount → ConsecutiveMoveFailCount
+    - 設定キー: full_threshold → move_fail_threshold, consecutive_full_threshold → consecutive_move_fail_threshold
+    - HTTP: /api/patrol/clear-full → /api/patrol/clear-move-failed
+    - JS/HTML: clearFullChannels → clearMoveFailedChannels, 関連ID全件
+    - ログ/表示テキスト: 「満員」→「移動失敗」
+
+  C. レアエネミー検知履歴
+    - monster_name を「金ウリボ」「金ナッポ」「銀ナッポ」の3種に正規化保存（起動時ロードで既存データも移行）
+    - フィルタバー追加（すべて / 金ウリボ / 金ナッポ / 銀ナッポ）。ダッシュボードと巡回ページ両方
+    - 検知済み★マーク: 20時間経過で自動消滅
+
+  D. ダッシュボードレイアウト編集を有効化
+    - dash-grid2の2カラム（金履歴・チャット）を「レイアウト編集」モードで左右入れ替え可能化
+    - 配置を localStorage.dashLayoutV2 に保存・復元
+
+  E. 巡回ロジック改修
+    - 「指定chマッピング」削除、ch/IP/ポート手動入力欄に置き換え（/api/portmap/manual）
+    - 「巡回リストへ反映」「更新」ボタン削除
+
+  F. 稼働時間カウント: 巡回中だけ加算（累積保持）
+    - pollPatrolStatus の running フラグで加算/停止を制御
+    - localStorage.uptimeAccumulated に累積秒数を保存
+
+  G. チャットログにデバイスラベル追加（デバッグ用）
+    - [チャット][Instance-N ch=XX] 形式でログ出力
+
+  H. GAS 更新停止フラグ追加
+    - 設定画面「その他」に「GAS連携を有効化」チェックボックス追加
+    - config.json: gas_enable フィールド追加（デフォルト: true）
+    - handlePatrolChannelsGAS: gas_enable=false の場合 403 を返す
+
+変更ファイル:
+  gui/gui.go … 上記すべて（UI・JS・ハンドラ）
+  mumu/mumu.go … 用語リネーム
+  appconfig/config.go … 設定フィールドリネーム・GASEnable追加
+  config/config.json … キー更新
+  ncap/cap_device.go … チャットログにデバイスラベル追加
+  main.go … SetGASEnable 配線追加
+====--------------------------------------------------------------------------------
+[No.17] 2026/05/21 00:00 — 巡回チャンネルリストがカードサイズに追従しないバグ修正
+
+【バグ】巡回タブの「巡回チャンネル」カードを拡大してもチャンネルリストの高さが変わらない。
+【原因】.ch-editor に max-height:180px の固定値があり、かつカード自体が flex コンテナでなかったため
+        カードサイズ変更が ch-editor に伝播しなかった。
+【修正】#card-patrol-channels を display:flex;flex-direction:column に変更し、
+        .ch-editor の max-height:180px を削除して flex:1;min-height:0 に変更。
+        カード高さに追従してスクロール領域が伸縮するようになった。
+
+変更ファイル:
+  gui/gui.go … CSS (#card-patrol-channels 追加・.ch-editor flex化)
+====--------------------------------------------------------------------------------
+[No.16] 2026/05/21 12:00 — 設定ページのカテゴリ分割・チェックボックス修正
+
+【変更】設定画面を5カテゴリのカードに分割
+        - Discord・通知（Webhook・チャット除外・文字数・通知エネミー）
+        - 巡回・タイムアウト（滞在時間・タイムアウト・適応型）
+        - ゲーム・クラッシュ復帰（パッケージ名・クラッシュ復帰）
+        - ADB・デバイス（シリアルラベル・並列設定・ADBパス・座標）
+        - その他（GAS対象・デバッグログ・デバイス未検出ダイアログ）
+【修正】bool型フィールドのチェックボックスを [□ラベル名] 横並び表示に変更。
+        従来は「ラベル名」と「□ 説明文」が縦2段で分離しており不自然だった。
+
+変更ファイル:
+  gui/gui.go … HTML構造・CFG_FIELDS分割・bool renderロジック・loadConfig更新・CSS追加
+====--------------------------------------------------------------------------------
 [No.15] 2026/05/21 12:00 — chマッピング更新日時がすべて起動時刻になるバグ修正
 
 【バグ】ポートマップタブの「更新日時」列がすべて最新起動時の時刻になってしまう。

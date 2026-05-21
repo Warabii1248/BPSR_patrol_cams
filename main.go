@@ -190,6 +190,14 @@ func main() {
 	// GUI サーバーを作成
 	guiServer := gui.New(cfg.GUIPort, mumuCfg, patrolChannels, cfg.PatrolChannelsFile)
 	guiServer.SetShowNoDeviceDialog(cfg.ShowNoDeviceDialog)
+	guiServer.SetGASEnable(cfg.GASEnable)
+
+	// デバイス分担設定を読み込む（存在する場合）
+	const assignmentsFile = "config/device_assignments.json"
+	guiServer.SetAssignmentsFile(assignmentsFile)
+	if err := guiServer.LoadDeviceAssignments(assignmentsFile); err != nil && !os.IsNotExist(err) {
+		log.Printf("warn: device assignments load failed: %v", err)
+	}
 
 	// 全ログ行をGUIのSSEにも流す
 	log.SetOutput(guiServer.LogWriter(log.Writer()))
@@ -413,8 +421,9 @@ func main() {
 			if len(c.SceneMapIds) > 0 {
 				capDevice.SetSceneMapIds(c.SceneMapIds)
 			}
-			// GAS 対象エネミー（即時反映）
+			// GAS 設定（即時反映）
 			guiServer.SetGASTargetEnemy(c.GASTargetEnemy)
+			guiServer.SetGASEnable(c.GASEnable)
 			return nil
 		},
 	)

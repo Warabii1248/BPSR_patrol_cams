@@ -97,7 +97,7 @@ type Config struct {
 	PatrolDwellSecs float64 `json:"patrol_dwell_secs"`
 
 	// PatrolMoveTimeoutSecs は1台目の[0x2E]パケットを待つ最大秒数。
-	// 時間内に1台も来なければ満員と判定してスキップ。0=無効。デフォルト: 30
+	// 時間内に1台も来なければ移動失敗と判定してスキップ。0=無効。デフォルト: 30
 	PatrolMoveTimeoutSecs float64 `json:"patrol_move_timeout_secs"`
 
 	// PatrolMergeTimeoutSecs は1台目受信後、残り台数を待つ最大秒数。
@@ -116,11 +116,11 @@ type Config struct {
 	// ActiveDeviceCount は稼働台数。0=自動検出。固定値で判定したい場合に設定。
 	ActiveDeviceCount int `json:"active_device_count"`
 
-	// FullThreshold は満員判定閾値。稼働台数の何割が移動完了シグナルを送ったら満員ではないと判断するか。0.0-1.0。0=従来通り全台。
-	FullThreshold float64 `json:"full_threshold"`
+	// MoveFailThreshold は移動失敗判定閾値。稼働台数の何割が移動完了シグナルを送ったら失敗ではないと判断するか。0.0-1.0。0=従来通り全台。
+	MoveFailThreshold float64 `json:"move_fail_threshold"`
 
-	// ConsecutiveFullThreshold は連続満員スキップの閾値。クラッシュ検知用。0=無効。
-	ConsecutiveFullThreshold int `json:"consecutive_full_threshold"`
+	// ConsecutiveMoveFailThreshold は連続移動失敗スキップの閾値。クラッシュ検知用。0=無効。
+	ConsecutiveMoveFailThreshold int `json:"consecutive_move_fail_threshold"`
 
 	// PatrolAdaptiveTimeout は実ロード時間を学習して MoveTimeout/MergeTimeout を自動調整する（デフォルト: true）
 	PatrolAdaptiveTimeout bool `json:"patrol_adaptive_timeout"`
@@ -157,6 +157,10 @@ type Config struct {
 	// 部分一致で判定。例: "金ウリボ" or "金ナッポ"。デフォルト: "金ウリボ"
 	GASTargetEnemy string `json:"gas_target_enemy"`
 
+	// GASEnable はChrome拡張からの /api/patrol/channels/gas POST を受け入れるか。
+	// false にすると 403 を返し GAS 連携を無効化する。デフォルト: true
+	GASEnable bool `json:"gas_enable"`
+
 	// ShowNoDeviceDialog は起動時にADBデバイスが見つからない場合にダイアログを表示するかどうか。
 	// デフォルト: true
 	ShowNoDeviceDialog bool `json:"show_no_device_dialog"`
@@ -191,8 +195,8 @@ func defaultConfig() *Config {
 		PatrolMoveTimeoutSecs:    30,
 		PatrolMergeTimeoutSecs:   15,
 		ActiveDeviceCount:        0,
-		FullThreshold:            0.0, // 0=従来通り全台
-		ConsecutiveFullThreshold:    3,    // 3連続満員でクラッシュ判定
+		MoveFailThreshold:            0.0, // 0=従来通り全台
+		ConsecutiveMoveFailThreshold: 3,   // 3連続移動失敗でクラッシュ判定
 		PatrolAdaptiveTimeout:       true,
 		PatrolAdaptiveTimeoutWindow: 10,
 		CrashRecoveryDelaySecs:      30,
@@ -201,6 +205,7 @@ func defaultConfig() *Config {
 			"阿斯特里亚平原": 7, // アステリア平原
 		},
 		GASTargetEnemy:     "金ウリボ",
+		GASEnable:          true,
 		ShowNoDeviceDialog: true,
 	}
 }
@@ -247,6 +252,8 @@ func applyDefaults(cfg *Config) {
 	if cfg.GASTargetEnemy == "" {
 		cfg.GASTargetEnemy = "金ウリボ"
 	}
+	// GASEnable: defaultConfig() で true に設定済み。
+	// json.Unmarshal は欠損キーを上書きしないため、旧 config.json でも true が維持される。
 }
 
 func ensureParentDir(path string) error {

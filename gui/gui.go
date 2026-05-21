@@ -71,6 +71,7 @@ type Server struct {
 	chatClients []chan string // チャットSSEクライアント
 
 	gasTargetEnemy     string // Chrome拡張から受信したchのフィルタ対象エネミー名
+	gasEnable          bool   // Chrome拡張からの GAS 連携 POST を受け入れるか
 	showNoDeviceDialog bool   // 起動時デバイス未検出ダイアログを表示するか
 
 	pendingPortMapMu  sync.Mutex
@@ -84,7 +85,8 @@ type Server struct {
 
 	getLabelByIPFn func(string) string // デバイスIP → インスタンスラベル解決コールバック
 
-	identifyRunning bool // デバイス識別フェーズ実行中フラグ
+	identifyRunning bool   // デバイス識別フェーズ実行中フラグ
+	assignmentsFile string // device_assignments.json のパス
 }
 
 // PortMapEntry はポートマップの1エントリ（GUI向け）
@@ -92,6 +94,17 @@ type PortMapEntry struct {
 	Ch        uint32    `json:"ch"`
 	ServerIP  string    `json:"server_ip"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// normalizeMonsterName は検知モンスター名を「金ウリボ」「金ナッポ」「銀ナッポ」の3種に正規化する
+func normalizeMonsterName(name string) string {
+	if strings.Contains(name, "銀ナッポ") {
+		return "銀ナッポ"
+	}
+	if strings.Contains(name, "金ナッポ") || strings.Contains(name, "ナッポ") {
+		return "金ナッポ"
+	}
+	return "金ウリボ"
 }
 
 // GoldBoarEvent は金ウリボ検知の1件分の記録
@@ -198,6 +211,9 @@ func (s *Server) loadGoldHistoryFromDisk() error {
 		return err
 	}
 	history = clampGoldHistory(history)
+	for i := range history {
+		history[i].MonsterName = normalizeMonsterName(history[i].MonsterName)
+	}
 	s.mu.Lock()
 	s.goldBoarHistory = history
 	s.mu.Unlock()
@@ -296,6 +312,13 @@ func (s *Server) SetGASTargetEnemy(target string) {
 	s.mu.Unlock()
 }
 
+// SetGASEnable は Chrome拡張からの GAS 連携 POST を受け入れるかを設定する。
+func (s *Server) SetGASEnable(v bool) {
+	s.mu.Lock()
+	s.gasEnable = v
+	s.mu.Unlock()
+}
+
 // SetShowNoDeviceDialog は起動時デバイス未検出ダイアログの表示フラグを設定する。
 func (s *Server) SetShowNoDeviceDialog(v bool) {
 	s.mu.Lock()
@@ -390,10 +413,7 @@ func (s *Server) OnDetect(det notifier.Detection) {
 	s.mu.Lock()
 	clients := s.appendLogLocked(line)
 	// 金ウリボ履歴に追記（最大50件）
-	monName := det.MonsterName
-	if monName == "" {
-		monName = "ウリボ・ゴールド"
-	}
+	monName := normalizeMonsterName(det.MonsterName)
 	loc := det.Location
 	if loc == "" {
 		loc = "不明"
@@ -457,6 +477,26 @@ func (s *Server) SetPortMapApplyFn(fn func(ch uint32, serverIP string)) {
 // SetGetPortMapFn はポートマップ全件取得コールバックを設定する。
 func (s *Server) SetGetPortMapFn(fn func() []PortMapEntry) {
 	s.getPortMapFn = fn
+}
+
+// SetAssignmentsFile はデバイス分担設定ファイルのパスを設定する。
+func (s *Server) SetAssignmentsFile(file string) {
+	s.mu.Lock()
+	s.assignmentsFile = file
+	s.mu.Unlock()
+}
+
+// LoadDeviceAssignments はデバイス分担設定をファイルから読み込み、Patrollerに反映する。
+func (s *Server) LoadDeviceAssignments(file string) error {
+	assignments, err := mumu.LoadDeviceAssignments(file)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.assignmentsFile = file
+	s.mu.Unlock()
+	s.patroller.SetDeviceAssignments(assignments)
+	return nil
 }
 
 // SetMapChFn は現在セッションを指定chにマッピングするコールバックを設定する。
@@ -661,7 +701,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/patrol/status", s.handlePatrolStatus)
 	mux.HandleFunc("/api/patrol/device-statuses", s.handlePatrolDeviceStatuses)
 	mux.HandleFunc("/api/patrol/recover", s.handlePatrolRecover)
-	mux.HandleFunc("/api/patrol/clear-full", s.handlePatrolClearFull)
+	mux.HandleFunc("/api/patrol/clear-move-failed", s.handlePatrolClearMoveFailed)
 	mux.HandleFunc("/api/patrol/channels", s.handlePatrolChannels)
 	mux.HandleFunc("/api/patrol/channels/gas", s.handlePatrolChannelsGAS)
 	mux.HandleFunc("/api/test-detect", s.handleTestDetect)
@@ -684,6 +724,9 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/portmap/entries", s.handlePortMapEntries)
 	mux.HandleFunc("/api/portmap/map-ch", s.handlePortMapMapCh)
 	mux.HandleFunc("/api/portmap/map-all", s.handlePortMapMapAll)
+	mux.HandleFunc("/api/portmap/manual", s.handlePortMapManual)
+	mux.HandleFunc("/api/devices/identified", s.handleDevicesIdentified)
+	mux.HandleFunc("/api/devices/assignments/compute", s.handleComputeAssignments)
 	mux.HandleFunc("/spawn-log", s.handleSpawnLog)
 	mux.HandleFunc("/chat-log", s.handleChatLogPage)
 	mux.HandleFunc("/events", s.handleSSE)
@@ -1145,6 +1188,13 @@ func (s *Server) handlePatrolChannels(w http.ResponseWriter, r *http.Request) {
 // handlePatrolChannelsGAS は Chrome拡張からエネミー名付きチャンネルを受信し、
 // GASTargetEnemy 設定でフィルタして巡回リストを更新する。
 func (s *Server) handlePatrolChannelsGAS(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	gasEnabled := s.gasEnable
+	s.mu.RUnlock()
+	if !gasEnabled {
+		http.Error(w, "GAS sync disabled", http.StatusForbidden)
+		return
+	}
 	if !s.patrolEnabled {
 		writeJSON(w, map[string]interface{}{"ok": true, "ignored": true})
 		return
@@ -1430,8 +1480,8 @@ func (s *Server) handleTestDetect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"ok": true, "monster": monster})
 }
 
-// handlePatrolClearFull は満員判定リストをクリアする
-func (s *Server) handlePatrolClearFull(w http.ResponseWriter, r *http.Request) {
+// handlePatrolClearMoveFailed は移動失敗リストをクリアする
+func (s *Server) handlePatrolClearMoveFailed(w http.ResponseWriter, r *http.Request) {
 	if !s.patrolEnabled {
 		http.Error(w, "patrol disabled", http.StatusServiceUnavailable)
 		return
@@ -1440,7 +1490,7 @@ func (s *Server) handlePatrolClearFull(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", 405)
 		return
 	}
-	s.patroller.ClearFullChannels()
+	s.patroller.ClearMoveFailedChannels()
 	writeOK(w)
 }
 
@@ -1848,6 +1898,106 @@ func (s *Server) handlePortMapMapAll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"ok": true, "mapped": count})
 }
 
+// handlePortMapManual は ch/IP/ポートを手動でポートマップに登録する。
+func (s *Server) handlePortMapManual(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Ch   uint32 `json:"ch"`
+		IP   string `json:"ip"`
+		Port int    `json:"port"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if req.Ch == 0 || req.IP == "" || req.Port <= 0 {
+		writeJSON(w, map[string]interface{}{"ok": false, "error": "ch / ip / port が不正です"})
+		return
+	}
+	serverIP := fmt.Sprintf("%s:%d", req.IP, req.Port)
+	if fn := s.portMapApplyFn; fn != nil {
+		fn(req.Ch, serverIP)
+	}
+	writeJSON(w, map[string]interface{}{"ok": true})
+}
+
+// handleDevicesIdentified は全巡回対象デバイスが追跡可能状態かどうかを返す。
+// 各シリアルに対応するセッションが Confirmed && LineID > 0 を満たすか確認する。
+func (s *Server) handleDevicesIdentified(w http.ResponseWriter, r *http.Request) {
+	serials := s.patroller.Status().Serials
+	if len(serials) == 0 {
+		serials = s.patroller.Config().ConnectSerials
+	}
+	total := len(serials)
+
+	var sessions []DeviceSessionInfo
+	if s.getSessions != nil {
+		sessions = s.getSessions()
+	}
+	uidToSess := make(map[uint64]DeviceSessionInfo)
+	for _, sess := range sessions {
+		if sess.UserUID != 0 {
+			uidToSess[sess.UserUID] = sess
+		}
+	}
+
+	ready := 0
+	var missing []string
+	for _, serial := range serials {
+		uid := s.patroller.GetSerialUID(serial)
+		if uid == 0 {
+			missing = append(missing, serial)
+			continue
+		}
+		sess, ok := uidToSess[uid]
+		if !ok || !sess.Confirmed || sess.LineID == 0 {
+			missing = append(missing, serial)
+			continue
+		}
+		ready++
+	}
+	writeJSON(w, map[string]interface{}{
+		"identified": total > 0 && ready >= total,
+		"total":      total,
+		"ready":      ready,
+		"missing":    missing,
+	})
+}
+
+// handleComputeAssignments は現在のデバイス台数からch分担を計算してファイルに保存し、Patrollerへ反映する。
+func (s *Server) handleComputeAssignments(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	serials := s.patroller.Status().Serials
+	if len(serials) == 0 {
+		serials = s.patroller.Config().ConnectSerials
+	}
+	deviceCount := len(serials)
+	if deviceCount == 0 {
+		writeJSON(w, map[string]interface{}{"ok": false, "error": "デバイス未検出"})
+		return
+	}
+	assignments := mumu.ComputeDeviceAssignments(deviceCount, 100)
+	s.mu.RLock()
+	file := s.assignmentsFile
+	s.mu.RUnlock()
+	if file == "" {
+		file = "config/device_assignments.json"
+	}
+	if err := mumu.SaveDeviceAssignments(file, assignments); err != nil {
+		writeJSON(w, map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	s.patroller.SetDeviceAssignments(assignments)
+	log.Printf("[GUI] デバイス分担計算: %d台 → %dグループ保存 (%s)", deviceCount, len(assignments), file)
+	writeJSON(w, map[string]interface{}{"ok": true, "device_count": deviceCount, "groups": len(assignments)})
+}
+
 // handleChatLogPage はチャットログ専用の分離ウィンドウ用HTMLページを返す
 func (s *Server) handleChatLogPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1981,7 +2131,7 @@ const patrolDisabledScript = `<script>
 	if(typeof patrolStart==='function'){patrolStart=async function(){alert('このアプリでは巡回機能は無効です');};}
 	if(typeof patrolStop==='function'){patrolStop=async function(){};}
 	if(typeof saveChannels==='function'){saveChannels=async function(){};}
-	if(typeof clearFullChannels==='function'){clearFullChannels=async function(){};}
+	if(typeof clearMoveFailedChannels==='function'){clearMoveFailedChannels=async function(){};}
 })();
 </script>`
 
@@ -2180,7 +2330,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .patrol-status span{margin-right:10px}
 .patrol-status .running{color:var(--accent2);font-weight:600}
 .patrol-status .stopped{color:var(--text3)}
-.ch-editor{display:flex;flex-direction:column;gap:3px;max-height:180px;overflow-y:auto;margin:6px 0}
+.ch-editor{display:flex;flex-direction:column;gap:3px;flex:1;min-height:0;overflow-y:auto;margin:6px 0}
 .dev-stat-table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
 .dev-stat-table th,.dev-stat-table td{padding:3px 6px;border-bottom:1px solid var(--border);text-align:left}
 .dev-stat-table th{color:var(--text3);font-weight:600}
@@ -2207,6 +2357,10 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .gold-table .time-cell{color:var(--text3);font-size:var(--fs-xs);font-family:var(--font-mono)}
 .gold-table .name-cell{color:var(--warn);font-weight:600;font-size:var(--fs-sm)}
 .gold-table .name-cell.silver{color:var(--text2)}
+.gold-filter-bar{display:flex;gap:4px;padding:6px 10px 4px;flex-wrap:wrap}
+.btn-gf{padding:2px 10px;font-size:var(--fs-xs);border:1px solid var(--border);border-radius:3px;background:var(--bg2);color:var(--text3);cursor:pointer;transition:background .15s,color .15s}
+.btn-gf:hover{background:var(--bg3);color:var(--text1)}
+.btn-gf.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .no-history{color:var(--text2);font-size:.85em;padding:8px 0}
 #gold-history-container{flex:1;min-height:0;max-height:none;overflow-y:auto}
 
@@ -2246,6 +2400,9 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .cfg-field textarea{width:100%;min-height:calc(1.5em * 10 + 18px);max-height:calc(1.5em * 10 + 18px);resize:vertical;overflow-y:auto;line-height:1.5}
 .cfg-save-bar{display:flex;gap:8px;align-items:center;margin-top:10px}
 .cfg-note{font-size:.75em;color:var(--text3);margin-top:3px}
+.cfg-field-bool{justify-content:flex-start}
+.cfg-bool-label{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82em;font-weight:500;color:var(--text1)}
+.cfg-bool-label input[type=checkbox]{width:auto;margin:0;flex-shrink:0}
 .section-title{font-size:.78em;color:var(--accent);font-weight:500;margin:10px 0 5px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:4px}
 .cfg-card-title{font-size:.86em;color:var(--text1);font-weight:600;margin-bottom:10px}
 .cfg-card-title-collapsible{display:flex;align-items:center;gap:8px}
@@ -2302,6 +2459,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .panel-size-2x3{--panel-rows:76}
 .panel-size-2x4{--panel-rows:100}
 #card-dash-gold{display:flex;flex-direction:column;min-height:0}
+#card-patrol-channels{display:flex;flex-direction:column;overflow:hidden}
 #dash-chat-area{height:420px;overflow-y:auto;flex-shrink:0}
 #dash-chat-report-area{flex:1;min-height:0;overflow-y:auto}
 
@@ -2354,6 +2512,9 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 #card-chat-report-col{flex:1;min-width:0;min-height:0}
 .chat-swap-handle{display:none;align-items:center;justify-content:center;height:28px;flex:none;cursor:pointer;border-radius:var(--radius);border:1px dashed rgba(210,153,34,.4);color:var(--warn);font-size:var(--fs-sm);gap:6px;background:rgba(210,153,34,.04)}
 .chat-swap-handle:hover{background:rgba(210,153,34,.1)}
+.dash-swap-handle{display:none;grid-column:1/-1;align-items:center;justify-content:center;height:28px;cursor:pointer;border-radius:var(--radius);border:1px dashed rgba(99,179,237,.4);color:var(--accent);font-size:var(--fs-sm);background:rgba(99,179,237,.04)}
+.dash-swap-handle:hover{background:rgba(99,179,237,.12)}
+#dashboard-grid.edit-mode .dash-swap-handle{display:flex}
 #view-chat-log.edit-mode .card{outline:1px dashed rgba(210,153,34,.4);outline-offset:1px}
 #view-chat-log.edit-mode .chat-swap-handle{display:flex}
 .grid-drop-indicator{background:rgba(88,166,255,.05);border:1px dashed rgba(88,166,255,.3);border-radius:var(--radius-lg);pointer-events:none;min-height:60px}
@@ -2511,7 +2672,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .ch-cell.queued{color:var(--text1);background:var(--bg3);}
 .ch-cell.done{background:var(--ok-bg);color:var(--accent2);border-color:var(--ok-border);}
 .ch-cell.current{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-bg-strong);}
-.ch-cell.full{background:var(--danger-bg);color:var(--danger);border-color:var(--danger-border);}
+.ch-cell.move-failed{background:var(--danger-bg);color:var(--danger);border-color:var(--danger-border);}
 .ch-cell.detected::after{content:'\2605';position:absolute;top:-4px;right:-3px;font-size:13px;color:var(--warn);text-shadow:0 0 3px var(--bg0);font-weight:bold;}
 .ch-legend{display:flex;flex-wrap:wrap;gap:10px;font-size:var(--fs-xs);color:var(--text3);margin-top:6px;}
 .ch-legend .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle;}
@@ -2572,10 +2733,6 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		<span style="font-weight:600; color:var(--accent2);">稼働:</span>
 		<span id="brand-uptime-small" style="font-family:monospace; font-size:var(--fs-xs); color:var(--text3);"></span>
 	</div>
-	<div class="brand-status" id="brand-time-box" style="margin-top:4px; display:flex; align-items:center; gap:5px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); font-size:var(--fs-xs); color:var(--text3);">
-		<span style="font-weight:600; color:var(--accent);">時刻:</span>
-		<span id="brand-current-time-small" style="font-family:monospace; font-size:var(--fs-xs); color:var(--text3);"></span>
-	</div>
 </div>
 <div class="sidebar-nav">
 <div class="nav-item active" id="nav-dashboard" onclick="switchView('dashboard',this)">
@@ -2602,7 +2759,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round"/></svg>
     設定
   </div>
-  <div class="nav-item" id="nav-data-management" onclick="switchView('data-management',this);loadPortMapEntries()">
+  <div class="nav-item" id="nav-data-management" onclick="switchView('data-management',this);loadPortMapEntries();updateIdentifiedBadge()">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="8" cy="4.5" rx="5.5" ry="2"/><path d="M2.5 4.5v3c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-3"/><path d="M2.5 7.5v3c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-3"/></svg>
     データ管理
   </div>
@@ -2666,7 +2823,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
       <div class="hero-row2">
         <span><span>1サイクル</span> <b id="dash-ps-cycle-time">--</b></span>
         <span><span>速度</span> <b id="dash-ps-cycle-rate" style="color:var(--accent2)">--</b></span>
-        <span id="dash-ps-full-wrap" style="display:none"><span>満員</span> <b id="dash-ps-full" style="color:var(--danger)"></b> <button id="btn-dash-clear-full" class="btn2 ghost sm" onclick="clearFullChannels()" title="満員リストをクリア"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></span>
+        <span id="dash-ps-move-failed-wrap" style="display:none"><span>移動失敗</span> <b id="dash-ps-move-failed" style="color:var(--danger)"></b> <button id="btn-dash-clear-move-failed" class="btn2 ghost sm" onclick="clearMoveFailedChannels()" title="移動失敗リストをクリア"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></span>
         <span style="margin-left:auto">
           <label style="font-size:11px;color:var(--text3);margin-right:6px">開始Ch:</label>
           <select id="dash-patrol-start-ch-select" style="width:80px;height:22px;font-size:11px;padding:0 4px"></select>
@@ -2714,7 +2871,6 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         <button onclick="resetUptime()" title="リセット" style="margin-left:auto;background:transparent;border:none;color:var(--text3);cursor:pointer;padding:0 2px;font-size:14px;line-height:1">&#8635;</button>
       </div>
       <div class="kv"><span id="dash-uptime">00:00:00</span></div>
-      <div class="ks" id="dash-current-time" style="font-family:var(--font-mono)">--:--:--</div>
     </div>
     <div class="kpi-tile accent">
       <div class="kl">
@@ -2739,14 +2895,14 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
   <div class="card2" id="card-dash-matrix">
     <div class="card2-head">
       <span class="ci"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 2L1.5 5.5 8 9l6.5-3.5z"/><path d="M1.5 9L8 12.5 14.5 9"/></svg></span>
-      <span class="ct">チャンネルマトリクス</span>
+      <span class="ct">chリスト</span>
       <span class="cc" id="dash-matrix-count">0 ch</span>
       <div class="ca">
         <div class="ch-legend" style="margin-top:0">
           <span><span class="sw" style="background:var(--accent)"></span>巡回中</span>
           <span><span class="sw" style="background:var(--accent2)"></span>完了</span>
           <span><span class="sw" style="background:var(--bg3)"></span>待機</span>
-          <span><span class="sw" style="background:var(--danger)"></span>満員</span>
+          <span><span class="sw" style="background:var(--danger)"></span>移動失敗</span>
           <span style="color:var(--warn)">&#x2605; 検知済</span>
         </div>
         <div class="btn-grp" title="表示モード">
@@ -2766,6 +2922,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 
   <!-- === 2-column grid === -->
   <div class="dash-grid2" id="dashboard-grid">
+    <!-- Swap handle (visible in edit-mode) -->
+    <div class="dash-swap-handle" id="dash-swap-handle" onclick="swapDashColumns()" title="左右を入れ替え" style="display:none">⇆ 左右入れ替え</div>
     <!-- Left col -->
     <div class="dash-col" id="card-dash-gold">
       <div class="card2" style="flex:1;min-height:0">
@@ -2783,6 +2941,12 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
           </div>
         </div>
         <div class="card2-body" style="padding:0">
+          <div class="gold-filter-bar" id="gold-filter-bar-dash">
+            <button class="btn-gf active" data-filter="all" onclick="setGoldFilter('all',this,'dash')">すべて</button>
+            <button class="btn-gf" data-filter="金ウリボ" onclick="setGoldFilter('金ウリボ',this,'dash')">金ウリボ</button>
+            <button class="btn-gf" data-filter="金ナッポ" onclick="setGoldFilter('金ナッポ',this,'dash')">金ナッポ</button>
+            <button class="btn-gf" data-filter="銀ナッポ" onclick="setGoldFilter('銀ナッポ',this,'dash')">銀ナッポ</button>
+          </div>
           <div id="gold-history-container"><div class="no-history" style="padding:14px">検知履歴なし</div></div>
         </div>
       </div>
@@ -2932,8 +3096,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
         </div>
         <div id="crash-warning" class="crash-warning">⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。</div>
         <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">
-          <div id="ps-full" style="font-size:.78em;color:#fca5a5;flex:1"></div>
-          <button id="btn-clear-full" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearFullChannels()">✕ クリア</button>
+          <div id="ps-move-failed" style="font-size:.78em;color:#fca5a5;flex:1"></div>
+          <button id="btn-clear-move-failed" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearMoveFailedChannels()">✕ クリア</button>
         </div>
         <div class="flex-row" style="margin-bottom:8px">
           <label style="font-size:var(--fs-sm)">開始Ch:</label>
@@ -2990,6 +3154,12 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 		</div>
 		<div class="card panel-size-1x2 panel-col-2" id="card-patrol-gold">
 		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:var(--fs-xs)" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
+        <div class="gold-filter-bar" id="gold-filter-bar-patrol">
+          <button class="btn-gf active" data-filter="all" onclick="setGoldFilter('all',this,'patrol')">すべて</button>
+          <button class="btn-gf" data-filter="金ウリボ" onclick="setGoldFilter('金ウリボ',this,'patrol')">金ウリボ</button>
+          <button class="btn-gf" data-filter="金ナッポ" onclick="setGoldFilter('金ナッポ',this,'patrol')">金ナッポ</button>
+          <button class="btn-gf" data-filter="銀ナッポ" onclick="setGoldFilter('銀ナッポ',this,'patrol')">銀ナッポ</button>
+        </div>
         <div id="gold-history-container-patrol"><div class="no-history">検知履歴なし</div></div>
       </div>
   </div>
@@ -3002,17 +3172,35 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 			<div id="chat-filter-content"><div id="cfg-chat-rule-managers" class="cfg-rule-grid"></div></div>
 		</div>
 		<div class="card cfg-card">
-			<div class="cfg-card-title">システム設定</div>
-			<div id="cfg-form" class="cfg-grid"></div>
-			<div style="margin:12px 0 0 0">
-				<label style="font-size:var(--fs-md);font-weight:500;">通知するエネミー</label>
+			<div class="cfg-card-title">Discord・通知</div>
+			<div id="cfg-form-discord" class="cfg-grid"></div>
+			<div style="margin:10px 0 0 0">
+				<label style="font-size:var(--fs-sm);color:var(--text2);font-weight:500;">通知するエネミー</label>
 				<div id="cfg-enemy-checkboxes" style="margin-top:6px;display:flex;gap:18px;font-size:var(--fs-md)">
-					<label><input type="checkbox" class="cfg-enemy" value="ウリボ・ゴールド">ウリボ・ゴールド</label>
-					<label><input type="checkbox" class="cfg-enemy" value="金ナッポ">金ナッポ</label>
-					<label><input type="checkbox" class="cfg-enemy" value="銀ナッポ">銀ナッポ</label>
+					<label class="check-label"><input type="checkbox" class="cfg-enemy" value="ウリボ・ゴールド">ウリボ・ゴールド</label>
+					<label class="check-label"><input type="checkbox" class="cfg-enemy" value="金ナッポ">金ナッポ</label>
+					<label class="check-label"><input type="checkbox" class="cfg-enemy" value="銀ナッポ">銀ナッポ</label>
 				</div>
 			</div>
-			<div class="cfg-save-bar">
+		</div>
+		<div class="card cfg-card">
+			<div class="cfg-card-title">巡回・タイムアウト</div>
+			<div id="cfg-form-patrol" class="cfg-grid"></div>
+		</div>
+		<div class="card cfg-card">
+			<div class="cfg-card-title">ゲーム・クラッシュ復帰</div>
+			<div id="cfg-form-game" class="cfg-grid"></div>
+		</div>
+		<div class="card cfg-card">
+			<div class="cfg-card-title">ADB・デバイス</div>
+			<div id="cfg-form-adb" class="cfg-grid"></div>
+		</div>
+		<div class="card cfg-card">
+			<div class="cfg-card-title">その他</div>
+			<div id="cfg-form-misc" class="cfg-grid"></div>
+		</div>
+		<div class="card cfg-card" style="padding:10px 12px">
+			<div class="cfg-save-bar" style="margin-top:0">
 				<button class="btn primary" onclick="saveConfig()">💾 保存・反映</button>
 				<span id="cfg-status" style="font-size:.82em;color:var(--text2)"></span>
 			</div>
@@ -3025,6 +3213,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
   <div class="cfg-stack">
     <div class="card cfg-card">
       <div class="cfg-card-title">chマッピング管理</div>
+      <div id="devices-id-badge" style="margin-bottom:10px;font-size:var(--fs-sm);padding:4px 8px;border-radius:4px;display:inline-block">-- デバイス認識状態を読み込み中...</div>
       <!-- 操作パネル -->
       <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
         <div>
@@ -3032,16 +3221,13 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
           <button class="btn primary" onclick="portmapMapAll()">⚡ 全chマッピング</button>
         </div>
         <div style="border-left:1px solid var(--border);padding-left:12px">
-          <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:4px">指定chマッピング（現在セッションを指定chに登録）</div>
-          <div style="display:flex;gap:6px;align-items:center">
-            <label style="font-size:var(--fs-sm)">Ch:</label>
-            <input type="number" id="portmap-ch-input" min="1" max="9999" placeholder="例: 40" style="width:80px">
-            <button class="btn success" onclick="portmapMapCh()">📌 マッピング</button>
+          <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:4px">手動マッピング</div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <label style="font-size:var(--fs-sm)">Ch:<input type="number" id="manual-ch" min="1" max="9999" placeholder="例: 40" style="width:72px;margin-left:4px"></label>
+            <label style="font-size:var(--fs-sm)">IP:<input type="text" id="manual-ip" placeholder="43.167.183.39" style="width:130px;margin-left:4px"></label>
+            <label style="font-size:var(--fs-sm)">ポート:<input type="number" id="manual-port" min="1" max="65535" placeholder="10194" style="width:80px;margin-left:4px"></label>
+            <button class="btn success" onclick="portmapManualUpdate()">📌 更新</button>
           </div>
-        </div>
-        <div style="margin-left:auto;display:flex;gap:6px;align-items:flex-end">
-          <button class="btn" onclick="portmapSetAsPatrol()" title="マッピング済みchを巡回チャンネルリストに反映">📡 巡回リストへ反映</button>
-          <button class="btn" onclick="loadPortMapEntries()">🔄 更新</button>
         </div>
       </div>
       <div id="portmap-status" style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:8px;min-height:1.4em"></div>
@@ -3099,12 +3285,82 @@ function portmapSetStatus(msg, isErr) {
   el.textContent = msg;
   el.style.color = isErr ? '#f87171' : 'var(--text2)';
 }
-function portmapMapAll() {
+async function portmapManualUpdate() {
+  const ch = parseInt((document.getElementById('manual-ch')||{}).value)||0;
+  const ip = ((document.getElementById('manual-ip')||{}).value||'').trim();
+  const port = parseInt((document.getElementById('manual-port')||{}).value)||0;
+  if (!ch || ch <= 0) { portmapSetStatus('ch番号を入力してください', true); return; }
+  if (!ip) { portmapSetStatus('IPアドレスを入力してください', true); return; }
+  if (!port || port <= 0) { portmapSetStatus('ポート番号を入力してください', true); return; }
+  portmapSetStatus('手動マッピング更新中...', false);
+  try {
+    const r = await fetch('/api/portmap/manual', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ch, ip, port})});
+    const d = await r.json();
+    if (d.ok) {
+      portmapSetStatus('ch'+ch+' → '+ip+':'+port+' に更新しました', false);
+      loadPortMapEntries();
+    } else {
+      portmapSetStatus('エラー: '+(d.error||'不明'), true);
+    }
+  } catch(e) { portmapSetStatus('エラーが発生しました', true); }
+}
+function updateIdentifiedBadge() {
+  fetch('/api/devices/identified').then(r=>r.json()).then(d=>{
+    const el = document.getElementById('devices-id-badge');
+    if (!el) return;
+    if (d.total === 0) {
+      el.textContent = '-- デバイス未設定';
+      el.style.background = 'transparent';
+      el.style.color = 'var(--text3)';
+    } else if (d.identified) {
+      el.textContent = '✅ 全デバイス追跡可能 ('+d.ready+'/'+d.total+'台)';
+      el.style.background = 'rgba(34,197,94,0.12)';
+      el.style.color = '#22c55e';
+    } else {
+      el.textContent = '⚠ 認識中... ('+d.ready+'/'+d.total+'台)';
+      el.style.background = 'rgba(234,179,8,0.12)';
+      el.style.color = '#ca8a04';
+    }
+  }).catch(()=>{});
+}
+let _identifyPollTimer = null;
+function stopIdentifyPolling() {
+  if (_identifyPollTimer) { clearInterval(_identifyPollTimer); _identifyPollTimer = null; }
+}
+function startIdentifyPolling() {
+  if (_identifyPollTimer) return;
+  _identifyPollTimer = setInterval(async () => {
+    try {
+      const d = await fetch('/api/devices/identified').then(r=>r.json());
+      updateIdentifiedBadge();
+      if (d.identified) {
+        stopIdentifyPolling();
+        const ok = confirm('✅ 全デバイス認識完了 ('+d.total+'台)\n1〜100ch を巡回リストに反映しますか？\n（デバイス分担設定も自動で計算されます）');
+        if (!ok) return;
+        const chs = Array.from({length:100},(_,i)=>i+1);
+        const r = await fetch('/api/patrol/channels', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({channels:chs})});
+        const rd = await r.json();
+        if (!rd.ok) { portmapSetStatus('✗ 巡回リスト保存失敗', true); return; }
+        const ad = await fetch('/api/devices/assignments/compute', {method:'POST'}).then(r=>r.json()).catch(()=>({ok:false}));
+        if (ad.ok) {
+          portmapSetStatus('✓ 1〜100ch 反映 + '+ad.device_count+'台を'+ad.groups+'グループに分担設定', false);
+        } else {
+          portmapSetStatus('✓ 1〜100ch を巡回リストに反映しました', false);
+        }
+        if (typeof loadPatrolChannels === 'function') loadPatrolChannels();
+      }
+    } catch(e) {}
+  }, 5000);
+}
+async function portmapMapAll() {
   portmapSetStatus('全chマッピング実行中...', false);
-  fetch('/api/portmap/map-all', {method:'POST'}).then(r=>r.json()).then(d=>{
-    portmapSetStatus('完了: '+d.mapped+' 件をマッピングしました', false);
+  try {
+    const d = await fetch('/api/portmap/map-all', {method:'POST'}).then(r=>r.json());
+    portmapSetStatus('完了: '+d.mapped+' 件をマッピング → デバイス認識を確認中...', false);
     loadPortMapEntries();
-  }).catch(()=>portmapSetStatus('エラーが発生しました', true));
+    updateIdentifiedBadge();
+    startIdentifyPolling();
+  } catch(e) { portmapSetStatus('エラーが発生しました', true); }
 }
 function portmapMapCh() {
   const inp = document.getElementById('portmap-ch-input');
@@ -3163,7 +3419,7 @@ document.addEventListener('DOMContentLoaded',function(){
   }
 });
 // ...既存コード...
-const EDITABLE_LAYOUT_VIEWS=['patrol','chat-log']; // v2: dashboard layout edit frozen during refresh
+const EDITABLE_LAYOUT_VIEWS=['patrol','chat-log','dashboard'];
 let currentViewId='dashboard';
 function isLayoutEditableView(id){
 	return EDITABLE_LAYOUT_VIEWS.includes(id);
@@ -3171,7 +3427,12 @@ function isLayoutEditableView(id){
 function syncLayoutEditState(){
 	const dashGrid=document.getElementById('dashboard-grid');
 	const patrolRoot=document.getElementById('patrol-layout-root');
-	if(dashGrid)dashGrid.classList.toggle('edit-mode',layoutEditMode&&currentViewId==='dashboard');
+	if(dashGrid){
+		const dashEdit=layoutEditMode&&currentViewId==='dashboard';
+		dashGrid.classList.toggle('edit-mode',dashEdit);
+		const swapH=document.getElementById('dash-swap-handle');
+		if(swapH)swapH.style.display=dashEdit?'flex':'none';
+	}
 	if(patrolRoot)patrolRoot.classList.toggle('edit-mode',layoutEditMode&&currentViewId==='patrol');
 	const chatView=document.getElementById('view-chat-log');
 	if(chatView)chatView.classList.toggle('edit-mode',layoutEditMode&&currentViewId==='chat-log');
@@ -3598,21 +3859,34 @@ async function loadGoldHistory(){
     }
     if(detEl) detEl.textContent = Array.isArray(h) ? String(h.length) : '0';
     if(metaEl) metaEl.textContent = String(perHour) + '/hour · ' + latestAgo;
-    // v2: track detected channels for matrix overlay + update count badge
+    // v2: track detected channels for matrix overlay + update count badge (20h expiry)
     const detSet = new Set();
-    if(Array.isArray(h)) h.forEach(e=>{ if(e && Number.isFinite(e.channel)) detSet.add(Number(e.channel)); });
+    const _detNowSec = Math.floor(Date.now()/1000);
+    const _det20h = 20*3600;
+    if(Array.isArray(h)) h.forEach(e=>{ if(e && Number.isFinite(e.channel) && (_detNowSec-(e.timestamp||0))<_det20h) detSet.add(Number(e.channel)); });
     _detectedChannels = detSet;
     const goldCnt = document.getElementById('dash-gold-count');
     if(goldCnt) goldCnt.textContent = Array.isArray(h)?String(h.length):'0';
     if(typeof renderChannelMatrix === 'function') renderChannelMatrix();
-    const tbl = (!h || h.length === 0) ? '<div class="no-history">検知履歴なし</div>'
+    const filtered = (!h || h.length===0) ? [] : (_goldFilter==='all' ? h : h.filter(e=>(e.monster_name||'金ウリボ')===_goldFilter));
+    const tbl = (filtered.length === 0) ? '<div class="no-history">検知履歴なし</div>'
       : '<table class="gold-table"><colgroup><col class="col-time"><col class="col-name"><col class="col-ch"><col class="col-loc"><col class="col-action"></colgroup>'
       + '<thead><tr><th>時刻</th><th>名前</th><th>Ch</th><th>場所</th><th></th></tr></thead><tbody>'
-      + h.map(e=>{const nm=e.monster_name||'ウリボ・ゴールド';const cls=nm.includes('銀ナッポ')?'name-cell silver':'name-cell';return '<tr><td class="time-cell">'+escHtml(e.time||'')+'</td><td class="'+cls+'">'+escHtml(nm)+'</td><td class="ch-cell">Ch'+Number(e.channel)+'</td><td>'+escHtml(e.location||'')+'</td><td class="action-cell"><button onclick="removeGoldHistory('+Number(e.timestamp)+')">×</button></td></tr>'}).join('')
+      + filtered.map(e=>{const nm=e.monster_name||'金ウリボ';const cls=nm==='銀ナッポ'?'name-cell silver':'name-cell';return '<tr><td class="time-cell">'+escHtml(e.time||'')+'</td><td class="'+cls+'">'+escHtml(nm)+'</td><td class="ch-cell">Ch'+Number(e.channel)+'</td><td>'+escHtml(e.location||'')+'</td><td class="action-cell"><button onclick="removeGoldHistory('+Number(e.timestamp)+')">×</button></td></tr>'}).join('')
       + '</tbody></table>';
     const c1=document.getElementById('gold-history-container');if(c1)c1.innerHTML=tbl;
     const c2=document.getElementById('gold-history-container-patrol');if(c2)c2.innerHTML=tbl;
   }catch(_){}
+}
+// ── Gold history filter ──
+let _goldFilter = localStorage.getItem('goldHistoryFilter')||'all';
+function setGoldFilter(f,btn,scope){
+  _goldFilter=f;
+  localStorage.setItem('goldHistoryFilter',f);
+  const barId = scope==='patrol'?'gold-filter-bar-patrol':'gold-filter-bar-dash';
+  const bar=document.getElementById(barId);
+  if(bar) bar.querySelectorAll('.btn-gf').forEach(b=>b.classList.toggle('active',b.dataset.filter===f));
+  loadGoldHistory();
 }
 // ── Channel matrix (v2 dashboard) ──
 let _lastPatrolStatus = null;
@@ -3648,7 +3922,7 @@ function renderChannelMatrix(statusOpt){
     return;
   }
   const inPatrol = new Set(chs);
-  const fullSet = new Set(Array.isArray(status.full_channels)?status.full_channels:[]);
+  const moveFailedSet = new Set(Array.isArray(status.move_failed_channels)?status.move_failed_channels:[]);
   const currentCh = Number(status.current_channel)||0;
   const currentIdx = Number(status.current_index);
   const ordered = patrolReversed?chs.slice().sort((a,b)=>b-a):chs.slice().sort((a,b)=>a-b);
@@ -3681,7 +3955,7 @@ function renderChannelMatrix(statusOpt){
     let cls = 'ch-cell queued';
     let title = 'ch.'+ch;
     if(ch === currentCh){cls = 'ch-cell current'; title = 'ch.'+ch+' (現在)';}
-    else if(fullSet.has(ch)){cls = 'ch-cell full'; title = 'ch.'+ch+' (満員)';}
+    else if(moveFailedSet.has(ch)){cls = 'ch-cell move-failed'; title = 'ch.'+ch+' (移動失敗)';}
     else if(doneSet.has(ch)){cls = 'ch-cell done'; title = 'ch.'+ch+' (完了)';}
     if(_detectedChannels.has(ch)){cls += ' detected'; title += ' \u2605検知済';}
     html += '<div class="'+cls+'" title="'+title+'">'+ch+'</div>';
@@ -3690,7 +3964,7 @@ function renderChannelMatrix(statusOpt){
   const cntEl = document.getElementById('dash-matrix-count');
   if(cntEl){
     const maxCh = chs.reduce((m,c)=>Math.max(m,c),0);
-    cntEl.textContent = (_matrixMode==='all') ? (chs.length+' / 100 ch') : (chs.length+' ch (max '+maxCh+')');
+    cntEl.textContent = (_matrixMode==='all') ? (chs.length+' / 100 ch') : (chs.length+' ch');
   }
 }
 // ── Dashboard device summary ──
@@ -4304,7 +4578,7 @@ async function patrolAllOnce(){
   const r=await fetch('/api/patrol/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json();if(!d.ok)alert('巡回開始失敗: '+(d.error||''));
 }
-async function clearFullChannels(){await fetch('/api/patrol/clear-full',{method:'POST'});}
+async function clearMoveFailedChannels(){await fetch('/api/patrol/clear-move-failed',{method:'POST'});}
 const patrolCycleStats={lastMoveStartAt:0,cycleMsHistory:[],avgCycleMs:0};
 function formatPatrolCycleDuration(ms){
 	if(!(ms>0))return '--';
@@ -4381,6 +4655,7 @@ function updatePatrolUI(running){
 async function pollPatrolStatus(){
   try{
     const d=await fetch('/api/patrol/status').then(r=>r.json());
+    _uptimePatrolling=!!d.running;
     const els=(id)=>document.getElementById(id);
     if(d.running){
 			const phaseMap = {
@@ -4434,22 +4709,22 @@ async function pollPatrolStatus(){
       ['ps-parallel','dash-ps-parallel'].forEach(id=>{const par=els(id);if(par)par.textContent='';});
       updatePatrolUI(false);
     }
-    [['ps-full','btn-clear-full'],['dash-ps-full','btn-dash-clear-full']].forEach(([fullId,clearId])=>{
-      const fullEl=els(fullId),clearBtn=els(clearId);
-      if(d.full_channels&&d.full_channels.length){
-        if(fullEl){
-          if(fullId==='dash-ps-full')fullEl.textContent='ch.'+d.full_channels.join(', ch.');
-          else fullEl.textContent='🚫 満員スキップ: Ch'+d.full_channels.join(', Ch');
+    [['ps-move-failed','btn-clear-move-failed'],['dash-ps-move-failed','btn-dash-clear-move-failed']].forEach(([failId,clearId])=>{
+      const failEl=els(failId),clearBtn=els(clearId);
+      if(d.move_failed_channels&&d.move_failed_channels.length){
+        if(failEl){
+          if(failId==='dash-ps-move-failed')failEl.textContent='ch.'+d.move_failed_channels.join(', ch.');
+          else failEl.textContent='🚫 移動失敗: Ch'+d.move_failed_channels.join(', Ch');
         }
         if(clearBtn)clearBtn.style.display='';
-      }else{if(fullEl)fullEl.textContent='';if(clearBtn)clearBtn.style.display='none';}
+      }else{if(failEl)failEl.textContent='';if(clearBtn)clearBtn.style.display='none';}
     });
-    // v2: toggle hero-bar full-channels wrapper visibility
-    { const w=els('dash-ps-full-wrap'); if(w)w.style.display=(d.full_channels&&d.full_channels.length)?'':'none'; }
+    // v2: toggle hero-bar move-failed wrapper visibility
+    { const w=els('dash-ps-move-failed-wrap'); if(w)w.style.display=(d.move_failed_channels&&d.move_failed_channels.length)?'':'none'; }
     // v2: render channel matrix using current patrol status
     if(typeof renderChannelMatrix==='function')renderChannelMatrix(d);
     const crashed=d.crashed_instances&&d.crashed_instances.length?d.crashed_instances:null;
-    const showWarn=!crashed&&d.running&&(d.consecutive_full_count||0)>=3;
+    const showWarn=!crashed&&d.running&&(d.consecutive_move_fail_count||0)>=3;
     const warnMsg=crashed?'⚠ クラッシュ判定: '+crashed.join(', ')+' (3回連続未応答)':'⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。';
     ['crash-warning','dash-crash-warning'].forEach(id=>{
       const e=els(id);if(!e)return;
@@ -4524,21 +4799,27 @@ try{
 	const saved=parseInt(localStorage.getItem(CHAT_NOTIFY_SCORE_KEY)||'',10);
 	if(Number.isFinite(saved))chatNotifyMinScore=saved;
 }catch(_){ }
-const CFG_FIELDS=[
+const CFG_FIELDS_DISCORD=[
   {k:'discord_webhook',label:'Discord Webhook URL (検知報告)',type:'text',desc:'空にするとDiscord通知無効',testBtn:true},
   {k:'discord_chat_report_webhook',label:'Discord Webhook URL (ワルチャ報告)',type:'text',desc:'チャット報告候補を別チャンネルに通知。空で無効',testBtn:true},
   {k:'chat_exclude',label:'チャット除外キーワード',type:'csv',desc:'カンマ区切り。例: いない,終わった'},
   {k:'chat_report_min_length',label:'報告候補 最小文字数',type:'number',desc:'0でデフォルト(4)。これ未満のメッセージを除外'},
   {k:'chat_report_max_length',label:'報告候補 最大文字数',type:'number',desc:'0でデフォルト(80)。これ超のメッセージを除外'},
+];
+const CFG_FIELDS_PATROL=[
   {k:'patrol_dwell_secs',label:'滞在時間 (秒)',type:'number',desc:'ch移動完了後〜次ch移動開始までの待機秒数'},
   {k:'patrol_move_timeout_secs',label:'初回マージ待ちタイムアウト (秒)',type:'number',desc:'1台目のマージを待つ最大秒数。0=無効 (適応型有効時は下限値として機能)'},
   {k:'patrol_merge_timeout_secs',label:'残りマージ待ちタイムアウト (秒)',type:'number',desc:'1台目受信後、残り台数を待つ最大秒数 (適応型有効時は下限値として機能)'},
   {k:'patrol_adaptive_timeout',label:'適応型タイムアウト',type:'bool',desc:'実ロード時間を学習してタイムアウトを自動延長。ロード中デバイスへの早期切替を防止'},
   {k:'patrol_adaptive_timeout_window',label:'適応型: 学習サンプル数',type:'number',desc:'参照する直近ロード回数（デフォルト: 10）'},
+];
+const CFG_FIELDS_GAME=[
   {k:'game_package_name',label:'ゲームパッケージ名',type:'text',desc:'クラッシュ検知・ADB起動用のパッケージ名。例: com.example.game'},
   {k:'game_launch_activity',label:'起動アクティビティ',type:'text',desc:'復帰時に使用。空のmonkeyモードで起動'},
   {k:'crash_recovery_enabled',label:'クラッシュ自動復帰',type:'bool',desc:'ゲームクラッシュ時にADBで自動再起動'},
   {k:'crash_recovery_delay_secs',label:'復帰待機時間 (秒)',type:'number',desc:'起動コマンド後、当該デバイスを反応待ちする秒数'},
+];
+const CFG_FIELDS_ADB=[
   {k:'serial_to_label',label:'シリアル→ラベル分配 (JSON)',type:'json',desc:'ADBシリアルとInstance-Nラベルの対応。例: {"127.0.0.1:5555":"Instance-1"}'},
   {k:'parallel_limit',label:'並列切替台数',type:'number',desc:'0=全台同時（ディレイ無効）'},
   {k:'parallel_group_delay_secs',label:'グループ間ディレイ (秒)',type:'number',desc:'並列台数>0のとき有効'},
@@ -4547,10 +4828,14 @@ const CFG_FIELDS=[
   {k:'mumu_tap_x',label:'タップX座標',type:'number',desc:'チャンネル入力欄のタップX'},
   {k:'mumu_tap_y',label:'タップY座標',type:'number',desc:'チャンネル入力欄のタップY'},
   {k:'mumu_pre_keycode',label:'プリキーコード',type:'text',desc:'チャンネル入力欄を開くキーコード'},
+];
+const CFG_FIELDS_MISC=[
+  {k:'gas_enable',label:'GAS連携を有効化',type:'bool',desc:'Chrome拡張からのチャンネル情報受信を受け付ける。OFFにすると /api/patrol/channels/gas を 403 で拒否'},
   {k:'gas_target_enemy',label:'GAS 対象エネミー',type:'select',options:['金ウリボ','金ナッポ'],desc:'Chrome拡張から受信するエネミー種別'},
   {k:'debug_verbose',label:'詳細デバッグログ',type:'bool',desc:'true にすると [DBG][...] プレフィックスの詳細ログを出力。不具合調査用。本番運用では false を推奨'},
   {k:'show_no_device_dialog',label:'デバイス未検出ダイアログ',type:'bool',desc:'起動時にADBデバイスが見つからない場合ダイアログを表示する'},
 ];
+const CFG_FIELDS=[...CFG_FIELDS_DISCORD,...CFG_FIELDS_PATROL,...CFG_FIELDS_GAME,...CFG_FIELDS_ADB,...CFG_FIELDS_MISC];
 let cfgData={};
 function renderConfigFields(containerId, fields){
 	const root=document.getElementById(containerId);if(!root)return;
@@ -4567,7 +4852,7 @@ function renderConfigFields(containerId, fields){
 			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><textarea id="cfg-'+f.k+'" rows="5" spellcheck="false" style="font-family:monospace;font-size:12px" placeholder="'+escHtml(f.desc||'')+'">'+escHtml(jsonStr)+'</textarea>'+noteHtml+'</div>';
 		}
 		if(f.type==='bool'){
-			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="cfg-'+f.k+'"'+(val?' checked':'')+'>'+escHtml(f.desc||'')+'</label></div>';
+			return '<div class="cfg-field cfg-field-bool"><label class="cfg-bool-label"><input type="checkbox" id="cfg-'+f.k+'"'+(val?' checked':'')+'><span>'+escHtml(f.label)+'</span></label>'+noteHtml+'</div>';
 		}
 		if(f.type==='select'){
 			const opts=(f.options||[]).map(o=>'<option value="'+escHtml(o)+'"'+(val===o?' selected':'')+'>'+escHtml(o)+'</option>').join('');
@@ -4864,7 +5149,11 @@ async function loadConfig(){
   cfgData=await fetch('/api/config').then(r=>r.json());
 	renderConfigFields('cfg-chat-form',CHAT_FILTER_FIELDS);
 	renderChatRuleManagers();
-	renderConfigFields('cfg-form',CFG_FIELDS);
+	renderConfigFields('cfg-form-discord',CFG_FIELDS_DISCORD);
+	renderConfigFields('cfg-form-patrol',CFG_FIELDS_PATROL);
+	renderConfigFields('cfg-form-game',CFG_FIELDS_GAME);
+	renderConfigFields('cfg-form-adb',CFG_FIELDS_ADB);
+	renderConfigFields('cfg-form-misc',CFG_FIELDS_MISC);
 	renderChatCandidatePanels();
 	renderConfigForm(cfgData);
 	applyChatFilterMinimizeState();
@@ -4913,24 +5202,23 @@ function renderConfigForm(cfg){
 		chk.checked=entry?entry.enabled:true;
 	});
 }
-// ── Uptime counter + current time ──
-let _startTime=parseInt(localStorage.getItem('uptimeStart')||'0')||Date.now();
-localStorage.setItem('uptimeStart',_startTime);
-function resetUptime(){_startTime=Date.now();localStorage.setItem('uptimeStart',_startTime);}
+// ── Uptime counter (巡回中だけ加算・累積保持) ──
+localStorage.removeItem('uptimeStart'); // 旧キーをクリーンアップ
+let _uptimeAccumulated=parseInt(localStorage.getItem('uptimeAccumulated')||'0')||0;
+let _uptimePatrolling=false;
+let _uptimeLastTickAt=Date.now();
+function resetUptime(){_uptimeAccumulated=0;localStorage.setItem('uptimeAccumulated','0');}
+function _fmtUptime(s){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;return (h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;}
 setInterval(()=>{
 	const now=Date.now();
-	const s=Math.floor((now-_startTime)/1000);
-	const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;
-	const el=document.getElementById('dash-uptime');
-	if(el)el.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
-	const ct=document.getElementById('dash-current-time');
-	if(ct){const d=new Date(now),hh=d.getHours(),mm=d.getMinutes(),sc=d.getSeconds();ct.textContent=(hh<10?'0':'')+hh+':'+(mm<10?'0':'')+mm+':'+(sc<10?'0':'')+sc;}
-	// Sidebar uptime
-	const sm=document.getElementById('brand-uptime-small');
-	if(sm)sm.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
-	// Sidebar current time
-	const cts=document.getElementById('brand-current-time-small');
-	if(cts){const d=new Date(now),hh=d.getHours(),mm=d.getMinutes(),sc=d.getSeconds();cts.textContent=(hh<10?'0':'')+hh+':'+(mm<10?'0':'')+mm+':'+(sc<10?'0':'')+sc;}
+	if(_uptimePatrolling){
+		_uptimeAccumulated+=Math.floor((now-_uptimeLastTickAt)/1000);
+		localStorage.setItem('uptimeAccumulated',String(_uptimeAccumulated));
+	}
+	_uptimeLastTickAt=now;
+	const txt=_fmtUptime(_uptimeAccumulated);
+	const el=document.getElementById('dash-uptime');if(el)el.textContent=txt;
+	const sm=document.getElementById('brand-uptime-small');if(sm)sm.textContent=txt;
 },1000);
 // ── Dashboard layout ──
 const DASH_PANEL_IDS=['card-dash-devices','card-dash-patrol','card-dash-gold','card-dash-chat','card-dash-report'];
@@ -5234,38 +5522,31 @@ function swapChatPanels(){
 	saveChatLayout();
 }
 function initChatLayoutEdit(){}
+function swapDashColumns(){
+  const grid=document.getElementById('dashboard-grid');if(!grid)return;
+  const left=document.getElementById('card-dash-gold');
+  const right=document.getElementById('card-dash-chat-col');
+  if(!left||!right)return;
+  const handle=document.getElementById('dash-swap-handle');
+  if(grid.children[1]===left){
+    grid.appendChild(handle);
+    grid.appendChild(left);
+  } else {
+    grid.appendChild(handle);
+    grid.appendChild(right);
+  }
+  saveDashboardLayout();
+}
 function saveDashboardLayout(){
   const grid=document.getElementById('dashboard-grid');if(!grid)return;
-  const view=document.getElementById('view-dashboard');
-  if(view && view.classList.contains('v2-dashboard'))return; // v2: layout is fixed
-  const order=[...grid.querySelectorAll(':scope > .card')].map(c=>c.id);
-  const sizes={};
-	const heights={};
-	const columns={};
-  DASH_PANEL_IDS.forEach(id=>{
-    const card=document.getElementById(id);if(!card)return;
-    const sc=DASH_SIZE_CLASSES.find(c=>card.classList.contains(c));
-    sizes[id]=sc?sc.replace('panel-size-',''):'1x1';
-		heights[id]=getPanelRows(card);
-		columns[id]=getPanelColumn(card);
-  });
-	localStorage.setItem('dashLayout',JSON.stringify({order,sizes,heights,columns}));
+  const left=document.getElementById('card-dash-gold');
+  const goldOnLeft=left&&grid.children[1]===left;
+  localStorage.setItem('dashLayoutV2',JSON.stringify({goldOnLeft}));
 }
 function loadDashboardLayout(){
-  const grid=document.getElementById('dashboard-grid');if(!grid)return;
-  // v2 dashboard: layout is fixed (hero bar + KPI strip + matrix + 2col grid + devpill row),
-  // skip restoring old saved layout (which referenced removed card-dash-patrol).
-  const view=document.getElementById('view-dashboard');
-  if(view && view.classList.contains('v2-dashboard'))return;
   try{
-    const saved=JSON.parse(localStorage.getItem('dashLayout')||'{}');
-    if(saved.sizes){Object.entries(saved.sizes).forEach(([id,size])=>applyPanelSizeInternal(id,size,false));}
-		if(saved.columns){Object.entries(saved.columns).forEach(([id,column])=>{const card=document.getElementById(id);if(card&&getPanelWidthUnits(card)===1)setPanelColumn(card,parseInt(column,10)===2?2:1);});}
-		if(saved.heights){Object.entries(saved.heights).forEach(([id,rows])=>{const card=document.getElementById(id);if(card)setPanelRows(card,parseInt(rows,10)||getPanelRows(card),false);});}
-    if(saved.order&&saved.order.length){
-      saved.order.forEach(id=>{const el=document.getElementById(id);if(el&&el.parentNode===grid)grid.appendChild(el);});
-    }
-		updateDashboardResizeHandlePositions();
+    const saved=JSON.parse(localStorage.getItem('dashLayoutV2')||'{}');
+    if(saved.goldOnLeft===false)swapDashColumns();
   }catch(e){}
 }
 function savePatrolLayout(){
@@ -5321,6 +5602,11 @@ loadPatrolLayout();
 initChatLayoutEdit();
 loadChatLayout();
 syncLayoutEditState();
+// 金履歴フィルタバーの初期 active 状態を反映
+['gold-filter-bar-dash','gold-filter-bar-patrol'].forEach(id=>{
+  const bar=document.getElementById(id);
+  if(bar) bar.querySelectorAll('.btn-gf').forEach(b=>b.classList.toggle('active',b.dataset.filter===_goldFilter));
+});
 (async function startupDeviceCheck(){
   async function fetchDevicesOnly(){
     const r=await fetch('/api/devices');const res=await r.json();

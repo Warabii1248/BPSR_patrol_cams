@@ -5,6 +5,7 @@ package mumu
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -744,6 +745,71 @@ type moveSignalMsg struct {
 }
 
 // PatrolStatus は現在の巡回状態
+// GroupAssignment はデバイスペアとそれが担当するchリストを保持する。
+type GroupAssignment struct {
+	Group         int      `json:"group"`
+	DeviceIndices []int    `json:"device_indices"`
+	Channels      []uint32 `json:"channels"`
+}
+
+// DeviceAssignments は device_assignments.json のファイル形式。
+type DeviceAssignments struct {
+	Assignments []GroupAssignment `json:"assignments"`
+}
+
+// ComputeDeviceAssignments はデバイス台数に応じてペア単位のch分担を計算する。
+// totalCh 本のチャンネルをペア数で等分する。奇数台の場合は最後の1台がアイドル。
+func ComputeDeviceAssignments(deviceCount, totalCh int) []GroupAssignment {
+	if deviceCount <= 0 || totalCh <= 0 {
+		return nil
+	}
+	allChs := make([]uint32, totalCh)
+	for i := range allChs {
+		allChs[i] = uint32(i + 1)
+	}
+	if deviceCount == 1 {
+		return []GroupAssignment{{Group: 0, DeviceIndices: []int{0}, Channels: allChs}}
+	}
+	pairs := deviceCount / 2
+	chPerGroup := totalCh / pairs
+	var assignments []GroupAssignment
+	for g := 0; g < pairs; g++ {
+		start := g * chPerGroup
+		end := start + chPerGroup
+		if g == pairs-1 {
+			end = totalCh // 最終グループは余りも含む
+		}
+		assignments = append(assignments, GroupAssignment{
+			Group:         g,
+			DeviceIndices: []int{g * 2, g*2 + 1},
+			Channels:      append([]uint32{}, allChs[start:end]...),
+		})
+	}
+	return assignments
+}
+
+// SaveDeviceAssignments は分担設定をJSONファイルに保存する。
+func SaveDeviceAssignments(file string, assignments []GroupAssignment) error {
+	data, err := json.MarshalIndent(DeviceAssignments{Assignments: assignments}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(file, data, 0644)
+}
+
+// LoadDeviceAssignments はJSONファイルから分担設定を読み込む。
+func LoadDeviceAssignments(file string) ([]GroupAssignment, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	var da DeviceAssignments
+	if err := json.Unmarshal(data, &da); err != nil {
+		return nil, err
+	}
+	return da.Assignments, nil
+}
+
 type PatrolStatus struct {
 	Running              bool     `json:"running"`
 	CurrentChannel       uint32   `json:"current_channel"`
@@ -761,8 +827,8 @@ type PatrolStatus struct {
 	LoopMode             bool     `json:"loop_mode"`              // true=ループ / false=一巡で停止
 	WaitingMove          bool     `json:"waiting_move"`           // ch移動完了待ち中
 	MoveTimeoutSecs      float64  `json:"move_timeout_secs"`      // 移動待ちタイムアウト(秒)
-	FullChannels         []uint32 `json:"full_channels"`          // 満員と判定してスキップしたch一覧
-	ConsecutiveFullCount int      `json:"consecutive_full_count"` // 連続して満員スキップしたch数（クラッシュ検知用）
+	MoveFailedChannels       []uint32 `json:"move_failed_channels"`          // 移動失敗（完了シグナルなし）でスキップしたch一覧
+	ConsecutiveMoveFailCount int      `json:"consecutive_move_fail_count"` // 連続して移動失敗スキップしたch数（クラッシュ検知用）
 	KnownInstances       []string       `json:"known_instances"`        // 認識済みUID一覧
 	CrashedInstances     []string       `json:"crashed_instances"`      // クラッシュ判定中のUID
 	DeviceStatuses       []DeviceStatus `json:"device_statuses"`        // デバイス別状態（シリアル単位）
@@ -806,6 +872,10 @@ type Patroller struct {
 
 	// serial_to_uid 永続化コールバック
 	saveSerialUIDFn func(map[string]uint64)
+
+	// deviceAssignments はデバイスペア別のch分担設定。空の場合は全デバイスが全chを巡回。
+	deviceAssignments   []GroupAssignment
+	deviceAssignmentsMu sync.RWMutex
 }
 
 // NotifyChMovePacket は ncap が [0x2E] パケットを受信したときに呼び出す。
@@ -830,6 +900,13 @@ func (p *Patroller) NotifyChMovePacket(label string) {
 // NewPatroller はPatrollerを作成する
 func NewPatroller(cfg Config) *Patroller {
 	return &Patroller{cfg: cfg}
+}
+
+// SetDeviceAssignments はデバイス分担設定を動的に更新する。次回巡回開始時から有効。
+func (p *Patroller) SetDeviceAssignments(assignments []GroupAssignment) {
+	p.deviceAssignmentsMu.Lock()
+	p.deviceAssignments = assignments
+	p.deviceAssignmentsMu.Unlock()
 }
 
 // SetOnChannelSwitch はチャンネル切替完了時に呼ばれるコールバックを設定する。
@@ -864,12 +941,12 @@ func (p *Patroller) Status() PatrolStatus {
 	return s
 }
 
-// ClearFullChannels は満員判定リストをクリアする
-func (p *Patroller) ClearFullChannels() {
+// ClearMoveFailedChannels は移動失敗リストをクリアする
+func (p *Patroller) ClearMoveFailedChannels() {
 	p.mu.Lock()
-	p.status.FullChannels = nil
+	p.status.MoveFailedChannels = nil
 	p.mu.Unlock()
-	log.Println("[MuMu] 満員チャンネルリストをクリアしました")
+	log.Println("[MuMu] 移動失敗チャンネルリストをクリアしました")
 }
 
 // recordLoadTime は全台ロード完了時間（秒）を履歴に追記する。
@@ -1489,6 +1566,35 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 	}
 	p.mu.Unlock()
 
+	// デバイス分担設定からch→許可serialセットを構築（巡回開始時に1回だけ計算）
+	p.deviceAssignmentsMu.RLock()
+	assignments := p.deviceAssignments
+	p.deviceAssignmentsMu.RUnlock()
+	var channelSerials map[uint32]map[string]bool
+	if len(assignments) > 0 && len(serials) > 0 {
+		channelSerials = make(map[uint32]map[string]bool)
+		for _, grp := range assignments {
+			var grpSerials []string
+			for _, idx := range grp.DeviceIndices {
+				if idx >= 0 && idx < len(serials) {
+					grpSerials = append(grpSerials, serials[idx])
+				}
+			}
+			if len(grpSerials) == 0 {
+				continue
+			}
+			for _, ch := range grp.Channels {
+				if channelSerials[ch] == nil {
+					channelSerials[ch] = make(map[string]bool)
+				}
+				for _, s := range grpSerials {
+					channelSerials[ch][s] = true
+				}
+			}
+		}
+		log.Printf("[MuMu] デバイス分担: %d グループ, 計 %d ch に分担設定を適用", len(assignments), len(channelSerials))
+	}
+
 	// channels.txt の初回モッドタイムを記録
 	var lastModTime time.Time
 	if channelsFile != "" {
@@ -1579,6 +1685,21 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			if len(targets) == 0 {
 				log.Println("[MuMu] 巡回: デバイスが見つかりません。巡回を停止します。手動でスキャンしてください")
 				return
+			}
+
+			// デバイス分担フィルター: 当該chに割り当てられたデバイスのみ対象にする
+			if channelSerials != nil {
+				if allowed, ok := channelSerials[ch]; ok {
+					var filtered []string
+					for _, s := range targets {
+						if allowed[s] {
+							filtered = append(filtered, s)
+						}
+					}
+					if len(filtered) > 0 {
+						targets = filtered
+					}
+				}
 			}
 
 			// シリアル→ラベルを並列解決（IPキャッシュ付き）
@@ -1674,10 +1795,10 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			}
 
 			// ── ch移動完了待ち（[0x2E]シグナル） ──
-			// ・1台目が届くまで MoveTimeout で待つ（届かなければ満員と判定）
+			// ・1台目が届くまで MoveTimeout で待つ（届かなければ移動失敗と判定）
 			// ・1台目受信後は MergeTimeout（0 なら MoveTimeout を流用）で残りを待つ
 			// ・インスタンスごとに応答を追跡し、3回連続未応答でクラッシュ判定
-			isFull := false
+			moveFailed := false
 			if currentCfg.MoveTimeout > 0 {
 				// 期待台数 = ADBデバイス数（常に固定）
 				// セッションマージによって複数デバイスが同じインスタンスへ統合される可能性があるため、
@@ -1738,8 +1859,8 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 							deadline.Stop()
 							return
 						case <-deadline.C:
-							isFull = true
-							log.Printf("[MuMu] 巡回: Ch%d 満員と判定（移動完了シグナルなし） → スキップ", ch)
+							moveFailed = true
+							log.Printf("[MuMu] 巡回: Ch%d 移動失敗（完了シグナルなし） → スキップ", ch)
 							break waitFirst
 						case msg := <-sig:
 							if msg.t.After(switchDoneAt) {
@@ -1754,7 +1875,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				}
 
 				// フェーズ2: 残りのシグナルを MergeTimeout で待つ
-				if !isFull && got < need {
+				if !moveFailed && got < need {
 					mergeDeadline := time.NewTimer(effectiveMerge)
 				waitRest:
 					for got < need {
@@ -1776,8 +1897,8 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 					mergeDeadline.Stop()
 				}
 
-				// インスタンス追跡更新（isFull の場合はスキップ: チャンネル切替未実施）
-				if !isFull {
+				// インスタンス追跡更新（moveFailed の場合はスキップ: チャンネル切替未実施）
+				if !moveFailed {
 					p.mu.Lock()
 					var newCrashed, recovered []string
 
@@ -1826,7 +1947,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				}
 
 				// 全台ロード完了時のみ実ロード時間を記録（適応型タイムアウトの学習データ）
-				if !isFull && got == need {
+				if !moveFailed && got == need {
 					p.recordLoadTime(time.Since(switchDoneAt).Seconds(), currentCfg.AdaptiveTimeoutWindow)
 				}
 
@@ -1835,27 +1956,27 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				for _, serial := range targets {
 					label := serialLabels[serial]
 					// label="" はラベル解決不能（NAT環境等）。照合できないため巡回成功なら responded とみなす。
-					responded := !isFull && (label == "" || respondedSet[label])
+					responded := !moveFailed && (label == "" || respondedSet[label])
 					adbFailed := patrolResults[serial] != nil
 					p.updateDeviceStatus(serial, label, ch, responded, loadElapsed, adbFailed)
-					// タイムアウト（isFull でなく、かつ未応答）のデバイスのみ crash check
-					if !isFull && !responded && !adbFailed {
+					// タイムアウト（moveFailed でなく、かつ未応答）のデバイスのみ crash check
+					if !moveFailed && !responded && !adbFailed {
 						go p.checkAndRecover(ctx, serial, currentCfg)
 					}
 				}
 
 				p.mu.Lock()
 				p.status.WaitingMove = false
-				if isFull {
+				if moveFailed {
 					alreadyIn := false
-					for _, fc := range p.status.FullChannels {
+					for _, fc := range p.status.MoveFailedChannels {
 						if fc == ch {
 							alreadyIn = true
 							break
 						}
 					}
 					if !alreadyIn {
-						p.status.FullChannels = append(p.status.FullChannels, ch)
+						p.status.MoveFailedChannels = append(p.status.MoveFailedChannels, ch)
 					}
 					p.status.Phase = "move_start"
 					p.status.PhaseTotalSecs = 0
