@@ -1,0 +1,34 @@
+#!/bin/sh
+# BPSR_patrol_cams pre-commit hook
+# - go vet / go build / go test を順に実行
+# - GCC (MinGW-w64) があれば -race も有効化
+# 導入: scripts/install-hooks.ps1 を 1 度実行
+
+set -e
+
+# GCC が PATH に無ければ build.ps1 と同じ候補を順に探す
+if ! command -v gcc >/dev/null 2>&1; then
+    for d in /c/TDM-GCC-64/bin /c/mingw64/bin /c/msys64/mingw64/bin /c/msys64/ucrt64/bin "/c/Program Files/Git/usr/bin"; do
+        if [ -x "$d/gcc.exe" ]; then
+            export PATH="$d:$PATH"
+            break
+        fi
+    done
+fi
+
+echo "[pre-commit] go vet ./..."
+go vet ./...
+
+echo "[pre-commit] go build ./..."
+go build ./...
+
+if command -v gcc >/dev/null 2>&1; then
+    export CGO_ENABLED=1
+    echo "[pre-commit] go test -race ./..."
+    go test -race ./...
+else
+    echo "[pre-commit] gcc not found, running 'go test' (without -race)"
+    go test ./...
+fi
+
+echo "[pre-commit] OK"

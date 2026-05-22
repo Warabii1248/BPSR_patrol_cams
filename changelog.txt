@@ -1,4 +1,51 @@
 ﻿====--------------------------------------------------------------------------------
+[No.36] 2026/05/23 -- — 開発環境改善 第2波（changelog skill / 自動test / PRテンプレ / pre-commit hook）
+
+【背景 / 原因】
+  第1波で CLAUDE.md / hooks / subagent / gui.go 分割 / テスト基盤を整備したが、運用面で
+  残っていた以下の手作業を自動化する余地が大きかった:
+    - changelog エントリ書きの No.NN 採番・日時記入を手作業
+    - Edit 直後はビルドのみで test 未実行 → 回帰を後工程まで気付けない
+    - PR チェックリストが暗黙（CLAUDE.md §6 に頼る）
+    - Claude Code を介さない手作業 git commit は何のチェックも走らない
+
+【変更内容】
+  .claude/skills/changelog.md:
+    - `/changelog <summary>` slash command を新設
+    - 既存最大 No.NN を grep で取得 → +1 採番 → §7 テンプレを冒頭挿入
+    - 引数を一行サマリに流し込み・現在時刻 (PowerShell Get-Date) を挿入
+
+  .claude/settings.json:
+    - PostToolUse Edit|Write|MultiEdit hook の build 成功時 branch に
+      `go test ./...` を続行追加（ncap/mumu/appconfig/pb/main/cmd 編集時のみ）
+    - test 失敗時は出力を additionalContext に echo
+    - permissions.allow に `go test ./...` を追加
+
+  .github/pull_request_template.md:
+    - §6 チェックリスト＋ subagent レビュー項目を可視化
+    - changelog 関連 No.NN / 影響範囲 / 動作確認セクション
+
+  scripts/git-hooks/pre-commit:
+    - go vet → go build → go test (-race if gcc available) を順実行
+    - build.ps1 と同じ GCC 候補パスを自動探索
+
+  scripts/install-hooks.ps1:
+    - `git config core.hooksPath scripts/git-hooks` で一度実行のみ
+
+【効果】
+  - changelog エントリ書きが 30秒→5秒、採番ミス防止
+  - Edit 直後に test 自動走行で回帰を即検知（PostToolUse hook）
+  - 手作業 commit 時も pre-commit hook が vet/build/test を強制
+  - PR 作成時に §6 チェックリストが GitHub 上で表示される
+
+【影響範囲】
+  - 新規: .claude/skills/changelog.md, .github/pull_request_template.md,
+    scripts/git-hooks/pre-commit, scripts/install-hooks.ps1
+  - 編集: .claude/settings.json（PostToolUse hook 拡張、permissions に go test 追加）
+  - ランタイム挙動: 影響なし（開発支援ファイルのみ）
+  - 後方互換性: 影響なし
+
+====--------------------------------------------------------------------------------
 [No.31] 2026/05/22 -- — 移動完了判定の早期発火修正（No.30 副作用対応・lineID遅延方式）
 
 【背景 / 原因】

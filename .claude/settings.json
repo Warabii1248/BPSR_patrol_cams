@@ -11,8 +11,10 @@
       "Read(//c/Users/mlwl1/.claude/plans/**)",
       "PowerShell(go build ./...)",
       "PowerShell(go vet ./...)",
+      "PowerShell(go test ./...)",
       "Bash(go build ./...)",
-      "Bash(go vet ./...)"
+      "Bash(go vet ./...)",
+      "Bash(go test ./...)"
     ]
   },
   "hooks": {
@@ -46,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "powershell -NoProfile -Command \"$inp = $input | Out-String; try { $j = $inp | ConvertFrom-Json } catch { exit 0 }; $p = $j.tool_input.file_path; if (-not $p) { exit 0 }; $p = $p -replace '\\\\','/'; if ($p -match '/(ncap|mumu|appconfig|pb)/.*\\.go$' -or $p -match '/main\\.go$' -or $p -match '/cmd/.*\\.go$') { Push-Location 'c:\\Users\\mlwl1\\Documents\\GitHub\\BPSR_patrol_cams'; $out = & go build ./... 2>&1; $code = $LASTEXITCODE; Pop-Location; if ($code -ne 0) { $ctx = \"\"go build ./... が失敗。即修正してください。`n--- 出力 ---`n\"\" + ($out -join \"\"`n\"\"); $resp = @{ hookSpecificOutput = @{ hookEventName = 'PostToolUse'; additionalContext = $ctx } } | ConvertTo-Json -Compress; Write-Output $resp } else { $ctx = \"\"[auto] go build ./... OK ($p 編集後)\"\"; $resp = @{ hookSpecificOutput = @{ hookEventName = 'PostToolUse'; additionalContext = $ctx } } | ConvertTo-Json -Compress; Write-Output $resp } }\"",
+            "command": "powershell -NoProfile -Command \"$inp = $input | Out-String; try { $j = $inp | ConvertFrom-Json } catch { exit 0 }; $p = $j.tool_input.file_path; if (-not $p) { exit 0 }; $p = $p -replace '\\\\','/'; if ($p -match '/(ncap|mumu|appconfig|pb)/.*\\.go$' -or $p -match '/main\\.go$' -or $p -match '/cmd/.*\\.go$') { Push-Location 'c:\\Users\\mlwl1\\Documents\\GitHub\\BPSR_patrol_cams'; $bout = & go build ./... 2>&1; $bcode = $LASTEXITCODE; if ($bcode -ne 0) { Pop-Location; $ctx = \"\"go build ./... が失敗。即修正してください。`n--- 出力 ---`n\"\" + ($bout -join \"\"`n\"\"); $resp = @{ hookSpecificOutput = @{ hookEventName = 'PostToolUse'; additionalContext = $ctx } } | ConvertTo-Json -Compress; Write-Output $resp } else { $tout = & go test ./... 2>&1; $tcode = $LASTEXITCODE; Pop-Location; if ($tcode -ne 0) { $ctx = \"\"go test ./... が失敗。即修正してください。`n--- 出力 ---`n\"\" + ($tout -join \"\"`n\"\"); $resp = @{ hookSpecificOutput = @{ hookEventName = 'PostToolUse'; additionalContext = $ctx } } | ConvertTo-Json -Compress; Write-Output $resp } else { $ctx = \"\"[auto] go build + go test ./... OK ($p 編集後)\"\"; $resp = @{ hookSpecificOutput = @{ hookEventName = 'PostToolUse'; additionalContext = $ctx } } | ConvertTo-Json -Compress; Write-Output $resp } } }\"",
             "shell": "powershell"
           }
         ]
