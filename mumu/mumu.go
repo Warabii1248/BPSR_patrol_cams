@@ -1137,7 +1137,7 @@ func (p *Patroller) MatchLineChange(uid uint64, lineID uint32, t time.Time) {
 	}
 
 	// 未バインド: pendingProbes から候補を探す
-	const probeWindow = 15 * time.Second
+	const probeWindow = 60 * time.Second
 	p.pendingProbesMu.Lock()
 	var matched []chPendingProbe
 	for _, probe := range p.pendingProbes {
@@ -1161,6 +1161,11 @@ func (p *Patroller) MatchLineChange(uid uint64, lineID uint32, t time.Time) {
 		}
 		if p.uidToSerial == nil {
 			p.uidToSerial = make(map[uint64]string)
+		}
+		if p.serialToUID[bindSerial] != 0 {
+			// 並走ゴルーチンが先にバインド確立済み
+			p.serialUIDMu.Unlock()
+			return
 		}
 		p.serialToUID[bindSerial] = uid
 		p.uidToSerial[uid] = bindSerial
@@ -1189,7 +1194,7 @@ func (p *Patroller) updateActualCh(serial string, lineID uint32, t time.Time) {
 	p.deviceStatusesMu.Lock()
 	defer p.deviceStatusesMu.Unlock()
 	if p.deviceStatuses == nil {
-		return
+		p.deviceStatuses = make(map[string]*DeviceStatus)
 	}
 	ds, ok := p.deviceStatuses[serial]
 	if !ok {
@@ -1236,12 +1241,11 @@ func (p *Patroller) runStaggerProbe(ctx context.Context, serials []string, chann
 	serialProbeCh := make(map[string]uint32, n)
 	var switchMu sync.Mutex
 	switchRes := make(map[string]error)
-	switchT := time.Now()
 	for i, ser := range unbound {
 		probeCh := channels[(i*step)%len(channels)]
 		serialProbeCh[ser] = probeCh
 		SwitchGroup(ctx, []string{ser}, 0, 1, probeCh, cfg, switchRes, &switchMu)
-		p.RecordPatrolMove(ser, probeCh, switchT)
+		p.RecordPatrolMove(ser, probeCh, time.Now()) // 切替完了時刻を個別に記録
 		log.Printf("[Patroller][Probe] serial=%s → Ch%d", ser, probeCh)
 	}
 
@@ -1544,8 +1548,8 @@ func (p *Patroller) Stop() {
 	log.Println("[MuMu] 巡回停止")
 }
 
-// Identify は未バインドデバイスの識別フェーズ（Stagger Probe）を明示的に実行する。
-// 巡回が実行中の場合でも呼び出せるが、巡回停止中に使用することを推奨する。
+// Identify は対象 serial の既存バインドを破棄してからデバイス識別フェーズ（Stagger Probe）を実行する。
+// 巡回停止中に使用することを推奨する。
 // serials が空の場合は ListDevices で自動取得する。
 // channels が空の場合は fmt.Errorf で即座にエラーを返す。
 func (p *Patroller) Identify(ctx context.Context, serials []string, channels []uint32) error {
@@ -1562,6 +1566,30 @@ func (p *Patroller) Identify(ctx context.Context, serials []string, channels []u
 	if len(channels) == 0 {
 		return fmt.Errorf("チャンネルリストが空です")
 	}
+
+	// 対象 serial の既存バインドを破棄して強制再識別する
+	p.serialUIDMu.Lock()
+	cleared := 0
+	for _, ser := range serials {
+		if uid, ok := p.serialToUID[ser]; ok && uid != 0 {
+			delete(p.serialToUID, ser)
+			delete(p.uidToSerial, uid)
+			cleared++
+		}
+	}
+	saveFn := p.saveSerialUIDFn
+	snapshot := make(map[string]uint64, len(p.serialToUID))
+	for k, v := range p.serialToUID {
+		snapshot[k] = v
+	}
+	p.serialUIDMu.Unlock()
+	if cleared > 0 {
+		log.Printf("[Patroller][Identify] 既存バインド %d件クリア", cleared)
+		if saveFn != nil {
+			go saveFn(snapshot)
+		}
+	}
+
 	log.Printf("[Patroller][Identify] 識別開始: %d台, %d ch", len(serials), len(channels))
 	p.runStaggerProbe(ctx, serials, channels, cfg)
 	return nil

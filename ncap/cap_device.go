@@ -1211,6 +1211,7 @@ func (cd *CapDevice) handleServerToClientFast(srcIP, dstIP, srcKey, revKey strin
 				log.Printf("[%s] fast-path: サーバー変更 [%s] → [%s]", sess.label, sess.serverIP, newServerAddr)
 				sess.serverIP = newServerAddr
 				sess.serverIPSetAt = time.Now()
+				cd.tryPortMapLineID(sess) // fast-path serverIP 確定時に portMap から ch を補完
 				sess.streams = make(map[string]*tcpSubStream)
 				cd.sessionsMu.Lock()
 				for k, v := range cd.activeConns {
@@ -1666,11 +1667,14 @@ func (cd *CapDevice) processSyncToMeDeltaInfo(sess *session, payload []byte) {
 		return
 	}
 	if info.Uuid != nil {
-		if uid := uint64(info.GetUuid()); uid != 0 && uid != sess.userUID {
-			sess.userUID = uid
-			log.Printf("[%s][0x2E] UUID=%d (UID=%d)", sess.label, uid, uid>>16)
-			debuglog.Vlogf("0x2E", "[%s] UUID変化 uid=%d UID=%d lineID=%d", sess.label, uid, uid>>16, sess.lineID)
-			cd.mergeSessionIfDuplicate(sess) // 同一キャラの既存セッションがあれば統合
+		if rawUUID := uint64(info.GetUuid()); rawUUID != 0 {
+			uid := rawUUID >> 16 // 永続ユーザーID（UID）
+			if uid != sess.userUID {
+				sess.userUID = uid
+				log.Printf("[%s][0x2E] UUID=%d (UID=%d)", sess.label, rawUUID, uid)
+				debuglog.Vlogf("0x2E", "[%s] UUID変化 uid=%d UID=%d lineID=%d", sess.label, rawUUID, uid, sess.lineID)
+				cd.mergeSessionIfDuplicate(sess) // 同一キャラの既存セッションがあれば統合
+			}
 		}
 	}
 	bd := info.GetBaseDelta()

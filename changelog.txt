@@ -1,4 +1,59 @@
 ﻿====--------------------------------------------------------------------------------
+[No.28] 2026/05/22 -- — デバイス認識 ch移動未起動バグ修正（Identify 強制再識別）
+
+【変更】
+  mumu/mumu.go:
+    - Patroller.Identify(): runStaggerProbe 呼び出し前に対象 serial の
+      serialToUID / uidToSerial エントリをクリアし snapshot 保存するよう変更。
+      これにより「🔎 デバイス認識」ボタン押下時に常に全台再識別が実行される。
+
+【原因】
+  config/config.json の serial_to_uid に保存済みの UID がある状態で起動すると、
+  LoadSerialUIDMap で serialToUID が全件埋まる。
+  runStaggerProbe は serialToUID[ser]==0 のものだけを unbound と判定するため、
+  全 serial が「既バインド」と見なされて len(unbound)<2 で即 return。
+  さらに 0x2E MatchLineChange (mumu.go:1146) も alreadyBound チェックで素通りするため
+  二重にスキップされ、ボタン押下後に ch移動が一切発火しなかった。
+  Identify に「既存バインドを無視して強制再識別する」手段が存在しなかった。
+
+====--------------------------------------------------------------------------------
+[No.27] 2026/05/22 -- — デバイス認識 ch移動未起動バグ修正（sess.userUID を UID 統一）
+
+【変更】
+  ncap/cap_device.go:
+    - processSyncToMeDeltaInfo (0x2E ハンドラ):
+      sess.userUID = uuid（raw UUID, ~2兆）→ sess.userUID = uuid>>16（UID, 永続ユーザーID）に変更。
+      ログ出力・debuglog の rawUUID 表示は維持。変数名を uid→rawUUID / uid で意図を明確化。
+
+【原因】
+  0x15 charId ハンドラは UID（小さい値）を sess.userUID に格納していたが、
+  0x2E Uuid ハンドラは raw UUID（64bit全体）を格納していた。
+  - Patroller の serialToUID／config.json serial_to_uid は UID 値で永続保存されている。
+  - 0x2E 経由で確立されたバインドは raw UUID で保存 → 再起動後に UID 値を読み込むと
+    uidToSerial[rawUUID] がヒットせず、全インスタンスが「バインド済み」でも
+    「matched 0 pending probes」が連発するという不整合が生じていた。
+  - No.26 で MatchLineChange の二重バインド修正 → config 永続化が安定化 →
+    次回起動時に stale UID 値が読み込まれ runStaggerProbe (mumu/mumu.go:1230) の
+    len(unbound)<2 早期 return が発動 → ボタン押下後に ch移動が起きなくなった。
+
+====--------------------------------------------------------------------------------
+[No.26] 2026/05/21 23:30 — Stagger Probe ロード完了待ち修正・Bind重複防止
+
+【変更】
+  mumu/mumu.go:
+    - updateActualCh(): deviceStatuses が nil の場合に early return していたバグを修正。
+      識別フェーズ中は deviceStatuses が未初期化のため、バインド後も CurrentCh が 0 のままとなり
+      「ロード完了待ち: 0/5台」が終始 0 だった。nil の場合は make して処理継続するよう変更。
+    - MatchLineChange(): WriteLock 内でバインド済み二重チェックを追加。
+      onLineIDObserved が go で複数ゴルーチン起動 → 同一 uid で並走 → 30+ 回 Bind ログ出力 +
+      saveFn 同時多発 → config.json を同時読み書きして "unexpected end of JSON input" が発生していた。
+      WriteLoock 取得後に serialToUID[bindSerial] != 0 なら早期 return するよう変更。
+
+【原因】
+  (1) updateActualCh: deviceStatuses nil ガードが return だったため、識別フェーズ中は CurrentCh 未更新
+  (2) MatchLineChange: RLock で未バインド確認後、並走ゴルーチン全員が WriteLock に進んで重複バインド
+
+====--------------------------------------------------------------------------------
 [No.25] 2026/05/21 22:30 — 複数インスタンス チャット接続割当修正（NAT 環境 claimSessionForChat）
 
 【変更】
@@ -45,11 +100,21 @@
   - ncap/cap_device.go: processSyncContainerData において sd==nil（ゲームバージョンアップ後）の
     早期リターン前に、portMap 補完済みの sess.lineID が取れている場合は onLineIDObserved を発火する
     ようにした。これにより Stagger Probe の serial↔UID バインドが正常に確立されるようになった。
+  - ncap/cap_device.go: handleServerToClientFast の serverIP 更新時に tryPortMapLineID を追加。
+    fast-path 経由で新規作成されたセッションは handleClientToServer を通らないため
+    tryPortMapLineID が呼ばれず sess.lineID が 0 のままだったのを修正。
+  - mumu/mumu.go: runStaggerProbe の RecordPatrolMove を switchT（ループ開始時刻）→ time.Now()
+    （各シリアルの切替完了時刻）に変更。probeWindow を 15s → 60s に拡大。
+    5台を順番に切替すると最後のデバイスは switchT から 30s 以上後に 0x15 が到着し
+    probeWindow を超過してマッチ 0 になっていた。
 
 【原因】
   ゲームのバージョンアップで 0x15(VData) に SceneData が含まれなくなり sd==nil で即リターン。
-  tryPortMapLineID は serverIP 設定時に呼ばれ sess.lineID は解決済みだったが、
-  onLineIDObserved が呼ばれず MatchLineChange が発火しないためバインドが 0/N台のまま停止。
+  tryPortMapLineID は serverIP 設定時に呼ばれるが、fast-path（S→C方向）経由でセッションが
+  作成される場合は handleClientToServer を通らないため tryPortMapLineID が一切呼ばれず
+  sess.lineID が 0 のまま → onLineIDObserved が発火せずバインドが 0/N台のまま停止。
+  加えて probeWindow=15s がシリアル切替の直列実行時間（5台×6s=30s）より短く、
+  UID が正しく検出されても pendingProbes とのマッチが失敗していた。
 
 ====--------------------------------------------------------------------------------
 [No.22] 2026/05/21 -- — データ管理ページ：記憶済みデバイス情報表示・セクション折りたたみ追加
