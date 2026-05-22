@@ -132,6 +132,8 @@ func main() {
 	}
 
 	guiServer := gui.NewWithOptions(cfg.GUIPort, mumu.Config{}, nil, "", gui.Options{PatrolEnabled: false})
+	guiServer.SetGASEnable(cfg.GASEnable)
+	guiServer.SetGASTargetEnemy(cfg.GASTargetEnemy)
 	log.SetOutput(guiServer.LogWriter(log.Writer()))
 
 	onDetect := func(det notifier.Detection) {
@@ -267,6 +269,7 @@ func main() {
 				capDevice.SetSceneMapIds(c.SceneMapIds)
 			}
 			guiServer.SetGASTargetEnemy(c.GASTargetEnemy)
+			guiServer.SetGASEnable(c.GASEnable)
 			return nil
 		},
 	)

@@ -187,3 +187,30 @@ func Vlogf(tag, format string, args ...interface{}) {
 	}
 	log.Printf("[DBG]["+tag+"] "+format, args...)
 }
+
+var (
+	vlogDedupMu   sync.Mutex
+	vlogLastEmit  = map[string]time.Time{}
+	vlogLastValue = map[string]string{}
+)
+
+// VlogfDedup は同一 key で同一メッセージの連続出力を抑制する。
+// 値が変わった場合、または minInterval 経過後は出力する。
+func VlogfDedup(tag, key string, minInterval time.Duration, format string, args ...interface{}) {
+	if !Verbose {
+		return
+	}
+	msg := fmt.Sprintf(format, args...)
+	now := time.Now()
+	vlogDedupMu.Lock()
+	last := vlogLastEmit[key]
+	lastVal := vlogLastValue[key]
+	if lastVal == msg && now.Sub(last) < minInterval {
+		vlogDedupMu.Unlock()
+		return
+	}
+	vlogLastEmit[key] = now
+	vlogLastValue[key] = msg
+	vlogDedupMu.Unlock()
+	log.Printf("[DBG]["+tag+"] "+format, args...)
+}
