@@ -95,6 +95,7 @@ type session struct {
 	serverIPSetAt   time.Time // serverIP が最後に変更された時刻
 	serverConfirmed bool      // 0x15/IDENT-P3 でサーバー確定済み
 	confirmedAt     time.Time // serverConfirmed が true になった時刻（チャット紐付けの優先度に使用）
+	lineIDChangedAt time.Time // lineID が最後に変化した時刻（probe 時刻との比較用）
 
 	// TCP 再組み立て（サーバーアドレスごとに独立）
 	streams map[string]*tcpSubStream // key = "ip:port"
@@ -195,8 +196,9 @@ type CapDevice struct {
 	// チャット通知コールバック（GUI へのリアルタイム配信用）
 	chatNotifyFn func(clientIP, label string, userUID uint64, sender, message string, channel uint32, hasCh bool)
 
-	// LineID 観測コールバック（per-device CH 追跡用）userUID と実 CH を Patroller に通知する
-	onLineIDObserved func(uid uint64, lineID uint32, t time.Time)
+	// LineID 観測コールバック（per-device CH 追跡用）userUID と実 CH を Patroller に通知する。
+	// changedAt は session 内で lineID が変化した時刻（probe 時刻との比較に使用）。
+	onLineIDObserved func(uid uint64, lineID uint32, changedAt time.Time)
 
 	// チャンネルデバッグモード
 	// --ch-debug で有効: 全methodIdとシーン変更パケットをログ出力する
@@ -245,9 +247,10 @@ func (cd *CapDevice) SetChatNotifier(fn func(clientIP, label string, userUID uin
 	cd.chatNotifyFn = fn
 }
 
-// SetLineIDObserver は 0x15/0x16 で LineID が確定したときに呼ばれるコールバックを設定する。
+// SetLineIDObserver は 0x15/0x16 で LineID が変化したときに呼ばれるコールバックを設定する。
 // uid はプレイヤー固有ID (CharId)、lineID はゲーム内の実チャンネル番号。
-func (cd *CapDevice) SetLineIDObserver(fn func(uid uint64, lineID uint32, t time.Time)) {
+// changedAt は session 内で lineID が変化した時刻（probe 時刻との比較に使用）。
+func (cd *CapDevice) SetLineIDObserver(fn func(uid uint64, lineID uint32, changedAt time.Time)) {
 	cd.onLineIDObserved = fn
 }
 
@@ -1514,8 +1517,10 @@ func (cd *CapDevice) processSyncContainerData(sess *session, payload []byte) {
 	}
 
 	// charId は VData.field2 (本来の CharSerialize) の field1 に入っている
+	uidNewlySet := false
 	if cid := uint64(vdata.GetCharId()); cid > 0 && sess.userUID != cid {
 		sess.userUID = cid
+		uidNewlySet = true
 		log.Printf("[%s][0x15] charId=%d", sess.label, cid)
 		cd.mergeSessionIfDuplicate(sess)
 	}
@@ -1528,8 +1533,13 @@ func (cd *CapDevice) processSyncContainerData(sess *session, payload []byte) {
 
 	sd := vdata.GetSceneData()
 	if sd == nil {
-		if cd.onLineIDObserved != nil && sess.userUID != 0 && sess.lineID != 0 {
-			go cd.onLineIDObserved(sess.userUID, sess.lineID, time.Now())
+		// SceneData なし。userUID が新規確定し lineID が portMap で既知なら発火（probe バインド用）。
+		if uidNewlySet && sess.userUID != 0 && sess.lineID != 0 && cd.onLineIDObserved != nil {
+			now := time.Now()
+			if sess.lineIDChangedAt.IsZero() {
+				sess.lineIDChangedAt = now
+			}
+			go cd.onLineIDObserved(sess.userUID, sess.lineID, now)
 		}
 		return
 	}
@@ -1565,8 +1575,15 @@ func (cd *CapDevice) processSyncContainerData(sess *session, payload []byte) {
 		sess.confirmedAt = time.Now() // 最初の0x15確定時のみ記録（チャット紐付けの優先度用）
 	}
 	cd.tryPortMapLineID(sess) // lineID=0 のとき portMap から補完
-	if cd.onLineIDObserved != nil && sess.userUID != 0 {
-		go cd.onLineIDObserved(sess.userUID, lineID, time.Now())
+	// 発火条件: lineID 変化、または userUID 新規確定（どちらも「新情報あり」を意味する）
+	if (oldCh != lineID || uidNewlySet) && sess.userUID != 0 && cd.onLineIDObserved != nil {
+		now := time.Now()
+		if oldCh != lineID {
+			sess.lineIDChangedAt = now
+		} else if sess.lineIDChangedAt.IsZero() {
+			sess.lineIDChangedAt = now
+		}
+		go cd.onLineIDObserved(sess.userUID, lineID, now)
 	}
 
 	if oldCh == 0 {

@@ -104,6 +104,10 @@ type Config struct {
 	// 0=PatrolMoveTimeoutSecsと同じ従来動作。デフォルト: 15
 	PatrolMergeTimeoutSecs float64 `json:"patrol_merge_timeout_secs"`
 
+	// PatrolLoadStabilizationSecs は lineID-change 着信からゲーム内ロード完了までの
+	// 安定化遅延（秒）。0 の場合はデフォルト 6s を使用する。
+	PatrolLoadStabilizationSecs float64 `json:"patrol_load_stabilization_secs"`
+
 	// ParallelLimit は同時切替の最大台数。0=無制限（グループディレイも無効）。
 	ParallelLimit int `json:"parallel_limit"`
 
@@ -135,6 +139,10 @@ type Config struct {
 	// SerialToUID は Probe-and-Match で自動確立した ADB シリアル→userUID のバインドマップ。
 	// 起動時に読み込まれ、バインド成立のたびに書き戻される。手動編集も可。
 	SerialToUID map[string]uint64 `json:"serial_to_uid,omitempty"`
+
+	// ExcludeUIDs はバインド候補から永久除外する UID リスト。
+	// 同 PC の本物クライアントや他プレイヤーの UID を登録しておくことで誤バインドを防ぐ。
+	ExcludeUIDs []uint64 `json:"exclude_uids,omitempty"`
 
 	// GamePackageName はゲームのAndroidパッケージ名（空=クラッシュ検知・復帰無効）。
 	// adb shell pidof <package> でプロセス生死を確認する。
@@ -192,8 +200,9 @@ func defaultConfig() *Config {
 		PatrolChannelsFile:       "config/channels.txt",
 		PortMapFile:              "config/port_ch_map.json",
 		PatrolDwellSecs:          10,
-		PatrolMoveTimeoutSecs:    30,
-		PatrolMergeTimeoutSecs:   15,
+		PatrolMoveTimeoutSecs:        30,
+		PatrolMergeTimeoutSecs:       15,
+		PatrolLoadStabilizationSecs:  6,
 		ActiveDeviceCount:        0,
 		MoveFailThreshold:            0.0, // 0=従来通り全台
 		ConsecutiveMoveFailThreshold: 3,   // 3連続移動失敗でクラッシュ判定
@@ -348,35 +357,50 @@ func LoadWindowState(path string) (*WindowState, error) {
 	return cfg.WindowState, nil
 }
 
-// SaveWindowState updates only window_state in config.json without touching filter.json.
+// SaveWindowState updates only window_state in config.json without touching other fields.
+// JSON マップとして部分編集することで、bool フィールドのデフォルト値が暗黙的に
+// 上書きされる問題（zero-value Config を base にした全フィールド書き戻し）を回避する。
 func SaveWindowState(path string, ws *WindowState) error {
-	var cfg Config
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			cfg = *defaultConfig()
-		} else {
+		if !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
-	} else {
-		if err := json.Unmarshal(data, &cfg); err != nil {
+		// 新規ファイル: defaultConfig からフル生成
+		cfg := defaultConfig()
+		cfg.WindowState = ws
+		cfg.ChatExclude = nil
+		cfg.ChatReportSenders = nil
+		cfg.ChatReportExcludedSenders = nil
+		cfg.ChatReportLocationRules = nil
+		cfg.ChatReportMonsterAliasRules = nil
+		cfg.ChatReportMinLength = 0
+		cfg.ChatReportMaxLength = 0
+		out, mErr := json.MarshalIndent(cfg, "", "  ")
+		if mErr != nil {
+			return mErr
+		}
+		if err := ensureParentDir(path); err != nil {
 			return err
 		}
+		return os.WriteFile(path, out, 0644)
 	}
-	cfg.WindowState = ws
-	cfg.ChatExclude = nil
-	cfg.ChatReportSenders = nil
-	cfg.ChatReportExcludedSenders = nil
-	cfg.ChatReportLocationRules = nil
-	cfg.ChatReportMonsterAliasRules = nil
-	cfg.ChatReportMinLength = 0
-	cfg.ChatReportMaxLength = 0
-	data, err = json.MarshalIndent(cfg, "", "  ")
+	// 既存ファイル: window_state キーのみ差し替え、他フィールドは原文のまま保持
+	raw := map[string]json.RawMessage{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	wsBytes, err := json.Marshal(ws)
+	if err != nil {
+		return err
+	}
+	raw["window_state"] = wsBytes
+	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err
 	}
 	if err := ensureParentDir(path); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, out, 0644)
 }

@@ -35,10 +35,13 @@ type Config struct {
 	ParallelLimit int
 	// ParallelGroupDelay はグループ間の待機時間。ParallelLimit>0のとき有効。
 	ParallelGroupDelay time.Duration
-	// MoveTimeout は1台目の[0x2E]パケットを待つ最大時間。0=無効（ADB完了即dwell開始）
+	// MoveTimeout は1台目の完了シグナルを待つ最大時間。0=無効（ADB完了即dwell開始）
 	MoveTimeout time.Duration
 	// MergeTimeout は1台目受信後、残り台数を待つ最大時間。0=MoveTimeoutと同じ従来動作
 	MergeTimeout time.Duration
+	// LoadStabilizationDuration は lineID-change 着信から完了シグナル発火までの遅延。
+	// 0 の場合はデフォルト 6s を使用する。
+	LoadStabilizationDuration time.Duration
 	// DwellDuration はch移動完了後〜次ch移動開始までの待機時間
 	DwellDuration time.Duration
 	// AdaptiveTimeout は実ロード時間を学習して MoveTimeout/MergeTimeout を自動調整する
@@ -873,8 +876,13 @@ type Patroller struct {
 	// serial_to_uid 永続化コールバック
 	saveSerialUIDFn func(map[string]uint64)
 
+	// excludeUIDs はバインド候補から除外する UID セット（誤バインド防止）
+	excludeUIDs   map[uint64]bool
+	excludeUIDsMu sync.RWMutex
+
 	// serial_to_label 自動確立マップと永続化コールバック
 	serialToLabel    map[string]string
+	labelToSerial    map[string]string // Instance label → serial（serialToLabel の逆引き）
 	serialLabelMu    sync.RWMutex
 	saveSerialLabelFn func(map[string]string)
 
@@ -883,10 +891,40 @@ type Patroller struct {
 	deviceAssignmentsMu sync.RWMutex
 }
 
-// NotifyChMovePacket は ncap が [0x2E] パケットを受信したときに呼び出す。
-// label は UID 文字列（固定ユーザーID）。空文字列の場合は無視する。巡回中でない場合は何もしない。
-func (p *Patroller) NotifyChMovePacket(label string) {
-	if label == "" {
+// NotifyChMovePacket は guiWriter が "[0x2E] UUID=" ログ行を検出したときに呼び出す。
+// instanceLabel は "Instance-N" 形式。既知の場合は serial に解決してから moveSignal に送る。
+// 空文字列の場合は無視する。巡回中でない場合は何もしない。
+func (p *Patroller) NotifyChMovePacket(instanceLabel string) {
+	if instanceLabel == "" {
+		return
+	}
+	// Instance label → serial に解決（未解決時は instanceLabel をそのまま使用）
+	serial := instanceLabel
+	p.serialLabelMu.RLock()
+	if p.labelToSerial != nil {
+		if s := p.labelToSerial[instanceLabel]; s != "" {
+			serial = s
+		}
+	}
+	p.serialLabelMu.RUnlock()
+	p.notifyMoveSignal(serial, time.Now())
+}
+
+// loadStabilizationDelay は lineID-change 着信から完了シグナルを発火するまでの遅延を返す。
+func (p *Patroller) loadStabilizationDelay() time.Duration {
+	p.mu.RLock()
+	d := p.cfg.LoadStabilizationDuration
+	p.mu.RUnlock()
+	if d > 0 {
+		return d
+	}
+	return 6 * time.Second
+}
+
+// notifyMoveSignal は serial を label として moveSignal チャネルに t 付きで送信する。
+// 巡回中でない場合・バッファ満杯の場合は何もしない（ブロックしない）。
+func (p *Patroller) notifyMoveSignal(serial string, t time.Time) {
+	if serial == "" {
 		return
 	}
 	p.mu.RLock()
@@ -897,7 +935,7 @@ func (p *Patroller) NotifyChMovePacket(label string) {
 		return
 	}
 	select {
-	case ch <- moveSignalMsg{t: time.Now(), label: label}:
+	case ch <- moveSignalMsg{t: t, label: serial}:
 	default: // バッファ満杯なら捨てる（ブロックしない）
 	}
 }
@@ -1030,6 +1068,37 @@ func (p *Patroller) HasBinding() bool {
 	return len(p.serialToUID) > 0
 }
 
+// DeleteSerialUIDBinding は serial に紐付いた UID バインドを削除し config.json に書き戻す。
+func (p *Patroller) DeleteSerialUIDBinding(serial string) {
+	p.serialUIDMu.Lock()
+	uid := p.serialToUID[serial]
+	delete(p.serialToUID, serial)
+	if uid != 0 {
+		delete(p.uidToSerial, uid)
+	}
+	saveFn := p.saveSerialUIDFn
+	snapshot := make(map[string]uint64, len(p.serialToUID))
+	for k, v := range p.serialToUID {
+		snapshot[k] = v
+	}
+	p.serialUIDMu.Unlock()
+	log.Printf("[Patroller] serial_to_uid 削除: serial=%s uid=%d", serial, uid)
+	if saveFn != nil {
+		go saveFn(snapshot)
+	}
+}
+
+// SetExcludeUIDs はバインド候補から除外する UID リストを設定する。
+// MatchLineChange の冒頭で該当 uid を弾き、誤バインドを防ぐ。
+func (p *Patroller) SetExcludeUIDs(uids []uint64) {
+	p.excludeUIDsMu.Lock()
+	defer p.excludeUIDsMu.Unlock()
+	p.excludeUIDs = make(map[uint64]bool, len(uids))
+	for _, uid := range uids {
+		p.excludeUIDs[uid] = true
+	}
+}
+
 // LoadSerialUIDMap は config.json から読み込んだ serial_to_uid マップを初期設定する。
 func (p *Patroller) LoadSerialUIDMap(m map[string]uint64) {
 	if len(m) == 0 {
@@ -1067,8 +1136,14 @@ func (p *Patroller) LoadSerialLabelMap(m map[string]string) {
 	if p.serialToLabel == nil {
 		p.serialToLabel = make(map[string]string)
 	}
+	if p.labelToSerial == nil {
+		p.labelToSerial = make(map[string]string)
+	}
 	for serial, label := range m {
 		p.serialToLabel[serial] = label
+		if label != "" {
+			p.labelToSerial[label] = serial
+		}
 	}
 	log.Printf("[Patroller] serial_to_label: %d 件ロード済み", len(m))
 }
@@ -1119,29 +1194,50 @@ func (p *Patroller) RecordPatrolMove(serial string, targetCh uint32, t time.Time
 }
 
 // MatchLineChange は ncap が 0x15/0x16 で (uid, lineID) を観測したときに呼ばれる。
+// changedAt はセッション内で lineID が変化した時刻（probe 時刻との比較に使用）。
 // 未バインドの uid は pendingProbes と突合し、候補が 1 件なら serial↔UID バインドを確立する。
 // バインド済みの uid は ActualCh を更新しミスマッチを検出する。
-func (p *Patroller) MatchLineChange(uid uint64, lineID uint32, t time.Time) {
+func (p *Patroller) MatchLineChange(uid uint64, lineID uint32, changedAt time.Time) {
 	if uid == 0 || lineID == 0 {
 		return
 	}
+
+	// 除外 UID チェック（誤バインド防止）
+	p.excludeUIDsMu.RLock()
+	excluded := p.excludeUIDs[uid]
+	p.excludeUIDsMu.RUnlock()
+	if excluded {
+		debuglog.VlogfDedup("Probe", fmt.Sprintf("exclude:%d", uid), 30*time.Second, "uid=%d は除外リストのためバインドスキップ", uid)
+		return
+	}
+
+	t := changedAt
 
 	// 既バインド: ActualCh 更新
 	p.serialUIDMu.RLock()
 	serial := p.uidToSerial[uid]
 	p.serialUIDMu.RUnlock()
 	if serial != "" {
-		debuglog.Vlogf("0x2E", "既バインド: serial=%s lineID=%d", serial, lineID)
+		debuglog.VlogfDedup("0x2E", "bind:"+serial, 5*time.Second, "既バインド: serial=%s lineID=%d", serial, lineID)
 		p.updateActualCh(serial, lineID, t)
+		// ロード安定化遅延後に完了シグナルを発火
+		delay := p.loadStabilizationDelay()
+		go func(s string, fireAt time.Time) {
+			time.Sleep(time.Until(fireAt))
+			p.notifyMoveSignal(s, fireAt)
+		}(serial, t.Add(delay))
 		return
 	}
 
 	// 未バインド: pendingProbes から候補を探す
 	const probeWindow = 60 * time.Second
+	// changedAt が probe.sentAt より 2 秒超前（ADB コマンド発行前に変化済み）なら弾く
+	const probeEpsilon = 2 * time.Second
 	p.pendingProbesMu.Lock()
 	var matched []chPendingProbe
 	for _, probe := range p.pendingProbes {
-		if probe.targetCh == lineID && t.Sub(probe.sentAt) <= probeWindow {
+		if probe.targetCh == lineID && t.Sub(probe.sentAt) <= probeWindow &&
+			!changedAt.Before(probe.sentAt.Add(-probeEpsilon)) {
 			p.serialUIDMu.RLock()
 			alreadyBound := p.serialToUID[probe.serial] != 0
 			p.serialUIDMu.RUnlock()
@@ -1152,7 +1248,7 @@ func (p *Patroller) MatchLineChange(uid uint64, lineID uint32, t time.Time) {
 	}
 	p.pendingProbesMu.Unlock()
 
-	debuglog.Vlogf("Probe", "uid=%d lineID=%d: matched %d pending probes", uid, lineID, len(matched))
+	debuglog.VlogfDedup("Probe", fmt.Sprintf("probe:%d", uid), 5*time.Second, "uid=%d lineID=%d: matched %d pending probes", uid, lineID, len(matched))
 	if len(matched) == 1 {
 		bindSerial := matched[0].serial
 		p.serialUIDMu.Lock()
@@ -1178,6 +1274,12 @@ func (p *Patroller) MatchLineChange(uid uint64, lineID uint32, t time.Time) {
 		log.Printf("[Patroller][Bind] serial=%s ↔ uid=%d (targetCh=%d, lineID=%d)",
 			bindSerial, uid, matched[0].targetCh, lineID)
 		p.updateActualCh(bindSerial, lineID, t)
+		// ロード安定化遅延後に完了シグナルを発火
+		delay := p.loadStabilizationDelay()
+		go func(s string, fireAt time.Time) {
+			time.Sleep(time.Until(fireAt))
+			p.notifyMoveSignal(s, fireAt)
+		}(bindSerial, t.Add(delay))
 		if saveFn != nil {
 			go saveFn(snapshot)
 		}
@@ -1185,8 +1287,8 @@ func (p *Patroller) MatchLineChange(uid uint64, lineID uint32, t time.Time) {
 }
 
 // NotifyLineIDChange は巡回状態に関係なく uid→lineID 観測を常時処理する。
-func (p *Patroller) NotifyLineIDChange(uid uint64, lineID uint32, t time.Time) {
-	p.MatchLineChange(uid, lineID, t)
+func (p *Patroller) NotifyLineIDChange(uid uint64, lineID uint32, changedAt time.Time) {
+	p.MatchLineChange(uid, lineID, changedAt)
 }
 
 // updateActualCh はバインド済み serial の ActualCh を更新しミスマッチを検出する。
@@ -1244,9 +1346,12 @@ func (p *Patroller) runStaggerProbe(ctx context.Context, serials []string, chann
 	for i, ser := range unbound {
 		probeCh := channels[(i*step)%len(channels)]
 		serialProbeCh[ser] = probeCh
-		SwitchGroup(ctx, []string{ser}, 0, 1, probeCh, cfg, switchRes, &switchMu)
-		p.RecordPatrolMove(ser, probeCh, time.Now()) // 切替完了時刻を個別に記録
+		// ADB switch_channel 完了（~8s）より先にサーバーが新 TCP セッションを開いて
+		// 0x15 (uid+lineID) を送信してくる。SwitchGroup 後に RecordPatrolMove を呼ぶと
+		// pendingProbes が空のまま observation が来てバインド失敗するため、先に登録する。
+		p.RecordPatrolMove(ser, probeCh, time.Now())
 		log.Printf("[Patroller][Probe] serial=%s → Ch%d", ser, probeCh)
+		SwitchGroup(ctx, []string{ser}, 0, 1, probeCh, cfg, switchRes, &switchMu)
 	}
 
 	// 全台が probeCh にロード完了するまで待つ。
@@ -1342,8 +1447,12 @@ func (p *Patroller) resolveLabel(ctx context.Context, serial string, cfg Config)
 	if p.serialToLabel == nil {
 		p.serialToLabel = make(map[string]string)
 	}
+	if p.labelToSerial == nil {
+		p.labelToSerial = make(map[string]string)
+	}
 	if p.serialToLabel[serial] == "" {
 		p.serialToLabel[serial] = label
+		p.labelToSerial[label] = serial
 		snapshot := make(map[string]string, len(p.serialToLabel))
 		for k, v := range p.serialToLabel {
 			snapshot[k] = v
@@ -1838,6 +1947,22 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				}
 			}
 
+			// 既に目的 ch にいるデバイスはスイッチ不要: targets から除外
+			var switchTargets []string
+			p.deviceStatusesMu.RLock()
+			for _, s := range targets {
+				if ds, ok := p.deviceStatuses[s]; ok && ds.CurrentCh == ch {
+					// already there
+				} else {
+					switchTargets = append(switchTargets, s)
+				}
+			}
+			p.deviceStatusesMu.RUnlock()
+			skippedCount := len(targets) - len(switchTargets)
+			if skippedCount > 0 {
+				log.Printf("[MuMu] 巡回: Ch%d 既到達スキップ %d台", ch, skippedCount)
+			}
+
 			// シリアル→ラベルを並列解決（IPキャッシュ付き）
 			serialLabels := make(map[string]string, len(targets))
 			if currentCfg.GetLabelByIP != nil || currentCfg.SerialToLabel != nil {
@@ -1870,26 +1995,26 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			p.status.LastChannel = ch
 			p.mu.Unlock()
 
-			limit := ParallelLimit(currentCfg, len(targets))
+			limit := ParallelLimit(currentCfg, len(switchTargets))
 			// ParallelLimit=0（無制限）のとき グループ間ディレイは無効
 			groupDelay := currentCfg.ParallelGroupDelay
 			if currentCfg.ParallelLimit <= 0 {
 				groupDelay = 0
 			}
 			log.Printf("[MuMu] 巡回: [%d/%d] Ch%d → %d台 (ParallelLimit=%d, グループ=%d台, ディレイ=%.1fs, 滞在=%.0fs)",
-				normalIdx+1, n, ch, len(targets), currentCfg.ParallelLimit, limit,
+				normalIdx+1, n, ch, len(switchTargets), currentCfg.ParallelLimit, limit,
 				groupDelay.Seconds(), dwell.Seconds())
 
 			// 切替開始時刻を記録（この時刻以降に届いた[0x2E]のみ有効）
 			switchStartAt := time.Now()
 
 			// デバイスをグループに分けて並列切替
-			patrolResults := make(map[string]error, len(targets))
+			patrolResults := make(map[string]error, len(switchTargets))
 			var patrolMu sync.Mutex
-			for start := 0; start < len(targets); start += limit {
+			for start := 0; start < len(switchTargets); start += limit {
 				end := start + limit
-				if end > len(targets) {
-					end = len(targets)
+				if end > len(switchTargets) {
+					end = len(switchTargets)
 				}
 				if start > 0 && groupDelay > 0 {
 					log.Printf("[MuMu] 巡回: グループ間ディレイ %.1fs 待機中... (グループ%d)", groupDelay.Seconds(), start/limit+1)
@@ -1899,7 +2024,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 					case <-time.After(groupDelay):
 					}
 				}
-				SwitchGroup(ctx, targets, start, end, ch, currentCfg, patrolResults, &patrolMu)
+				SwitchGroup(ctx, switchTargets, start, end, ch, currentCfg, patrolResults, &patrolMu)
 			}
 			// 全台切替完了時刻を記録（この時刻以降の[0x2E]のみカウント）
 			switchDoneAt := time.Now()
@@ -1936,10 +2061,10 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			// ・インスタンスごとに応答を追跡し、3回連続未応答でクラッシュ判定
 			moveFailed := false
 			if currentCfg.MoveTimeout > 0 {
-				// 期待台数 = ADBデバイス数（常に固定）
+				// 期待台数 = スイッチ実行台数（既到達スキップ分は除く）
 				// セッションマージによって複数デバイスが同じインスタンスへ統合される可能性があるため、
 				// knownInstances数ではなくADB上の実デバイス数を期待値とする。
-				need := len(targets)
+				need := len(switchTargets)
 
 				got := 0
 				respondedSet := make(map[string]bool)
@@ -1974,7 +2099,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				for draining && got < need {
 					select {
 					case msg := <-sig:
-						if msg.t.After(switchDoneAt) {
+						if msg.t.After(switchStartAt) {
 							got++
 							respondedSet[msg.label] = true
 							log.Printf("[MuMu] 巡回: Ch%d [0x2E] buffered %s (%d/%d台)", ch, msg.label, got, need)
@@ -1986,7 +2111,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				}
 
 				// フェーズ1: 1台目のシグナルを MoveTimeout で待つ（バッファ消化で0台のとき）
-				if got == 0 {
+				if got == 0 && need > 0 {
 					deadline := time.NewTimer(effectiveMove)
 				waitFirst:
 					for got == 0 {
@@ -1999,7 +2124,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 							log.Printf("[MuMu] 巡回: Ch%d 移動失敗（完了シグナルなし） → スキップ", ch)
 							break waitFirst
 						case msg := <-sig:
-							if msg.t.After(switchDoneAt) {
+							if msg.t.After(switchStartAt) {
 								got++
 								respondedSet[msg.label] = true
 								log.Printf("[MuMu] 巡回: Ch%d [0x2E] %s (%d/%d台) ← マージタイマー開始 (%.0fs)",
@@ -2023,7 +2148,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 							log.Printf("[MuMu] 巡回: Ch%d 移動待ちタイムアウト (%d/%d台) → 強制進行", ch, got, need)
 							break waitRest
 						case msg := <-sig:
-							if msg.t.After(switchDoneAt) {
+							if msg.t.After(switchStartAt) {
 								got++
 								respondedSet[msg.label] = true
 								log.Printf("[MuMu] 巡回: Ch%d [0x2E] %s (%d/%d台)", ch, msg.label, got, need)
@@ -2034,51 +2159,64 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				}
 
 				// インスタンス追跡更新（moveFailed の場合はスキップ: チャンネル切替未実施）
+				// respondedSet・knownInstances・missedCounts・crashedInstances はすべて serial をキーとする。
 				if !moveFailed {
 					p.mu.Lock()
 					var newCrashed, recovered []string
 
-					// 応答したインスタンスを登録・ミスカウントリセット
-					for label := range respondedSet {
-						p.knownInstances[label] = true
-						p.missedCounts[label] = 0
-						if p.crashedInstances[label] {
-							delete(p.crashedInstances, label)
-							recovered = append(recovered, label)
+					// 応答した serial を登録・ミスカウントリセット
+					for serial := range respondedSet {
+						p.knownInstances[serial] = true
+						p.missedCounts[serial] = 0
+						if p.crashedInstances[serial] {
+							delete(p.crashedInstances, serial)
+							recovered = append(recovered, serial)
 						}
 					}
-					// 既知インスタンスのうち未応答のものはミスカウント増加
-					for label := range p.knownInstances {
-						if !respondedSet[label] {
-							p.missedCounts[label]++
-							if p.missedCounts[label] >= 3 && !p.crashedInstances[label] {
-								p.crashedInstances[label] = true
-								newCrashed = append(newCrashed, label)
+					// 既知 serial のうち未応答のものはミスカウント増加
+					for serial := range p.knownInstances {
+						if !respondedSet[serial] {
+							p.missedCounts[serial]++
+							if p.missedCounts[serial] >= 3 && !p.crashedInstances[serial] {
+								p.crashedInstances[serial] = true
+								newCrashed = append(newCrashed, serial)
 							}
 						}
 					}
-					// PatrolStatus を更新
+					// PatrolStatus を更新（serial キーをそのまま格納）
 					crashed := make([]string, 0, len(p.crashedInstances))
-					for label := range p.crashedInstances {
-						crashed = append(crashed, label)
+					for serial := range p.crashedInstances {
+						crashed = append(crashed, serial)
 					}
 					sort.Strings(crashed)
 					known := make([]string, 0, len(p.knownInstances))
-					for label := range p.knownInstances {
-						known = append(known, label)
+					for serial := range p.knownInstances {
+						known = append(known, serial)
 					}
 					sort.Strings(known)
 					p.status.CrashedInstances = crashed
 					p.status.KnownInstances = known
 					p.mu.Unlock()
 
+					// ログ表示はラベル解決（serialLabels はループローカル変数）
+					resolveDisplay := func(serials []string) []string {
+						out := make([]string, len(serials))
+						for i, s := range serials {
+							if l := serialLabels[s]; l != "" {
+								out[i] = l
+							} else {
+								out[i] = s
+							}
+						}
+						return out
+					}
 					sort.Strings(newCrashed)
 					sort.Strings(recovered)
 					if len(newCrashed) > 0 {
-						log.Printf("[MuMu] 巡回: %v クラッシュ判定（3回連続未応答）→ 稼働台数から除外", newCrashed)
+						log.Printf("[MuMu] 巡回: %v クラッシュ判定（3回連続未応答）→ 稼働台数から除外", resolveDisplay(newCrashed))
 					}
 					if len(recovered) > 0 {
-						log.Printf("[MuMu] 巡回: %v 復旧確認 → 稼働台数に復帰", recovered)
+						log.Printf("[MuMu] 巡回: %v 復旧確認 → 稼働台数に復帰", resolveDisplay(recovered))
 					}
 				}
 
@@ -2091,8 +2229,8 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				loadElapsed := time.Since(switchDoneAt).Seconds()
 				for _, serial := range targets {
 					label := serialLabels[serial]
-					// label="" はラベル解決不能（NAT環境等）。照合できないため巡回成功なら responded とみなす。
-					responded := !moveFailed && (label == "" || respondedSet[label])
+					// respondedSet はすべて serial キー。シグナルが届けば responded=true。
+					responded := !moveFailed && respondedSet[serial]
 					adbFailed := patrolResults[serial] != nil
 					p.updateDeviceStatus(serial, label, ch, responded, loadElapsed, adbFailed)
 					// タイムアウト（moveFailed でなく、かつ未応答）のデバイスのみ crash check
@@ -2123,6 +2261,31 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 					p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
 				}
 				p.mu.Unlock()
+
+				// 発行前再確認: Phase2 終了時点で全台ロード完了でなければ追加待ち（bounded）
+				if !moveFailed && got < need {
+					extraDeadline := time.NewTimer(currentCfg.MoveTimeout)
+					log.Printf("[MuMu] 巡回: Ch%d move 終了時点 %d/%d台 → 発行前追加待ち最大 %.0fs",
+						ch, got, need, currentCfg.MoveTimeout.Seconds())
+				extraWait:
+					for got < need {
+						select {
+						case <-ctx.Done():
+							extraDeadline.Stop()
+							return
+						case <-extraDeadline.C:
+							log.Printf("[MuMu] 巡回: Ch%d 発行前追加待ちタイムアウト (%d/%d台) → 進行", ch, got, need)
+							break extraWait
+						case msg := <-sig:
+							if msg.t.After(switchStartAt) && !respondedSet[msg.label] {
+								got++
+								respondedSet[msg.label] = true
+								log.Printf("[MuMu] 巡回: Ch%d [lineID+delay] %s (%d/%d台) ← 発行前", ch, msg.label, got, need)
+							}
+						}
+					}
+					extraDeadline.Stop()
+				}
 			}
 
 			// ロード猶予: 適応型タイムアウト有効時、推定最大ロード時間に達していなければ

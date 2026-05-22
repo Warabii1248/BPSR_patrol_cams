@@ -1,4 +1,297 @@
 ﻿====--------------------------------------------------------------------------------
+[No.31] 2026/05/22 -- — 移動完了判定の早期発火修正（No.30 副作用対応・lineID遅延方式）
+
+【背景 / 原因】
+  No.30 で MatchLineChange 既バインド分岐に notifyMoveSignal を追加したことで完了シグナルは届く
+  ようになったが、新たな問題が発生した。
+
+  0x15 SyncContainerData（onLineIDObserved の主発火元）は新 ch サーバへの TCP セッション開設直後
+  （= ゲームクライアントのロード画面中）に着信する。この時点を「移動完了」とみなすと、一部端末が
+  まだロード中の状態で次の switch_channel が発行され、切替を取りこぼすデバイスが発生した。
+
+  ※初期実装では 0x2E BaseDelta playerPos（attr id==53）着信を完了シグナルにしようとしたが、
+  ch 切替時はプレイヤーエンティティが保持されるためサーバが座標更新を送らず、実機で全く発火
+  しないことが判明した（logs/log.txt 実測: 巡回中0回発火、全ch 移動失敗）。
+
+【修正内容】
+
+  lineID-change を完了シグナルに使いつつ、PatrolLoadStabilizationSecs（デフォルト 6s）だけ
+  遅延させてから notifyMoveSignal を発火する方式に変更。
+
+  (1) mumu/mumu.go
+    - Config 構造体に LoadStabilizationDuration time.Duration を追加。
+    - loadStabilizationDelay() ヘルパーを追加:
+        Config.LoadStabilizationDuration > 0 ならその値、0 なら 6s を返す。
+    - MatchLineChange の既バインド分岐: updateActualCh 後、goroutine で遅延発火。
+        go func(s, fireAt){ time.Sleep(until(fireAt)); notifyMoveSignal(s, fireAt) }
+    - Probe バインド成立分岐: 同様に遅延発火を追加。
+    - 「発行前再確認」ブロック（MoveTimeout if-block 末尾）は維持。
+        ログラベルを [pos] → [lineID+delay] に変更。
+
+  (2) appconfig/config.go
+    - PatrolLoadStabilizationSecs float64（json: patrol_load_stabilization_secs）を追加。
+      デフォルト 6。0 指定時は Patroller が 6s を使用（後方互換）。
+
+  (3) gui/gui.go / main.go
+    - LoadStabilizationDuration を Config 初期化時にマッピング追加。
+    - No.31 初期実装で追加した NotifyPlayerReady を削除。
+
+  (4) ncap/cap_device.go
+    - No.31 初期実装で追加した posReadyLineID/posReadyFired フィールド、onPlayerReady コール
+      バック、SetOnPlayerReady setter、firePlayerReadyIfPending ヘルパーを全て削除。
+
+【影響範囲】
+  - mumu/mumu.go: Config に LoadStabilizationDuration 追加 / loadStabilizationDelay ヘルパー
+    追加 / MatchLineChange 遅延発火復活 / MatchPlayerReady・NotifyPlayerReady 削除
+  - appconfig/config.go: PatrolLoadStabilizationSecs 新規キー（後方互換: 0 値時は 6s）
+  - gui/gui.go, main.go: 新キーのマッピング追加 / NotifyPlayerReady 削除
+  - ncap/cap_device.go: playerReady 関連を全削除
+  - config.json: patrol_load_stabilization_secs キーで調整可能
+  - 後方互換性: 0 値時はデフォルト 6s 動作なので既存 config.json は無変更で動作
+
+====--------------------------------------------------------------------------------
+[No.30] 2026/05/22 -- — ch移動完了シグナル欠落修正（No.12 未完対応・恒久化）
+
+【背景 / 原因】
+  ログで 10 ch 連続「移動失敗（完了シグナルなし）→スキップ」が発生。
+  各スキップ前に全 8 台分の [Patroller][Mismatch] expected=旧ch actual=新ch が出ており
+  端末は実際に新 ch へ移動完了しているにもかかわらず完了判定が機能していなかった。
+
+  現行の完了シグナル経路:
+    ncap(0x2E) → log.Printf "[Instance-N][0x2E] UUID=..." ← uid != sess.userUID の初回のみ
+      → guiWriter.Write が "[0x2E] UUID=" を grep
+      → Patroller.NotifyChMovePacket(instanceLabel) → moveSignal チャネル
+
+  問題: "[Instance-N][0x2E] UUID=..." は userUID 変化時（セッション初回）にしか出ない。
+  巡回中の ch 移動では既存セッションに session merge されるだけで userUID は不変。
+  → UUID ログが出ない → NotifyChMovePacket が呼ばれない → moveSignal 空 → タイムアウト。
+
+  No.12 修正（changelog No.12, !HasBinding() ガード削除）は初回バインド前の欠落を修正したが
+  「UUID ログ自体が出ない」ケース（バインド済み移動）は未対応のまま再発していた。
+
+  また switchDoneAt 基準の時刻フィルタ問題:
+    ADB switch_channel done がゲームサーバの新セッション開設より遅れるケースがある
+    (Ch18: ゲーム側応答 21:15:08–10 vs ADB done 21:15:11–12)。
+    switchDoneAt 基準では正当な完了シグナルを弾いてしまう。
+
+【変更】
+  mumu/mumu.go:
+    - Patroller 構造体に labelToSerial map[string]string を追加（serialToLabel の逆引き）。
+    - LoadSerialLabelMap・resolveLabel で labelToSerial を serialToLabel と同期更新。
+    - notifyMoveSignal(serial, t) ヘルパーを追加:
+      serial を label として moveSignal チャネルに非ブロッキング送信。
+    - MatchLineChange の既バインド分岐: updateActualCh 後に notifyMoveSignal 追加。
+      これがメイン修正。onLineIDObserved の正規経路から直接 moveSignal に通知。
+    - MatchLineChange の Probe バインド成立分岐: updateActualCh 後に notifyMoveSignal 追加。
+    - NotifyChMovePacket: instanceLabel → labelToSerial で serial を解決してから
+      notifyMoveSignal 経由で送信（未解決時はそのまま送信）。
+    - knownInstances・missedCounts・crashedInstances・respondedSet のキーを
+      Instance label → serial に統一。ログ表示時のみ serialLabels で label に解決。
+    - moveSignal の時刻フィルタ: msg.t.After(switchDoneAt) → msg.t.After(switchStartAt)
+      （3 箇所: バッファ消化・Phase1・Phase2）。
+      switch_channel 発行前の古い 0x2E は弾きつつ、ADB done 遅延に依らず採用可能にする。
+
+【効果】
+  バインド済み serial に対する ch 移動時、onLineIDObserved → MatchLineChange 経路で
+  moveSignal が確実に発火するようになり「移動失敗（完了シグナルなし）」が解消される。
+  また switchStartAt 基準により ADB 完了前に到達した正当な 0x2E も採用される。
+
+====--------------------------------------------------------------------------------
+[No.35] 2026/05/22 -- — デバイス認識リグレッション修正②（probe 登録タイミング）
+
+【背景 / 原因】
+  No.34 で onLineIDObserved の発火は復旧したが、依然 0/8 バインド成立のまま。
+  ログで matched 0 pending probes が 8 件全て記録されていた。
+
+  タイミング問題:
+    switch_channel コマンド発行 (T+0) → サーバーが新 TCP セッション開設 (T+6s)
+    → 0x15 で (uid+lineID) 観測・発火 (T+6s)   ← ここで pendingProbes は空
+    → switch_channel done → RecordPatrolMove 呼び出し (T+8s)  ← probe 登録が遅い
+
+  mumu.go の runStaggerProbe は SwitchGroup（同期ブロック ~8s）の完了後に
+  RecordPatrolMove を呼んでいたため、pending probe が存在しない状態で
+  MatchLineChange が走り pending probes 0件と判定されバインドされなかった。
+
+  旧コード（Phase A 以前）では throttle なしで毎 0x15 が発火していたため、
+  probe 登録後の後続発火にたまたま噛み合って動作していた。
+  Phase A の throttle 強化（セッション当たり 1 回のみ発火）により破綻が顕在化。
+
+【変更】
+  mumu/mumu.go:
+    - runStaggerProbe: RecordPatrolMove を SwitchGroup の前に移動。
+      ADB コマンド発行前に pendingProbes を登録しておくことで、
+      サーバー側の新 TCP セッションが先行しても pending probe が存在する状態を保証。
+
+【効果】
+  probe が観測より先に登録済みになり、MatchLineChange が matched 1 pending probes と
+  判定してバインドが成立。識別フェーズ 8/8 バインド成立を期待。
+  Phase A の誤バインド防止（excludeUIDs・時刻ガード）は引き続き有効。
+
+====--------------------------------------------------------------------------------
+[No.34] 2026/05/22 -- — デバイス認識リグレッション修正（No.33 の sd==nil 早期 return バグ）
+
+【背景 / 原因】
+  No.33 で processSyncContainerData の SceneData nil パスに早期 return を追加した結果、
+  probe 後の実際のバインドフロー（portMap → lineID 確定 → 0x15 で charId 確定）で
+  onLineIDObserved が一度も発火しなくなり、8 台すべてのバインドが成立しなくなった。
+
+  実際のフロー:
+    switch_channel → 新 TCP 接続 → portMap が lineID を確定（接続時点）
+    → 0x15 (CharBaseInfo のみ、SceneData なし) で charId が確定
+  この 0x15 は SceneData を持たないため、旧コードは onLineIDObserved を呼ばなかった。
+
+【変更】
+  ncap/cap_device.go:
+    - processSyncContainerData: uidNewlySet フラグを導入。
+      charId が 0→N に確定した場合（uidNewlySet=true）かつ sess.lineID != 0 なら
+      sd==nil パスでも onLineIDObserved を発火するよう修正。
+    - sd あり パス: 発火条件を (oldCh != lineID || uidNewlySet) に拡張。
+      userUID 新規確定時も lineIDChangedAt を設定して発火する。
+
+【効果】
+  デバイス認識の 8/8 バインドが復旧。
+  本物クライアントの同 Ch 繰り返し 0x15 は uidNewlySet=false・oldCh==lineID のため
+  発火しないまま（No.33 の誤バインド防止は維持）。
+
+====--------------------------------------------------------------------------------
+[No.33] 2026/05/22 -- — UID 誤バインド防止（lineID 変化時のみ通知・probe 時刻フィルタ・除外 UID・手動削除）
+
+【背景 / 原因】
+  同 PC 上で MuMu エミュレータと本物 BPSR クライアントを同時起動すると、
+  本物クライアントのキャラ UID が Patroller.MatchLineChange の Probe-and-Match に
+  誤マッチし、エミュレータ serial に誤バインドされる問題が発生していた。
+  原因:
+    1. onLineIDObserved が lineID 変化なしでも毎パケット発火していた
+    2. 60 秒 probe ウィンドウ × 1 件マッチ即確定で、probe 以前から同 Ch に
+       いたプレイヤーも誤マッチした
+
+【変更】
+  ncap/cap_device.go:
+    - session 構造体に lineIDChangedAt time.Time フィールド追加。
+      0x15 で lineID が変化した時刻を記録する。
+    - onLineIDObserved フィールド型を func(uid, lineID, changedAt time.Time) に変更。
+    - processSyncContainerData: SceneData nil パスの再発火を削除（重複発火による誤バインド除去）。
+    - processSyncContainerData: 本流パスの onLineIDObserved 発火を oldCh != lineID の
+      変化時のみに限定し、lineIDChangedAt を更新してから changedAt として渡す。
+
+  mumu/mumu.go:
+    - Patroller 構造体に excludeUIDs map[uint64]bool / excludeUIDsMu sync.RWMutex 追加。
+    - MatchLineChange: シグネチャを (uid, lineID, changedAt time.Time) に変更。
+      - 冒頭で excludeUIDs チェック → 除外 UID はバインド候補から弾く。
+      - probe 突合条件に changedAt >= probe.sentAt - 2s を追加。
+        ADB コマンド発行より前に lineID が変化していた場合を拒否。
+    - NotifyLineIDChange: changedAt を引数に追加し MatchLineChange に転送。
+    - DeleteSerialUIDBinding(serial): serial に紐付いた UID バインドを削除し永続化。
+    - SetExcludeUIDs(uids): 除外 UID リストを設定する。
+
+  appconfig/config.go:
+    - Config.ExcludeUIDs []uint64 (json:"exclude_uids,omitempty") フィールド追加。
+
+  gui/gui.go:
+    - NotifyLineIDChange: changedAt を引数に追加し Patroller に転送。
+    - SetExcludeUIDs(uids): Patroller への委譲メソッド追加。
+    - handleDeleteSerialUID: POST /api/serial_uid/delete でバインド削除。
+    - loadDeviceMemory JS: 各エントリに「削除」ボタンを追加（uid バインドのみ表示）。
+    - deleteSerialUID JS: confirm → DELETE API → リスト再ロード。
+    - CFG_FIELDS_ADB に exclude_uids フィールド（csv-num 型）を追加。
+    - renderConfigFields / saveConfig: csv-num 型のレンダリング・保存処理を追加。
+    - handleConfig POST: ExcludeUIDs フィールドを読み込み SetExcludeUIDs に即時反映。
+
+  main.go:
+    - SetLineIDObserver コールバックのシグネチャを changedAt 引数付きに更新。
+    - 起動時に guiServer.SetExcludeUIDs(cfg.ExcludeUIDs) を呼び出す。
+
+【効果】
+  - 本物クライアントが同 Ch に静止しているだけでは onLineIDObserved が発火しないため
+    誤バインド対象にならない。
+  - 本物クライアントが偶然 probe 中に Ch を変えても、ADB コマンド発行より前なら弾ける。
+  - GUI 設定ページ「除外 UID」欄に自分のキャラ UID を登録すれば、以後の起動でも
+    そのキャラ UID が Probe-and-Match に使われなくなる。
+  - データ管理ページの「削除」ボタンで誤バインドされた serial_to_uid エントリを
+    手動クリーンアップできる。
+
+====--------------------------------------------------------------------------------
+[No.32] 2026/05/22 -- — 通知エネミーOFFのとき通知音を鳴らさないよう修正
+
+【変更】
+  gui/gui.go:
+    - appendDetectionHistoryLocked に silent 引数を追加。
+      OnDetectHistoryOnly（通知OFFエネミー）は [DETECTION:SILENT] タグで SSE 配信。
+      OnDetect（通知ONエネミー）は従来通り [DETECTION] タグで配信。
+    - JS の SSE onmessage で [DETECTION:SILENT] のとき playNotifyBeep() を呼ばないよう変更。
+
+【効果】
+  設定の「通知するエネミー」でチェックOFFのエネミーが検知されてもアプリの通知音が鳴らなくなった。
+  ログへの記録・検知履歴への追加は引き続き行われる。
+
+====--------------------------------------------------------------------------------
+[No.31] 2026/05/22 -- — 設定UIと内部状態の不整合バグ修正
+
+【変更】
+  appconfig/config.go:
+    - SaveWindowState: window_state キーのみ部分更新する実装に変更。
+      従来は zero-value Config を base に unmarshal してから全フィールド書き戻しを
+      行っていたため、default=true な bool フィールド（gas_enable,
+      patrol_adaptive_timeout, show_no_device_dialog）がキー欠損の旧 config.json で
+      ウィンドウ移動のたびに暗黙的に false へ上書きされていた。
+      JSON マップとして部分編集することで他フィールドを一切触らない実装に変更。
+
+  main.go:
+    - gui.New 直後に SetGASTargetEnemy(cfg.GASTargetEnemy) を追加。
+      従来は起動時に SetGASEnable のみ呼ばれ SetGASTargetEnemy は設定保存時のみ
+      反映されていたため、初回保存前は gasTargetEnemy="" でフィルタ無効化状態になっていた。
+
+  cmd/chat-reporter/main.go:
+    - 起動時に SetGASEnable / SetGASTargetEnemy を追加。
+    - 設定保存コールバックに SetGASEnable を追加。
+      従来 chat-reporter プロセスでは gasEnable が Go ゼロ値 false のままで
+      UI から ON にしても反映されなかった。
+
+【原因 / 効果】
+  SaveWindowState と Load の設計が非対称（Load は defaultConfig 起点、
+  SaveWindowState は zero-value Config 起点）だったため、旧 config.json で
+  ウィンドウ移動後に bool デフォルト値がサイレントに上書きされ、
+  UI OFF / 内部 ON のような不整合が発生していた。
+
+====--------------------------------------------------------------------------------
+[No.30] 2026/05/22 -- — 通知対象外エネミー検知時に検知履歴へ記録されないバグ修正
+
+【変更】
+  gui/gui.go:
+    - OnDetect() をリファクタ: 履歴記録パートを appendDetectionHistoryLocked() に切り出し。
+    - OnDetectHistoryOnly() を追加: 履歴記録のみ実行し、巡回ch削除・30分クールダウンは行わない。
+
+  main.go:
+    - onDetect(): 通知対象外エネミー（Enabled=false）でスキップ時に
+      guiServer.OnDetectHistoryOnly(det) を呼んでから return するよう変更。
+
+【原因 / 効果】
+  main.go の通知フィルタ（allowed=false の return）が guiServer.OnDetect() より先にあったため、
+  通知対象外エネミーが検知履歴 (goldBoarHistory / gold_history.json) に記録されなかった。
+  修正後は Discord 通知なし・巡回ch維持のまま検知履歴にのみ記録される。
+
+====--------------------------------------------------------------------------------
+[No.29] 2026/05/22 19:00 — 巡回: 既到達chスキップ + DBGログ重複抑制
+
+【変更】
+  mumu/mumu.go:
+    - Patroller.Start() 巡回ループ: チャネル分担フィルタ後に CurrentCh==目的ch のデバイスを
+      switchTargets から除外し switch_channel 発行をスキップ。
+      除外分は RecordPatrolMove は呼ぶ（ExpectedCh 更新のため）。
+      need（移動完了待ち期待台数）も switchTargets 件数に変更。
+      Phase1 タイムアウト待ちに need>0 ガード追加（全台既到達時の誤タイムアウト防止）。
+    - MatchLineChange(): 既バインドログ・Probe matchedログを Vlogf → VlogfDedup に変更。
+      同一メッセージを5秒抑制、値変化時は即時出力。
+
+  debuglog/debuglog.go:
+    - VlogfDedup(tag, key, minInterval, format, args) を追加。
+
+【原因 / 効果】
+  既に目的chにいるデバイスにも switch_channel を発行していたため、0x2E 完了シグナルが届かず
+  「移動失敗（完了シグナルなし）→スキップ」で巡回が強制終了していた。
+  また SceneData ブロードキャスト頻度に応じて同じ DBG 行が12連発するログノイズも解消。
+
+====--------------------------------------------------------------------------------
 [No.28] 2026/05/22 -- — デバイス認識 ch移動未起動バグ修正（Identify 強制再識別）
 
 【変更】

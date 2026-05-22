@@ -158,9 +158,10 @@ func main() {
 		GlobalDelay:        time.Duration(cfg.MumuDelayMs) * time.Millisecond,
 		ParallelLimit:      cfg.ParallelLimit,
 		ParallelGroupDelay: time.Duration(cfg.ParallelGroupDelaySecs * float64(time.Second)),
-		MoveTimeout:           time.Duration(cfg.PatrolMoveTimeoutSecs * float64(time.Second)),
-		MergeTimeout:          time.Duration(cfg.PatrolMergeTimeoutSecs * float64(time.Second)),
-		DwellDuration:         time.Duration(cfg.PatrolDwellSecs * float64(time.Second)),
+		MoveTimeout:               time.Duration(cfg.PatrolMoveTimeoutSecs * float64(time.Second)),
+		MergeTimeout:              time.Duration(cfg.PatrolMergeTimeoutSecs * float64(time.Second)),
+		LoadStabilizationDuration: time.Duration(cfg.PatrolLoadStabilizationSecs * float64(time.Second)),
+		DwellDuration:             time.Duration(cfg.PatrolDwellSecs * float64(time.Second)),
 		AdaptiveTimeout:        cfg.PatrolAdaptiveTimeout,
 		AdaptiveTimeoutWindow:  cfg.PatrolAdaptiveTimeoutWindow,
 		SerialToLabel:          cfg.SerialToLabel,
@@ -191,6 +192,7 @@ func main() {
 	guiServer := gui.New(cfg.GUIPort, mumuCfg, patrolChannels, cfg.PatrolChannelsFile)
 	guiServer.SetShowNoDeviceDialog(cfg.ShowNoDeviceDialog)
 	guiServer.SetGASEnable(cfg.GASEnable)
+	guiServer.SetGASTargetEnemy(cfg.GASTargetEnemy)
 
 	// デバイス分担設定を読み込む（存在する場合）
 	const assignmentsFile = "config/device_assignments.json"
@@ -246,6 +248,7 @@ func main() {
 				}
 				if !allowed {
 					log.Printf("[SKIP] 通知対象外エネミー: %s", configName)
+					guiServer.OnDetectHistoryOnly(det)
 					return
 				}
 			}
@@ -299,9 +302,12 @@ func main() {
 	})
 
 	// 0x15/0x16 の LineID 観測を Patroller に通知し per-device CH 追跡を実現する
-	capDevice.SetLineIDObserver(func(uid uint64, lineID uint32, t time.Time) {
-		guiServer.NotifyLineIDChange(uid, lineID, t)
+	capDevice.SetLineIDObserver(func(uid uint64, lineID uint32, changedAt time.Time) {
+		guiServer.NotifyLineIDChange(uid, lineID, changedAt)
 	})
+
+	// exclude_uids: 起動時ロード（誤バインド防止）
+	guiServer.SetExcludeUIDs(cfg.ExcludeUIDs)
 
 	// serial_to_uid: 起動時ロードと、バインド成立時の config.json 書き戻し設定
 	guiServer.LoadSerialUIDMap(cfg.SerialToUID)
