@@ -1,0 +1,78 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>チャットログ - BPSR Patrol Cams</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg0:#0f1117;--bg1:#161b27;--bg2:#1e2535;--bg3:#252d40;--accent:#4f8ef7;--warn:#f5a623;--text1:#e8eaf0;--text2:#9aa3b8;--text3:#5c6680;--border:#2a3348;}
+body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;font-size:13px;display:flex;flex-direction:column;height:100vh}
+h1{font-size:13px;padding:0 16px;height:44px;background:var(--bg1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;font-weight:500}
+#toolbar{padding:5px 12px;background:var(--bg1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;font-size:0.85em}
+#toolbar input[type=text]{background:var(--bg2);border:1px solid var(--border);color:var(--text1);padding:3px 8px;border-radius:6px;width:180px;outline:none}
+#toolbar input[type=text]:focus{border-color:rgba(79,142,247,.5);box-shadow:0 0 0 2px rgba(79,142,247,.12)}
+#container{flex:1;overflow-y:auto;padding:0}
+.msg{padding:5px 12px;border-bottom:1px solid var(--border);line-height:1.5;transition:background .15s}
+.msg:hover{background:var(--bg2)}
+.time{color:var(--text3);margin-right:6px}
+.ip{color:var(--text2);font-size:0.85em;margin-right:4px}
+.ch{color:var(--accent);font-size:0.85em;margin-right:4px}
+.sender{color:var(--warn);font-weight:600;margin-right:4px}
+.body{color:var(--text1)}
+.no-data{color:var(--text3);padding:12px}
+#count{color:var(--text2);margin-left:auto;font-size:0.85em}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
+</style>
+</head>
+<body>
+<h1>💬 チャットログ</h1>
+<div id="toolbar">
+  <input type="text" id="search" placeholder="キーワード検索..." oninput="render()">
+  <span id="count"></span>
+</div>
+<div id="container"><div class="no-data">読み込み中...</div></div>
+<script>
+let all=[],userScrolled=false;
+function escH(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function isAtBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<50;}
+function render(){
+  const q=document.getElementById('search').value.toLowerCase();
+  const filtered=q?all.filter(e=>e.sender.toLowerCase().includes(q)||e.message.toLowerCase().includes(q)):all;
+  document.getElementById('count').textContent=filtered.length+'件';
+  const c=document.getElementById('container');
+  if(!filtered.length){c.innerHTML='<div class="no-data">チャットなし</div>';return;}
+  c.innerHTML=filtered.map(e=>{
+    const ch=e.has_ch?'<span class="ch">Ch'+e.channel+'</span>':'';
+    return '<div class="msg"><span class="time">'+e.time+'</span><span class="ip">['+escH(e.client_ip)+']</span>'+ch+'<span class="sender">'+escH(e.sender)+'</span><span class="body">'+escH(e.message)+'</span></div>';
+  }).join('');
+  userScrolled=false;
+  c.scrollTop=c.scrollHeight;
+}
+function appendOne(ev){
+  all.push(ev);
+  if(all.length>500)all=all.slice(-500);
+  const q=document.getElementById('search').value.toLowerCase();
+  if(q&&!(ev.sender.toLowerCase().includes(q)||ev.message.toLowerCase().includes(q)))return;
+  const c=document.getElementById('container');
+  if(c.querySelector('.no-data'))c.innerHTML='';
+  const ch=ev.has_ch?'<span class="ch">Ch'+ev.channel+'</span>':'';
+  const div=document.createElement('div');
+  div.className='msg';
+  div.innerHTML='<span class="time">'+ev.time+'</span><span class="ip">['+escH(ev.client_ip)+']</span>'+ch+'<span class="sender">'+escH(ev.sender)+'</span><span class="body">'+escH(ev.message)+'</span>';
+  c.appendChild(div);
+  document.getElementById('count').textContent=all.length+'件';
+  if(!userScrolled)c.scrollTop=c.scrollHeight;
+}
+(async function(){
+  const c=document.getElementById('container');
+  c.addEventListener('scroll',()=>{userScrolled=!isAtBottom(c);});
+  const h=await fetch('/api/chat-log').then(r=>r.json()).catch(()=>[]);
+  all=h||[];
+  render();
+  const es=new EventSource('/api/chat-events');
+  es.onmessage=e=>{try{appendOne(JSON.parse(e.data));}catch(_){}};
+})();
+</script>
+</body>
+</html>
