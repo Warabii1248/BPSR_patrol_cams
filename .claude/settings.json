@@ -4,10 +4,28 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(Get-Content \"c:\\\\Users\\\\mlwl1\\\\Documents\\\\GitHub\\\\BPSR_patrol_cams\\\\logs\\\\log.txt\")",
-      "Bash(Select-Object -Last 150)"
+      "Bash(Select-Object -Last 150)",
+      "PowerShell(Select-String -Path \"c:\\\\Users\\\\mlwl1\\\\Documents\\\\GitHub\\\\BPSR_patrol_cams\\\\logs\\\\log.txt\" -Pattern \"MuMu|Patrol|0x2E|巡回|移動\" | Where-Object { $_.Line -match \"19:0[6-9]|19:1\" } | ForEach-Object { $_.Line } | Select-Object -First 80)",
+      "PowerShell(Select-String -Path \"c:\\\\Users\\\\mlwl1\\\\Documents\\\\GitHub\\\\BPSR_patrol_cams\\\\logs\\\\log.txt\" -Pattern \"Probe|0x2E|0x15|PortMap|lineID|onLine|バインド|識別\" | Select-Object -Last 60 | ForEach-Object { $_.Line })",
+      "Read(//c/Users/mlwl1/.claude/plans/**)",
+      "PowerShell(go build ./...)",
+      "PowerShell(go vet ./...)",
+      "Bash(go build ./...)",
+      "Bash(go vet ./...)"
     ]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"$cl = Get-Content 'c:\\Users\\mlwl1\\Documents\\GitHub\\BPSR_patrol_cams\\changelog.txt' -TotalCount 120 -ErrorAction SilentlyContinue; if ($cl) { $ctx = \"\"`n=== 直近 changelog (No.最新〜) ===`n\"\" + ($cl -join \"\"`n\"\") + \"\"`n`n変更前に過去同箇所の罠が無いか必ず確認すること。CLAUDE.md §4 不変条件 / §5 罠リスト も併読。\"\"; $json = @{ hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = $ctx } } | ConvertTo-Json -Compress; Write-Output $json }\"",
+            "shell": "powershell"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -16,6 +34,28 @@
             "type": "command",
             "command": "Write-Output '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"changelog.txtを更新・ステージしましたか？　未更新ならコミット前に必ず記入してください。\"}}'",
             "if": "Bash(git commit*)",
+            "shell": "powershell"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"$inp = $input | Out-String; try { $j = $inp | ConvertFrom-Json } catch { exit 0 }; $p = $j.tool_input.file_path; if (-not $p) { exit 0 }; $p = $p -replace '\\\\','/'; if ($p -match '/(ncap|mumu|appconfig|pb)/.*\\.go$' -or $p -match '/main\\.go$' -or $p -match '/cmd/.*\\.go$') { Push-Location 'c:\\Users\\mlwl1\\Documents\\GitHub\\BPSR_patrol_cams'; $out = & go build ./... 2>&1; $code = $LASTEXITCODE; Pop-Location; if ($code -ne 0) { $ctx = \"\"go build ./... が失敗。即修正してください。`n--- 出力 ---`n\"\" + ($out -join \"\"`n\"\"); $resp = @{ hookSpecificOutput = @{ hookEventName = 'PostToolUse'; additionalContext = $ctx } } | ConvertTo-Json -Compress; Write-Output $resp } else { $ctx = \"\"[auto] go build ./... OK ($p 編集後)\"\"; $resp = @{ hookSpecificOutput = @{ hookEventName = 'PostToolUse'; additionalContext = $ctx } } | ConvertTo-Json -Compress; Write-Output $resp } }\"",
+            "shell": "powershell"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"$inp = $input | Out-String; try { $j = $inp | ConvertFrom-Json } catch { exit 0 }; $p = $j.tool_input.file_path; if (-not $p) { exit 0 }; $p = $p -replace '\\\\','/'; if ($p -match '/(ncap|mumu|pb)/.*\\.go$') { $ctx = \"\"⚠ パケット解析/巡回ロジックを変更しました。CLAUDE.md §4 不変条件 を破っていないか必ず再確認。subagent (packet-analyst / patrol-flow-reviewer) でレビュー推奨。\"\"; $resp = @{ hookSpecificOutput = @{ hookEventName = 'PostToolUse'; additionalContext = $ctx } } | ConvertTo-Json -Compress; Write-Output $resp } elseif ($p -match '/appconfig/.*\\.go$' -or $p -match '/config/.*\\.json$') { $ctx = \"\"⚠ 設定ファイル/ロジックを変更しました。後方互換性（旧 config.json で動くか）と Load/Save 対称性を必ず確認。config-compat-checker subagent 推奨。\"\"; $resp = @{ hookSpecificOutput = @{ hookEventName = 'PostToolUse'; additionalContext = $ctx } } | ConvertTo-Json -Compress; Write-Output $resp } }\"",
             "shell": "powershell"
           }
         ]
