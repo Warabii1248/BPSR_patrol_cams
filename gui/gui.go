@@ -971,7 +971,24 @@ func openBrowser(url string) {
 
 
 //go:embed assets/index.html
-var indexHTML string
+var indexHTMLRaw string
+
+//go:embed assets/styles.css
+var stylesCSS string
+
+//go:embed assets/app.js
+var appJS string
+
+// indexHTML は index.html のテンプレ内 <link>/<script src> を
+// styles.css / app.js の内容で inline 化した完全 HTML。
+// IDE シンタックス支援のため CSS/JS を別ファイル化しつつ、
+// 配信は単一 HTML のままにする。
+var indexHTML = func() string {
+	html := indexHTMLRaw
+	html = strings.Replace(html, `<link rel="stylesheet" href="styles.css">`, "<style>\n"+stylesCSS+"\n</style>", 1)
+	html = strings.Replace(html, `<script src="app.js"></script>`, "<script>\n"+appJS+"\n</script>", 1)
+	return html
+}()
 
 // spawnLogHTML は出現ログ専用の分離ウィンドウ用ページ
 //go:embed assets/spawn_log.html
