@@ -1,4 +1,32 @@
 ﻿====--------------------------------------------------------------------------------
+[No.50] 2026/05/24 — 巡回サイクル平均表示が更新されない不具合修正
+
+【背景 / 原因】
+  No.39 でフェーズ名が move_start / loading → adb_sending / wait_0x2e / stabilizing / dwell_wait に
+  リネームされた際、gui/assets/app.js の updatePatrolCycleStats 内トリガー条件が
+  旧キー 'move_start' のまま残されていた。バックエンドは move_start を一切送らなくなったため
+  cycleMsHistory に何も積まれず、平均が 0 のまま「--」表示固定だった。
+  また moveFailed 時に同一イテレーション末尾でも adb_sending + 新 PhaseStartedAtUnixMs が
+  セットされるため、単純な相変化だけでは偽サイクルが混入する問題も存在。
+
+【変更内容】
+  gui/assets/app.js:
+    - patrolCycleStats に lastMoveIndex フィールド追加（初期値 -1）
+    - updatePatrolCycleStats のトリガーを 'move_start' → 'adb_sending' に変更
+    - current_index 変化検知を併用し moveFailed→retry の同イテ内 adb_sending 再発火を除外
+    - cycleMs 下限 10s ガード追加（10000ms 以下を異常値として無視）
+    - 巡回停止時に lastMoveIndex もリセット
+
+【効果】
+  ダッシュボード/巡回ステータスの「巡回サイクル」KPI（平均時間・ch/hour）が再び更新される。
+  moveFailed を含む巡回でも偽サイクルが記録されない。
+
+【影響範囲】
+  - gui/assets/app.js のみ
+  - Go コード・設定スキーマ変更なし
+  - 後方互換性: 設定ファイル無変更
+
+====--------------------------------------------------------------------------------
 [No.49] 2026/05/24 — screen モード: shotTimeout 拡張 + fail-closed 化（誤判定修正）
 
 【背景 / 原因】

@@ -1431,7 +1431,7 @@ async function patrolAllOnce(){
   const d=await r.json();if(!d.ok)alert('巡回開始失敗: '+(d.error||''));
 }
 async function clearMoveFailedChannels(){await fetch('/api/patrol/clear-move-failed',{method:'POST'});}
-const patrolCycleStats={lastMoveStartAt:0,cycleMsHistory:[],avgCycleMs:0};
+const patrolCycleStats={lastMoveStartAt:0,lastMoveIndex:-1,cycleMsHistory:[],avgCycleMs:0};
 function formatPatrolCycleDuration(ms){
 	if(!(ms>0))return '--';
 	const totalSeconds=Math.max(1,Math.round(ms/1000));
@@ -1478,15 +1478,17 @@ function renderPatrolCycleStats(running){
 function updatePatrolCycleStats(d,currentPhase){
 	if(!d.running){
 		patrolCycleStats.lastMoveStartAt=0;
+		patrolCycleStats.lastMoveIndex=-1;
 		renderPatrolCycleStats(false);
 		return;
 	}
-	if(currentPhase==='move_start'){
+	if(currentPhase==='adb_sending'){
 		const startedAt=Number(d.phase_started_at_unix_ms||0);
-		if(startedAt>0){
-			if(patrolCycleStats.lastMoveStartAt>0 && startedAt!==patrolCycleStats.lastMoveStartAt){
+		const idx=Number(d.current_index);
+		if(startedAt>0 && idx!==patrolCycleStats.lastMoveIndex){
+			if(patrolCycleStats.lastMoveStartAt>0){
 				const cycleMs=startedAt-patrolCycleStats.lastMoveStartAt;
-				if(cycleMs>0 && cycleMs<86400000){
+				if(cycleMs>10000 && cycleMs<86400000){
 					patrolCycleStats.cycleMsHistory.push(cycleMs);
 					if(patrolCycleStats.cycleMsHistory.length>10)patrolCycleStats.cycleMsHistory.shift();
 					const sum=patrolCycleStats.cycleMsHistory.reduce((a,b)=>a+b,0);
@@ -1494,6 +1496,7 @@ function updatePatrolCycleStats(d,currentPhase){
 				}
 			}
 			patrolCycleStats.lastMoveStartAt=startedAt;
+			patrolCycleStats.lastMoveIndex=idx;
 		}
 	}
 	renderPatrolCycleStats(true);
