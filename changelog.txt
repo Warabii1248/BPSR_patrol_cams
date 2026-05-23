@@ -1,4 +1,105 @@
 ﻿====--------------------------------------------------------------------------------
+[No.47] 2026/05/23 18:01 — ロード完了判定に画面認識モード追加（黒画面消失検知）
+
+【背景 / 原因】
+  従来のロード完了判定は「0x2E UUID 受信 + 安定化遅延（固定 or 自動）」のみで、
+  時間経過のみの待機ではゲーム挙動の揺らぎで早撃ち・遅延の取りこぼしが起きうる。
+  BPSR のロード画面は中央が必ず真っ黒になるため、ADB スクショの黒画面消失検知を
+  選択式で追加し、より確実なロード完了判定を可能にする。
+  ※「0x2E は必ず先に来る」ことを前提に、安定化フェーズの中身を切替可能にする。
+
+【変更内容】
+  appconfig/config.go:
+    - Config に 7 フィールド追加:
+        PatrolLoadDetectMode string (json:"patrol_load_detect_mode")
+        PatrolScreenPollMs int (json:"patrol_screen_poll_ms")
+        PatrolScreenRegionX int (json:"patrol_screen_region_x")  -- 監視矩形 左上 X (px)
+        PatrolScreenRegionY int (json:"patrol_screen_region_y")  -- 監視矩形 左上 Y (px)
+        PatrolScreenRegionW int (json:"patrol_screen_region_w")  -- 監視矩形 幅 (px)
+        PatrolScreenRegionH int (json:"patrol_screen_region_h")  -- 監視矩形 高さ (px)
+        PatrolScreenBlackLuma int (json:"patrol_screen_black_luma")
+        PatrolScreenBlackPixelRatio float64 (json:"patrol_screen_black_pixel_ratio")
+        PatrolScreenTimeoutSecs float64 (json:"patrol_screen_timeout_secs")
+    - defaultConfig: 各値の初期化（mode="time" で従来動作、矩形は 1280x720 想定の中央 600x400）
+      ※ MuMu Player は負荷軽減のため 1280x720 で稼働させるのが基本前提
+    - applyDefaults: 空文字/範囲外の補正（§4-3 No.31 罠回避のため string enum 採用）。
+      W または H が 0 以下なら旧 config.json と判定して矩形 4 値をデフォルト値にリセット。
+
+  mumu/screen.go (新規):
+    - runAdbBinary: cmd.Output() ベース。CombinedOutput 不可（stderr で PNG 汚染）
+    - captureScreenPNG: exec-out screencap -p → png.Decode
+    - isRegionBlack(img, x, y, w, h, luma, pixelRatio): 指定矩形領域 (px) の暗ピクセル割合判定
+        画像範囲外は自動クリップ
+        *image.NRGBA / *image.RGBA を型アサーション + Pix 直接アクセス
+        4 画素おきサブサンプリング、BT.601 近似輝度
+        default ケースで image.At フォールバック
+    - waitForBlackGone: 黒画面が消えるまでポーリング。タイムアウト/ctx.Done で false
+    - runTimeStrategy / runScreenStrategy / runEitherStrategy:
+        NotifyPostLoadReady から呼ばれる 3 戦略
+    - 画面判定タイムアウト時は強制発火（永久待ち防止）
+
+  mumu/mumu.go:
+    - Config に 7 フィールド追加（LoadDetectMode 等）
+    - Patroller に ctx context.Context フィールド追加
+    - Patroller に postLoadCancels map[string]context.CancelFunc + postLoadCancelMu 追加
+        同 serial の前回 goroutine を cancel して重複起動・goroutine リーク防止
+    - NotifyPostLoadReady を mode ディスパッチに改修
+        旧: time.Sleep → notifyMoveSignal
+        新: per-serial cancel 管理 + runTimeStrategy / runScreenStrategy / runEitherStrategy
+    - Start: p.ctx に巡回コンテキストを保存
+    - Stop: postLoadCancels を全 cancel して画面判定 goroutine を即停止
+
+  gui/handlers.go:
+    - /api/config POST の inline struct に 7 フィールド追加
+    - mumu.Config リテラルに 7 フィールド詰め替え追加（**両方への追記必須**）
+
+  main.go:
+    - 起動時の mumu.Config 組立に 7 フィールド詰め替え追加
+
+  gui/assets/app.js:
+    - CFG_FIELDS_PATROL に 7 項目追加
+        patrol_load_detect_mode は type:'select'（既存 gas_target_enemy パターン）
+    - 監視矩形 ドラッグ選択モーダル機能を追加（CFG_FIELDS_PATROL の region-picker-btn 型）
+        openScreenshotPicker / closeScreenshotPicker / _ss* ヘルパー一式
+        canvas 上で mousedown/move/up でドラッグ → image 自然座標(px) で矩形確定
+        確定で cfg-patrol_screen_region_x/y/w/h に書き込み + saveConfig(false) 呼出
+
+  gui/assets/index.html:
+    - ss-overlay モーダル DOM 追加（デバイス選択、スクショ取得、canvas、座標表示、確定/キャンセル）
+
+  gui/assets/styles.css:
+    - .ss-modal / .ss-toolbar / .ss-canvas-wrap / .ss-coords / .btn-region-picker 追加
+
+  mumu/screen.go:
+    - CaptureScreenshotPNG (公開関数) 追加。GUI からスクショ PNG バイト列取得用
+    - captureIsBlack の err ログを 3 分岐に細分化（誤解防止）:
+        context.Canceled       → 「スクショ中断 (他戦略勝利)」（either の time 先勝時の正常終了）
+        context.DeadlineExceeded → 「スクショタイムアウト → 非黒扱い」（shotTimeout 経過）
+        その他                  → 「スクショ失敗 err=... → 非黒扱い」（真のエラー）
+        fail-open の挙動（false 返却）は全分岐で不変、ログ表示のみ変更
+
+  gui/handlers.go:
+    - handlePatrolScreenshot 追加（GET /api/patrol/screenshot?serial=xxx）
+        8 秒タイムアウト、mumu.CaptureScreenshotPNG を呼んで image/png で返す
+
+  gui/gui.go:
+    - /api/patrol/screenshot ルート登録
+
+【効果】
+  - "screen" / "either" モードで画面の黒画面消失をロード完了の根拠として利用可能に
+  - "either" モードでは時間経過と画面判定のうち先勝ちで進行 → 取りこぼし耐性向上
+  - 旧 config.json は patrol_load_detect_mode キー欠損 → "time" 補正で完全後方互換
+
+【影響範囲】
+  - 変更ファイル: appconfig/config.go, mumu/screen.go (新規), mumu/mumu.go,
+                  gui/handlers.go, main.go, gui/assets/app.js
+  - 後方互換性: 旧 config.json は "time" モードで従来動作（影響なし）
+  - 不変条件: §4-2 No.6 (完了シグナル経路 = 0x2E UUID 受信 + 遅延) は維持
+              （安定化フェーズの中身を切替可能にしただけ、経路自体は不変）
+  - リスク: handlers.go の inline struct + mumu.Config リテラル 2 箇所書き換え漏れに注意
+            （該当 commit では両方確認済み）
+
+====--------------------------------------------------------------------------------
 [No.46] 2026/05/23 — 巡回ページUI改修: 巡回chマトリクス化・GAS連携を巡回ページへ移設
 
 【背景 / 原因】

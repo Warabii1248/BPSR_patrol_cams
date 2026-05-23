@@ -114,6 +114,39 @@ type Config struct {
 	// デフォルト true。旧 config.json では未定義 → true (Load 起点でデフォルト値補完)。
 	PatrolLoadStabilizationAuto bool `json:"patrol_load_stabilization_auto"`
 
+	// --- ロード完了判定方式（No.46） ---
+
+	// PatrolLoadDetectMode は 0x2E UUID 受信後のシーケンス進行手段。
+	// "time"  : 時間経過のみ（従来動作）。LoadStabilization 系の値を使用
+	// "screen": ADB スクショで黒画面消失を検知。Patrol系のscreen設定を使用
+	// "either": 時間経過と画面判定を並走し、先勝ちで完了とする
+	// 空文字または未定義キーは "time" 扱い（後方互換）。
+	PatrolLoadDetectMode string `json:"patrol_load_detect_mode"`
+
+	// PatrolScreenPollMs はスクショポーリング間隔（ms）。200-2000 推奨。デフォルト: 500
+	PatrolScreenPollMs int `json:"patrol_screen_poll_ms"`
+
+	// PatrolScreenRegionX / Y / W / H は監視矩形（px、画像座標系）。
+	// 左上 (X, Y) から幅 W × 高さ H の矩形を判定対象とする。
+	// 画像範囲外にはみ出した場合は自動的にクリップする。
+	// MuMu Player は負荷軽減のため 1280x720 で稼働させるのが基本前提。
+	// W または H が 0 以下の場合は applyDefaults で 1280x720 想定の中央 600x400 にリセット。
+	// デフォルト: X=340, Y=160, W=600, H=400
+	PatrolScreenRegionX int `json:"patrol_screen_region_x"`
+	PatrolScreenRegionY int `json:"patrol_screen_region_y"`
+	PatrolScreenRegionW int `json:"patrol_screen_region_w"`
+	PatrolScreenRegionH int `json:"patrol_screen_region_h"`
+
+	// PatrolScreenBlackLuma は黒判定の輝度閾値（0-255）。これ以下を黒画素とみなす。デフォルト: 25
+	PatrolScreenBlackLuma int `json:"patrol_screen_black_luma"`
+
+	// PatrolScreenBlackPixelRatio は黒画素割合下限（0.0-1.0）。この割合以上が黒なら「黒画面」。デフォルト: 0.95
+	PatrolScreenBlackPixelRatio float64 `json:"patrol_screen_black_pixel_ratio"`
+
+	// PatrolScreenTimeoutSecs は画面判定のフォールバックタイムアウト（秒）。
+	// この時間内に黒画面が消えない場合は強制的にロード完了として進行する。デフォルト: 12
+	PatrolScreenTimeoutSecs float64 `json:"patrol_screen_timeout_secs"`
+
 	// ParallelLimit は同時切替の最大台数。0=無制限（グループディレイも無効）。
 	ParallelLimit int `json:"parallel_limit"`
 
@@ -210,6 +243,15 @@ func defaultConfig() *Config {
 		PatrolMergeTimeoutSecs:       15,
 		PatrolLoadStabilizationSecs:  6,
 		PatrolLoadStabilizationAuto:  true,
+		PatrolLoadDetectMode:        "time",
+		PatrolScreenPollMs:          500,
+		PatrolScreenRegionX:         340,
+		PatrolScreenRegionY:         160,
+		PatrolScreenRegionW:         600,
+		PatrolScreenRegionH:         400,
+		PatrolScreenBlackLuma:       25,
+		PatrolScreenBlackPixelRatio: 0.95,
+		PatrolScreenTimeoutSecs:     12,
 		ActiveDeviceCount:        0,
 		MoveFailThreshold:            0.0, // 0=従来通り全台
 		ConsecutiveMoveFailThreshold: 3,   // 3連続移動失敗でクラッシュ判定
@@ -270,6 +312,37 @@ func applyDefaults(cfg *Config) {
 	}
 	// GASEnable: defaultConfig() で true に設定済み。
 	// json.Unmarshal は欠損キーを上書きしないため、旧 config.json でも true が維持される。
+
+	// No.46: ロード完了判定モード（旧 config.json では未定義 → 空文字 → "time" 補正で従来動作）
+	if cfg.PatrolLoadDetectMode == "" {
+		cfg.PatrolLoadDetectMode = "time"
+	}
+	if cfg.PatrolScreenPollMs < 200 {
+		cfg.PatrolScreenPollMs = 500
+	}
+	// 監視矩形: W または H が 0 以下なら旧 config.json と判定して MuMu 1280x720 想定の
+	// 中央 600x400 にリセット。X/Y は 0 でも有効（左上端）なので個別補正しない。
+	if cfg.PatrolScreenRegionW <= 0 || cfg.PatrolScreenRegionH <= 0 {
+		cfg.PatrolScreenRegionX = 340
+		cfg.PatrolScreenRegionY = 160
+		cfg.PatrolScreenRegionW = 600
+		cfg.PatrolScreenRegionH = 400
+	}
+	if cfg.PatrolScreenRegionX < 0 {
+		cfg.PatrolScreenRegionX = 0
+	}
+	if cfg.PatrolScreenRegionY < 0 {
+		cfg.PatrolScreenRegionY = 0
+	}
+	if cfg.PatrolScreenBlackLuma <= 0 || cfg.PatrolScreenBlackLuma > 255 {
+		cfg.PatrolScreenBlackLuma = 25
+	}
+	if cfg.PatrolScreenBlackPixelRatio <= 0 || cfg.PatrolScreenBlackPixelRatio > 1.0 {
+		cfg.PatrolScreenBlackPixelRatio = 0.95
+	}
+	if cfg.PatrolScreenTimeoutSecs <= 0 {
+		cfg.PatrolScreenTimeoutSecs = 12
+	}
 }
 
 func ensureParentDir(path string) error {

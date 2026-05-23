@@ -1672,6 +1672,16 @@ const CFG_FIELDS_PATROL=[
   {k:'patrol_adaptive_timeout_window',label:'適応型: 学習サンプル数',type:'number',desc:'参照する直近ロード回数（デフォルト: 10）'},
   {k:'patrol_load_stabilization_auto',label:'ロード安定化遅延: 自動',type:'bool',desc:'ONの場合、0x2E受信からの遅延をロード観測データから自動算出する。OFFは手動値を使用'},
   {k:'patrol_load_stabilization_secs',label:'ロード安定化遅延: 手動値 (秒)',type:'number',desc:'0x2E UUID受信から完了シグナル発火までの待機秒数。自動モードOFF時に使用（0=デフォルト6s）'},
+  {k:'patrol_load_detect_mode',label:'ロード完了判定方式',type:'select',options:['time','either','screen'],desc:'time=時間のみ(従来)、screen=ADBスクショで黒画面消失検知のみ、either=両方並走で先勝ち(推奨)'},
+  {k:'patrol_screen_poll_ms',label:'画面判定: ポーリング間隔 (ms)',type:'number',desc:'200-2000推奨。短すぎるとADB負荷増。デフォルト500'},
+  {k:'_screen_region_picker',label:'',type:'region-picker-btn',desc:''},
+  {k:'patrol_screen_region_x',label:'画面判定: 監視矩形 X (px)',type:'number',desc:'監視矩形の左上 X 座標（px）。エミュレータ 1280x720 想定でデフォルト340'},
+  {k:'patrol_screen_region_y',label:'画面判定: 監視矩形 Y (px)',type:'number',desc:'監視矩形の左上 Y 座標（px）。デフォルト160（1280x720想定）'},
+  {k:'patrol_screen_region_w',label:'画面判定: 監視矩形 幅 (px)',type:'number',desc:'監視矩形の幅（px）。デフォルト600（1280x720想定）。0以下で全自動リセット'},
+  {k:'patrol_screen_region_h',label:'画面判定: 監視矩形 高さ (px)',type:'number',desc:'監視矩形の高さ（px）。デフォルト400（1280x720想定）。0以下で全自動リセット'},
+  {k:'patrol_screen_black_luma',label:'画面判定: 黒輝度閾値 (0-255)',type:'number',desc:'これ以下を黒画素とみなす。デフォルト25'},
+  {k:'patrol_screen_black_pixel_ratio',label:'画面判定: 黒画素割合下限 (0-1)',type:'number',desc:'この割合以上が黒なら「黒画面」と判定。デフォルト0.95'},
+  {k:'patrol_screen_timeout_secs',label:'画面判定: タイムアウト (秒)',type:'number',desc:'判定が完了しない場合の強制進行上限。デフォルト12'},
 ];
 const CFG_FIELDS_GAME=[
   {k:'game_package_name',label:'ゲームパッケージ名',type:'text',desc:'クラッシュ検知・ADB起動用のパッケージ名。例: com.example.game'},
@@ -1719,6 +1729,9 @@ function renderConfigFields(containerId, fields){
 		if(f.type==='select'){
 			const opts=(f.options||[]).map(o=>'<option value="'+escHtml(o)+'"'+(val===o?' selected':'')+'>'+escHtml(o)+'</option>').join('');
 			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><select id="cfg-'+f.k+'">'+opts+'</select>'+noteHtml+'</div>';
+		}
+		if(f.type==='region-picker-btn'){
+			return '<div class="cfg-field"><button type="button" class="btn btn-region-picker" onclick="openScreenshotPicker()">📐 監視矩形をドラッグで選択...</button></div>';
 		}
 		var inputType=(f.type==='csv'||f.type==='csv-num')?'text':f.type;
 		var testBtnHtml=f.testBtn?('<div style="margin-top:4px"><button type="button" class="btn" onclick="testWebhook(\'cfg-'+f.k+'\')">📨 テスト送信</button><span id="cfg-'+f.k+'-test-result" style="margin-left:8px;font-size:var(--fs-sm);opacity:.8"></span></div>'):'';
@@ -2534,3 +2547,157 @@ syncLayoutEditState();
   }
   setInterval(syncBrandStatus,1000);
 })();
+
+// ===== 画面判定: 監視矩形 ドラッグ選択モーダル =====
+const _ssState={img:null,imgW:0,imgH:0,drag:null,rect:null};
+
+async function openScreenshotPicker(){
+  const overlay=document.getElementById('ss-overlay');
+  if(!overlay)return;
+  overlay.style.display='flex';
+  _ssInitHandlers();
+  // 既存値をプリセット
+  _ssState.rect={
+    x:parseInt((document.getElementById('cfg-patrol_screen_region_x')||{}).value||'0',10)||0,
+    y:parseInt((document.getElementById('cfg-patrol_screen_region_y')||{}).value||'0',10)||0,
+    w:parseInt((document.getElementById('cfg-patrol_screen_region_w')||{}).value||'0',10)||0,
+    h:parseInt((document.getElementById('cfg-patrol_screen_region_h')||{}).value||'0',10)||0,
+  };
+  _ssUpdateCoordDisplay();
+  await _ssLoadDevices();
+  _ssCaptureScreenshot();
+}
+
+function closeScreenshotPicker(){
+  const overlay=document.getElementById('ss-overlay');
+  if(overlay)overlay.style.display='none';
+  _ssState.drag=null;
+}
+
+async function _ssLoadDevices(){
+  const sel=document.getElementById('ss-serial');
+  if(!sel)return;
+  const prev=sel.value;
+  try{
+    const r=await fetch('/api/devices');
+    const d=await r.json();
+    const list=(d&&(d.devices||d.serials))||(Array.isArray(d)?d:[]);
+    if(!list.length){sel.innerHTML='<option value="">デバイスなし</option>';return;}
+    sel.innerHTML=list.map(s=>'<option value="'+escHtml(s)+'"'+(s===prev?' selected':'')+'>'+escHtml(s)+'</option>').join('');
+  }catch(_e){
+    sel.innerHTML='<option value="">取得失敗</option>';
+  }
+}
+
+async function _ssCaptureScreenshot(){
+  const sel=document.getElementById('ss-serial');
+  const status=document.getElementById('ss-status');
+  const canvas=document.getElementById('ss-canvas');
+  if(!sel||!sel.value){if(status)status.textContent='デバイス未選択';return;}
+  if(!canvas)return;
+  if(status)status.textContent='スクショ取得中…';
+  try{
+    const r=await fetch('/api/patrol/screenshot?serial='+encodeURIComponent(sel.value));
+    if(!r.ok){if(status)status.textContent='失敗: HTTP '+r.status;return;}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const img=new Image();
+    img.onload=()=>{
+      _ssState.img=img;
+      _ssState.imgW=img.naturalWidth;
+      _ssState.imgH=img.naturalHeight;
+      canvas.width=img.naturalWidth;
+      canvas.height=img.naturalHeight;
+      _ssRedraw();
+      URL.revokeObjectURL(url);
+      if(status)status.textContent=img.naturalWidth+'×'+img.naturalHeight+' px';
+    };
+    img.onerror=()=>{if(status)status.textContent='画像デコード失敗';URL.revokeObjectURL(url);};
+    img.src=url;
+  }catch(e){
+    if(status)status.textContent='失敗: '+(e&&e.message||e);
+  }
+}
+
+function _ssRedraw(){
+  const canvas=document.getElementById('ss-canvas');
+  if(!canvas||!_ssState.img)return;
+  const ctx=canvas.getContext('2d');
+  ctx.drawImage(_ssState.img,0,0);
+  const r=_ssState.rect;
+  if(r&&r.w>0&&r.h>0){
+    ctx.fillStyle='rgba(255,255,0,0.18)';
+    ctx.fillRect(r.x,r.y,r.w,r.h);
+    ctx.strokeStyle='#ff3';
+    ctx.lineWidth=Math.max(2,Math.round(_ssState.imgW/640));
+    ctx.strokeRect(r.x,r.y,r.w,r.h);
+  }
+}
+
+function _ssCanvasToImage(e){
+  const canvas=document.getElementById('ss-canvas');
+  const rect=canvas.getBoundingClientRect();
+  const sx=canvas.width/rect.width;
+  const sy=canvas.height/rect.height;
+  let x=Math.round((e.clientX-rect.left)*sx);
+  let y=Math.round((e.clientY-rect.top)*sy);
+  if(x<0)x=0;if(y<0)y=0;
+  if(x>canvas.width)x=canvas.width;
+  if(y>canvas.height)y=canvas.height;
+  return{x:x,y:y};
+}
+
+function _ssUpdateCoordDisplay(){
+  const r=_ssState.rect||{};
+  ['x','y','w','h'].forEach(k=>{
+    const el=document.getElementById('ss-'+k);
+    if(el)el.textContent=(r[k]!==undefined&&r[k]>=0&&(k==='x'||k==='y'||r[k]>0))?r[k]:'-';
+  });
+  const apply=document.getElementById('ss-apply');
+  if(apply)apply.disabled=!(r.w>0&&r.h>0);
+}
+
+function _ssInitHandlers(){
+  const canvas=document.getElementById('ss-canvas');
+  if(canvas&&!canvas.__ssInit){
+    canvas.__ssInit=true;
+    canvas.addEventListener('mousedown',e=>{
+      e.preventDefault();
+      const p=_ssCanvasToImage(e);
+      _ssState.drag={sx:p.x,sy:p.y,ex:p.x,ey:p.y};
+    });
+    canvas.addEventListener('mousemove',e=>{
+      if(!_ssState.drag)return;
+      const p=_ssCanvasToImage(e);
+      _ssState.drag.ex=p.x;_ssState.drag.ey=p.y;
+      const sx=Math.min(_ssState.drag.sx,_ssState.drag.ex);
+      const sy=Math.min(_ssState.drag.sy,_ssState.drag.ey);
+      const ex=Math.max(_ssState.drag.sx,_ssState.drag.ex);
+      const ey=Math.max(_ssState.drag.sy,_ssState.drag.ey);
+      _ssState.rect={x:sx,y:sy,w:ex-sx,h:ey-sy};
+      _ssRedraw();
+      _ssUpdateCoordDisplay();
+    });
+    const endDrag=()=>{_ssState.drag=null;};
+    canvas.addEventListener('mouseup',endDrag);
+    canvas.addEventListener('mouseleave',endDrag);
+  }
+  const reload=document.getElementById('ss-reload');
+  if(reload&&!reload.__ssInit){reload.__ssInit=true;reload.onclick=_ssCaptureScreenshot;}
+  const apply=document.getElementById('ss-apply');
+  if(apply&&!apply.__ssInit){apply.__ssInit=true;apply.onclick=_ssApply;}
+  const sel=document.getElementById('ss-serial');
+  if(sel&&!sel.__ssInit){sel.__ssInit=true;sel.onchange=_ssCaptureScreenshot;}
+}
+
+function _ssApply(){
+  const r=_ssState.rect;
+  if(!r||r.w<=0||r.h<=0)return;
+  const setVal=(k,v)=>{
+    const el=document.getElementById('cfg-patrol_screen_region_'+k);
+    if(el)el.value=String(v);
+  };
+  setVal('x',r.x);setVal('y',r.y);setVal('w',r.w);setVal('h',r.h);
+  closeScreenshotPicker();
+  if(typeof saveConfig==='function')saveConfig(false);
+}

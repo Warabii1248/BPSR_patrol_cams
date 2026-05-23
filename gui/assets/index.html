@@ -579,6 +579,33 @@
     </div>
   </div>
 </div>
+<!-- 画面判定: 監視矩形 ドラッグ選択モーダル -->
+<div id="ss-overlay" class="pm-overlay" style="display:none">
+  <div class="pm-modal ss-modal">
+    <div class="pm-modal-title">📐 監視矩形をドラッグで選択</div>
+    <div class="ss-toolbar">
+      <label>デバイス:
+        <select id="ss-serial"></select>
+      </label>
+      <button class="btn" id="ss-reload">スクショ取得</button>
+      <span id="ss-status" class="ss-status"></span>
+    </div>
+    <div class="ss-canvas-wrap">
+      <canvas id="ss-canvas"></canvas>
+    </div>
+    <div class="ss-coords">
+      <span>X: <b id="ss-x">-</b></span>
+      <span>Y: <b id="ss-y">-</b></span>
+      <span>W: <b id="ss-w">-</b></span>
+      <span>H: <b id="ss-h">-</b></span>
+      <span class="ss-hint">画像上でドラッグして矩形を選択してください</span>
+    </div>
+    <div class="pm-btns">
+      <button class="btn" onclick="closeScreenshotPicker()">キャンセル</button>
+      <button class="btn success" id="ss-apply" disabled>確定して反映</button>
+    </div>
+  </div>
+</div>
 <!-- PortMap 変更確認モーダル -->
 <div id="pm-overlay" class="pm-overlay" style="display:none">
   <div class="pm-modal">

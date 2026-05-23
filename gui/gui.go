@@ -754,6 +754,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/patrol/stop", s.handlePatrolStop)
 	mux.HandleFunc("/api/patrol/identify", s.handlePatrolIdentify)
 	mux.HandleFunc("/api/patrol/status", s.handlePatrolStatus)
+	mux.HandleFunc("/api/patrol/screenshot", s.handlePatrolScreenshot)
 	mux.HandleFunc("/api/patrol/device-statuses", s.handlePatrolDeviceStatuses)
 	mux.HandleFunc("/api/patrol/recover", s.handlePatrolRecover)
 	mux.HandleFunc("/api/patrol/clear-move-failed", s.handlePatrolClearMoveFailed)

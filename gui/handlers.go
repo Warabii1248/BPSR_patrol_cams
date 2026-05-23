@@ -468,6 +468,15 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 					PatrolMergeTimeoutSecs           float64 `json:"patrol_merge_timeout_secs"`
 					PatrolLoadStabilizationSecs      float64 `json:"patrol_load_stabilization_secs"`
 					PatrolLoadStabilizationAuto      bool    `json:"patrol_load_stabilization_auto"`
+					PatrolLoadDetectMode             string  `json:"patrol_load_detect_mode"`
+					PatrolScreenPollMs               int     `json:"patrol_screen_poll_ms"`
+					PatrolScreenRegionX              int     `json:"patrol_screen_region_x"`
+					PatrolScreenRegionY              int     `json:"patrol_screen_region_y"`
+					PatrolScreenRegionW              int     `json:"patrol_screen_region_w"`
+					PatrolScreenRegionH              int     `json:"patrol_screen_region_h"`
+					PatrolScreenBlackLuma            int     `json:"patrol_screen_black_luma"`
+					PatrolScreenBlackPixelRatio      float64 `json:"patrol_screen_black_pixel_ratio"`
+					PatrolScreenTimeoutSecs          float64 `json:"patrol_screen_timeout_secs"`
 					PatrolDwellSecs             float64 `json:"patrol_dwell_secs"`
 					PatrolAdaptiveTimeout       bool              `json:"patrol_adaptive_timeout"`
 					PatrolAdaptiveTimeoutWindow int               `json:"patrol_adaptive_timeout_window"`
@@ -494,6 +503,15 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 						MergeTimeout:              time.Duration(appCfg.PatrolMergeTimeoutSecs * float64(time.Second)),
 						LoadStabilizationDuration: time.Duration(appCfg.PatrolLoadStabilizationSecs * float64(time.Second)),
 						LoadStabilizationAuto:     appCfg.PatrolLoadStabilizationAuto,
+						LoadDetectMode:            appCfg.PatrolLoadDetectMode,
+						ScreenPollInterval:        time.Duration(appCfg.PatrolScreenPollMs) * time.Millisecond,
+						ScreenRegionX:             appCfg.PatrolScreenRegionX,
+						ScreenRegionY:             appCfg.PatrolScreenRegionY,
+						ScreenRegionW:             appCfg.PatrolScreenRegionW,
+						ScreenRegionH:             appCfg.PatrolScreenRegionH,
+						ScreenBlackLuma:           uint8(appCfg.PatrolScreenBlackLuma),
+						ScreenBlackPixelRatio:     appCfg.PatrolScreenBlackPixelRatio,
+						ScreenDetectTimeout:       time.Duration(appCfg.PatrolScreenTimeoutSecs * float64(time.Second)),
 						DwellDuration:         time.Duration(appCfg.PatrolDwellSecs * float64(time.Second)),
 						AdaptiveTimeout:        appCfg.PatrolAdaptiveTimeout,
 						AdaptiveTimeoutWindow:  appCfg.PatrolAdaptiveTimeoutWindow,
@@ -1176,6 +1194,35 @@ func (s *Server) handleComputeAssignments(w http.ResponseWriter, r *http.Request
 func (s *Server) handleChatLogPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, chatLogHTML)
+}
+
+// handlePatrolScreenshot は serial デバイスのスクリーンショット PNG を返す。
+// GUI の監視矩形ドラッグ選択モーダルから呼ばれる。
+func (s *Server) handlePatrolScreenshot(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		http.Error(w, "patrol disabled", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", 405)
+		return
+	}
+	serial := r.URL.Query().Get("serial")
+	if serial == "" {
+		http.Error(w, "serial required", 400)
+		return
+	}
+	cfg := s.patroller.Config()
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	png, err := mumu.CaptureScreenshotPNG(ctx, serial, cfg)
+	if err != nil {
+		http.Error(w, "screenshot failed: "+err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(png)
 }
 
 // handlePatrolStatus は現在の巡回状態を返す

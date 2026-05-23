@@ -65,6 +65,25 @@ type Config struct {
 	CrashRecoveryEnabled bool
 	// CrashRecoveryDelaySecs は復帰後のゲーム起動待機秒数（デフォルト: 30）。
 	CrashRecoveryDelaySecs float64
+
+	// --- ロード完了判定方式（No.46） ---
+	// LoadDetectMode は 0x2E UUID 受信後のシーケンス進行方式。
+	// "time" (従来) / "screen" / "either"。空文字または未知値は "time" 扱い。
+	LoadDetectMode string
+	// ScreenPollInterval は画面判定のポーリング間隔。
+	ScreenPollInterval time.Duration
+	// ScreenRegionX / Y / W / H は監視矩形（px、画像座標系）。
+	// 左上 (X, Y) から幅 W × 高さ H。画像範囲外にはみ出した場合は自動クリップ。
+	ScreenRegionX int
+	ScreenRegionY int
+	ScreenRegionW int
+	ScreenRegionH int
+	// ScreenBlackLuma は黒判定の輝度閾値（0-255）。
+	ScreenBlackLuma uint8
+	// ScreenBlackPixelRatio は黒画素割合下限（0.0-1.0）。
+	ScreenBlackPixelRatio float64
+	// ScreenDetectTimeout は画面判定のフォールバックタイムアウト。
+	ScreenDetectTimeout time.Duration
 }
 
 // newCmd は HideWindow: true でコマンドを作成する（GUIモード時のコンソール点滅防止）
@@ -856,6 +875,7 @@ type Patroller struct {
 	mu               sync.RWMutex
 	wg               sync.WaitGroup // 巡回goroutineの完了待機用
 	status           PatrolStatus
+	ctx              context.Context
 	cancel           context.CancelFunc
 	lastChannel      uint32             // 最後に巡回したチャンネル（再開位置の計算に使用）
 	moveSignal       chan moveSignalMsg // [0x2E]パケット受信シグナル（UID付き）
@@ -902,6 +922,11 @@ type Patroller struct {
 	// switchStartTimes は serial → 直近の switch_channel 発行時刻（autoDelay 計算用）
 	switchStartTimes   map[string]time.Time
 	switchStartTimesMu sync.Mutex
+
+	// postLoadCancels は NotifyPostLoadReady で起動した待機 goroutine の cancel 関数。
+	// 同 serial の前回 goroutine をキャンセルして重複起動・リークを防ぐ。
+	postLoadCancels  map[string]context.CancelFunc
+	postLoadCancelMu sync.Mutex
 }
 
 // NotifyChMovePacket は guiWriter が "[0x2E] UUID=" ログ行を検出したときに呼び出す。
@@ -1039,11 +1064,43 @@ func (p *Patroller) NotifyPostLoadReady(uid uint64, lineID uint32, t time.Time) 
 
 	delay := p.loadStabilizationDelay()
 	fireAt := t.Add(delay)
-	debuglog.Vlogf("0x2E", "[PostLoadReady] serial=%s uid=%d lineID=%d delay=%.1fs", serial, uid, lineID, delay.Seconds())
-	go func(s string, line uint32, at time.Time) {
-		time.Sleep(time.Until(at))
-		p.notifyMoveSignal(s, line, at)
-	}(serial, lineID, fireAt)
+
+	p.mu.RLock()
+	cfg := p.cfg
+	parentCtx := p.ctx
+	p.mu.RUnlock()
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	mode := strings.ToLower(cfg.LoadDetectMode)
+	debuglog.Vlogf("0x2E", "[PostLoadReady] serial=%s uid=%d lineID=%d mode=%s delay=%.1fs",
+		serial, uid, lineID, mode, delay.Seconds())
+
+	// 同 serial の前回 goroutine をキャンセルし、新規 ctx を発行する。
+	ctx, cancel := context.WithCancel(parentCtx)
+	p.postLoadCancelMu.Lock()
+	if p.postLoadCancels == nil {
+		p.postLoadCancels = make(map[string]context.CancelFunc)
+	}
+	if prev := p.postLoadCancels[serial]; prev != nil {
+		prev()
+	}
+	p.postLoadCancels[serial] = cancel
+	p.postLoadCancelMu.Unlock()
+
+	go func() {
+		// 戦略終了時に自分の ctx を必ず cancel する（CancelFunc は冪等なので
+		// 上書き後の前任 cancel ハンドラから呼ばれていても無害）。
+		defer cancel()
+		switch mode {
+		case "screen":
+			p.runScreenStrategy(ctx, serial, lineID, t, cfg)
+		case "either":
+			p.runEitherStrategy(ctx, serial, lineID, fireAt, cfg)
+		default: // "time" または未知値
+			p.runTimeStrategy(ctx, serial, lineID, fireAt)
+		}
+	}()
 }
 
 // notifyMoveSignal は serial を label として moveSignal チャネルに t 付きで送信する。
@@ -1775,6 +1832,7 @@ func (p *Patroller) Stop() {
 	p.mu.Lock()
 	cancel := p.cancel
 	p.cancel = nil
+	p.ctx = nil
 	if p.status.CurrentChannel > 0 {
 		p.lastChannel = p.status.CurrentChannel
 	}
@@ -1786,6 +1844,15 @@ func (p *Patroller) Stop() {
 	if cancel != nil {
 		cancel()
 	}
+	// No.46: NotifyPostLoadReady で起動した待機 goroutine も全部止める
+	p.postLoadCancelMu.Lock()
+	for _, c := range p.postLoadCancels {
+		if c != nil {
+			c()
+		}
+	}
+	p.postLoadCancels = nil
+	p.postLoadCancelMu.Unlock()
 	if cancel != nil {
 		log.Println("[MuMu] 巡回停止")
 	}
@@ -1925,6 +1992,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 	sig := make(chan moveSignalMsg, 64)
 
 	p.mu.Lock()
+	p.ctx = ctx
 	p.cancel = cancel
 	p.moveSignal = sig
 	// インスタンス追跡を巡回再開時にリセット
