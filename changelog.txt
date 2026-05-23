@@ -1,4 +1,36 @@
 ﻿====--------------------------------------------------------------------------------
+[No.46] 2026/05/23 — 巡回ページUI改修: 巡回chマトリクス化・GAS連携を巡回ページへ移設
+
+【背景 / 原因】
+  巡回チャンネル選択 UI が number input の動的リスト方式で操作が煩雑だった。
+  GAS連携チェックボックスが設定>その他にあり、巡回機能との関連が UI 上見えづらかった。
+
+【変更内容】
+  gui/assets/styles.css:
+    - .ch-sel-grid / .ch-sel-cell クラスを追加（10列グリッド・選択状態スタイル）
+  gui/assets/index.html:
+    - card-patrol-channels: number input リスト → 10x10 ch 選択マトリクスに変更
+    - ＋追加/↑昇順/↓降順/💾保存/一括上書き入力を削除
+    - 全選択/全解除ボタン・選択件数表示(ch-selected-count)を追加
+    - card-patrol-control 末尾に GAS連携チェックボックス(cfg-gas_enable)を追加
+  gui/assets/app.js:
+    - renderChannelEditor → renderPatrolChSelector に置換（10x10マトリクス描画）
+    - toggleChannel / selectAllChannels / clearAllChannels / _autoSaveChannels 追加
+    - 旧 addChannel / removeChannel / sortChannels / bulkImportChannels / saveChannels / _setChSaveBtnDisabled 削除
+    - CFG_FIELDS_MISC から gas_enable を削除（静的 HTML 要素に移設）
+    - loadConfig に cfg-gas_enable の手動セット＋onchange リスナー追加
+    - saveConfig に cfg-gas_enable の手動収集追加
+
+【効果】
+  - 巡回チャンネル選択がクリック操作で即保存に簡略化
+  - GAS連携が巡回機能の文脈に集約されて発見性向上
+
+【影響範囲】
+  - gui/assets/styles.css, gui/assets/index.html, gui/assets/app.js のみ
+  - バックエンド・config スキーマ・channels.txt フォーマットは無変更
+  - 後方互換性: 維持（gas_enable の保存経路・デフォルト値は変更なし）
+
+====--------------------------------------------------------------------------------
 [No.45] 2026/05/23 — シグナル待ちフェーズ中のタイムアウトカウントダウン非表示
 
 【背景 / 原因】

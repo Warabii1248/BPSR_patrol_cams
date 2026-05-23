@@ -426,21 +426,26 @@
 						<div class="stat-value ok" id="ps-cycle-rate">--</div>
 					</div>
 				</div>
+				<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+					<label class="cfg-bool-label" style="margin:0;cursor:pointer">
+						<input type="checkbox" id="cfg-gas_enable">
+						<span style="font-size:var(--fs-sm)">GAS連携</span>
+					</label>
+					<span style="font-size:var(--fs-xs);color:var(--text3)">Chrome拡張からのチャンネル情報受信を受け付ける</span>
+				</div>
 				</div>
 			<div class="card panel-size-1x2 panel-col-1" id="card-patrol-channels">
-        <div class="card-title">巡回チャンネル</div>
+        <div class="card-title">巡回チャンネル <span id="ch-selected-count" style="font-weight:400;color:var(--text3);font-size:.9em"></span></div>
         <div class="flex-row" style="margin-bottom:6px">
-          <button class="btn" style="padding:3px 8px;font-size:.8em" onclick="addChannel()">＋ 追加</button>
-          <button class="btn" style="padding:3px 8px;font-size:.8em" onclick="sortChannels('asc')">↑ 昇順</button>
-          <button class="btn" style="padding:3px 8px;font-size:.8em" onclick="sortChannels('desc')">↓ 降順</button>
-          <button class="btn primary" style="padding:3px 8px;font-size:.8em" id="btn-ch-save" onclick="saveChannels()" disabled>💾 保存</button>
-          <span id="ch-save-status" style="font-size:.8em;color:var(--text2)"></span>
+          <button class="btn" style="padding:3px 8px;font-size:.8em" onclick="selectAllChannels()">全選択</button>
+          <button class="btn" style="padding:3px 8px;font-size:.8em" onclick="clearAllChannels()">全解除</button>
+          <span id="ch-save-status" style="font-size:.8em;color:var(--text2);margin-left:6px"></span>
         </div>
-        <div class="ch-editor" id="ch-editor"><div class="no-devices">読み込み中...</div></div>
-        <div class="flex-row" style="margin-top:6px">
-          <input type="text" id="ch-bulk-input" placeholder="例: 6,13,23,35,41..." style="flex:1;font-size:.85em">
-          <button class="btn" style="padding:3px 10px;font-size:.8em" onclick="bulkImportChannels()">上書き</button>
+        <div class="flex-row" style="margin-bottom:6px;gap:4px">
+          <input type="text" id="ch-list-input" placeholder="例: 1,8,16,22,25" style="flex:1;font-size:.8em;padding:3px 6px">
+          <button class="btn" style="padding:3px 8px;font-size:.8em" onclick="applyChannelList()">適用</button>
         </div>
+        <div class="ch-sel-grid" id="ch-sel-grid"></div>
       </div>
 		<div class="card panel-size-1x2 panel-col-1" id="card-patrol-device-status">
 		  <div class="card-title">デバイス監視</div>

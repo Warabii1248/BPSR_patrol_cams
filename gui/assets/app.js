@@ -1334,34 +1334,66 @@ function applyReversedUI(){['btn-reversed','dash-btn-reversed'].forEach(id=>{con
 function applyLoopUI(){['btn-loop','dash-btn-loop'].forEach(id=>{const b=document.getElementById(id);if(!b)return;_setBtnLabel(b,patrolLoopMode?'ループ':'一巡');b.classList.toggle('active',!patrolLoopMode);});}
 async function loadPatrolChannels(){
   const d=await fetch('/api/patrol/channels').then(r=>r.json());
-  patrolChannels=d.channels||[];renderChannelEditor();
+  patrolChannels=d.channels||[];renderPatrolChSelector();
   const sel=document.getElementById('dash-patrol-start-ch-select');
   if(sel){const cur=sel.value;sel.innerHTML='<option value="0">(前回位置)</option>'+patrolChannels.map(ch=>'<option value="'+ch+'">'+ch+'</option>').join('');sel.value=cur;}
   if(typeof renderChannelMatrix==='function')renderChannelMatrix();
 }
-function _setChSaveBtnDisabled(v){const b=document.getElementById('btn-ch-save');if(b)b.disabled=v;}
-function renderChannelEditor(){
-  const el=document.getElementById('ch-editor');
-  if(patrolChannels.length===0){if(el)el.innerHTML='<div class="no-devices">チャンネルなし</div>';_setChSaveBtnDisabled(true);return;}
-  if(el)el.innerHTML=patrolChannels.map((ch,i)=>'<div class="ch-row"><span class="ch-num">'+(i+1)+'.</span>'
-    +'<input type="number" value="'+ch+'" min="1" max="9999" style="width:75px" onchange="patrolChannels['+i+']=parseInt(this.value)||1;_setChSaveBtnDisabled(false)">'
-    +'<button class="btn" style="padding:2px 8px;font-size:.8em" onclick="removeChannel('+i+')">✕</button></div>').join('');
-  _setChSaveBtnDisabled(false);
+function renderPatrolChSelector(){
+  const el=document.getElementById('ch-sel-grid');if(!el)return;
+  const set=new Set(patrolChannels);
+  const cells=[];
+  for(let ch=1;ch<=100;ch++){
+    const sel=set.has(ch)?' selected':'';
+    cells.push('<div class="ch-sel-cell'+sel+'" data-ch="'+ch+'" onclick="toggleChannel('+ch+')">'+ch+'</div>');
+  }
+  el.innerHTML=cells.join('');
+  _updateChSelectedCount();
 }
-function addChannel(){const v=parseInt(prompt('追加するチャンネル番号:',''))||0;if(v>0){patrolChannels.push(v);renderChannelEditor();}}
-function removeChannel(i){patrolChannels.splice(i,1);renderChannelEditor();_setChSaveBtnDisabled(false);}
-function sortChannels(dir){patrolChannels.sort((a,b)=>dir==='asc'?a-b:b-a);renderChannelEditor();_setChSaveBtnDisabled(false);}
-function bulkImportChannels(){
-  const nums=document.getElementById('ch-bulk-input').value.split(/[,\s]+/).map(s=>parseInt(s)).filter(n=>n>0);
+function _updateChSelectedCount(){
+  const el=document.getElementById('ch-selected-count');
+  if(el)el.textContent='('+patrolChannels.length+'/100)';
+}
+function toggleChannel(ch){
+  const i=patrolChannels.indexOf(ch);
+  if(i>=0)patrolChannels.splice(i,1);
+  else{patrolChannels.push(ch);patrolChannels.sort((a,b)=>a-b);}
+  const cell=document.querySelector('.ch-sel-cell[data-ch="'+ch+'"]');
+  if(cell)cell.classList.toggle('selected');
+  _updateChSelectedCount();
+  _autoSaveChannels();
+}
+function selectAllChannels(){
+  patrolChannels=Array.from({length:100},(_,i)=>i+1);
+  renderPatrolChSelector();_autoSaveChannels();
+}
+function clearAllChannels(){
+  patrolChannels=[];
+  renderPatrolChSelector();_autoSaveChannels();
+}
+function applyChannelList(){
+  const inp=document.getElementById('ch-list-input');
+  if(!inp)return;
+  const nums=[...new Set(
+    inp.value.split(/[,\s]+/).map(s=>parseInt(s,10)).filter(n=>!isNaN(n)&&n>=1&&n<=100)
+  )].sort((a,b)=>a-b);
   if(!nums.length)return;
-  patrolChannels=nums;renderChannelEditor();document.getElementById('ch-bulk-input').value='';_setChSaveBtnDisabled(false);
+  patrolChannels=nums;
+  inp.value='';
+  renderPatrolChSelector();_autoSaveChannels();
 }
-async function saveChannels(){
-  const r=await fetch('/api/patrol/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:patrolChannels})});
-  const d=await r.json();const st=document.getElementById('ch-save-status');
-  st.textContent=d.ok?'✓ 保存済':'✗ 失敗';
-  if(d.ok){_setChSaveBtnDisabled(true);loadPatrolChannels();}
-  setTimeout(()=>st.textContent='',3000);
+let _chSaveTimer=null;
+function _autoSaveChannels(){
+  const st=document.getElementById('ch-save-status');
+  if(st)st.textContent='保存中...';
+  if(_chSaveTimer)clearTimeout(_chSaveTimer);
+  _chSaveTimer=setTimeout(async()=>{
+    try{
+      await fetch('/api/patrol/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:patrolChannels})});
+      const st2=document.getElementById('ch-save-status');
+      if(st2){st2.textContent='✓ 保存済み';setTimeout(()=>{st2.textContent='';},2000);}
+    }catch(e){const st2=document.getElementById('ch-save-status');if(st2)st2.textContent='保存失敗';}
+  },300);
 }
 function toggleReversed(){patrolReversed=!patrolReversed;localStorage.setItem('patrolReversed',patrolReversed);applyReversedUI();}
 function toggleLoop(){patrolLoopMode=!patrolLoopMode;localStorage.setItem('patrolLoopMode',patrolLoopMode);applyLoopUI();}
@@ -1659,7 +1691,7 @@ const CFG_FIELDS_ADB=[
   {k:'mumu_pre_keycode',label:'プリキーコード',type:'text',desc:'チャンネル入力欄を開くキーコード'},
 ];
 const CFG_FIELDS_MISC=[
-  {k:'gas_enable',label:'GAS連携を有効化',type:'bool',desc:'Chrome拡張からのチャンネル情報受信を受け付ける。OFFにすると /api/patrol/channels/gas を 403 で拒否'},
+  // gas_enable は巡回ページ(card-patrol-control)に移設。cfg-gas_enable 要素は静的 HTML で定義済み
   {k:'gas_target_enemy',label:'GAS 対象エネミー',type:'select',options:['金ウリボ','金ナッポ'],desc:'Chrome拡張から受信するエネミー種別'},
   {k:'debug_verbose',label:'詳細デバッグログ',type:'bool',desc:'true にすると [DBG][...] プレフィックスの詳細ログを出力。不具合調査用。本番運用では false を推奨'},
   {k:'show_no_device_dialog',label:'デバイス未検出ダイアログ',type:'bool',desc:'起動時にADBデバイスが見つからない場合ダイアログを表示する'},
@@ -1984,6 +2016,12 @@ async function loadConfig(){
 	renderConfigFields('cfg-form-game',CFG_FIELDS_GAME);
 	renderConfigFields('cfg-form-adb',CFG_FIELDS_ADB);
 	renderConfigFields('cfg-form-misc',CFG_FIELDS_MISC);
+	// gas_enable は巡回ページの静的要素を手動セット
+	const gasEl=document.getElementById('cfg-gas_enable');
+	if(gasEl){
+		gasEl.checked=cfgData.gas_enable===true;
+		gasEl.onchange=()=>saveConfig(true);
+	}
 	renderChatCandidatePanels();
 	renderConfigForm(cfgData);
 	applyChatFilterMinimizeState();
@@ -1998,6 +2036,8 @@ async function saveConfig(silent){
 		else if(f.type==='bool')updated[f.k]=el.checked;
 		else if(f.type==='json'){try{updated[f.k]=JSON.parse(el.value);}catch(e){updated[f.k]={};}}
 		else updated[f.k]=el.value;});
+	// gas_enable は巡回ページの静的要素から手動収集
+	{const gasEl=document.getElementById('cfg-gas_enable');if(gasEl)updated.gas_enable=gasEl.checked;}
 	// 通知エネミー（{name, enabled} 形式で全件保存）
 	updated.notify_enemies=[];
 	document.querySelectorAll('.cfg-enemy').forEach(chk=>{updated.notify_enemies.push({name:chk.value,enabled:chk.checked});});

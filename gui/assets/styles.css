@@ -532,6 +532,12 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .ch-cell.current{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-bg-strong);}
 .ch-cell.move-failed{background:var(--danger-bg);color:var(--danger);border-color:var(--danger-border);}
 .ch-cell.detected::after{content:'\2605';position:absolute;top:-4px;right:-3px;font-size:13px;color:var(--warn);text-shadow:0 0 3px var(--bg0);font-weight:bold;}
+/* === Patrol channel selector matrix === */
+.ch-sel-grid{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:3px;user-select:none;overflow-y:auto;}
+.ch-sel-cell{padding:5px 0;text-align:center;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-size:var(--fs-sm);font-weight:600;color:var(--text3);background:var(--bg2);transition:background .1s,color .1s,border-color .1s;}
+.ch-sel-cell:hover{border-color:var(--text2);color:var(--text1);}
+.ch-sel-cell.selected{background:rgba(88,166,255,.15);color:var(--accent);border-color:rgba(88,166,255,.5);}
+.ch-sel-cell.selected:hover{background:rgba(88,166,255,.25);}
 .ch-legend{display:flex;flex-wrap:wrap;gap:10px;font-size:var(--fs-xs);color:var(--text3);margin-top:6px;}
 .ch-legend .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle;}
 /* === Device pills === */
