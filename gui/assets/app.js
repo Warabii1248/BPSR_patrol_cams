@@ -1500,8 +1500,9 @@ async function pollPatrolStatus(){
 				}
 			}
 			const progressText = Math.round(progressPct) + '%';
-			const timeoutText = remainingSecs > 0 ? '⏱ ' + remainingSecs + 's' : '';
-			const timeoutColor = remainingSecs > 0 ? (remainingSecs <= 10 ? 'var(--danger)' : remainingSecs <= 20 ? 'var(--warn)' : 'var(--accent2)') : '';
+			const showTimeout = remainingSecs > 0 && currentPhase !== 'wait_0x2e';
+			const timeoutText = showTimeout ? '⏱ ' + remainingSecs + 's' : '';
+			const timeoutColor = showTimeout ? (remainingSecs <= 10 ? 'var(--danger)' : remainingSecs <= 20 ? 'var(--warn)' : 'var(--accent2)') : '';
       updatePatrolCycleStats(d, currentPhase);
       ['ps-state'].forEach(id=>{const e=els(id);if(e){e.className='running';e.textContent='▶ '+phaseState.label+(d.waiting_move?' ⏳':'');}});
       { const e=els('dash-ps-state'); if(e){e.className='hero-state';e.textContent=phaseState.label+(d.waiting_move?' ⏳':'');} }
@@ -1561,7 +1562,7 @@ async function pollPatrolStatus(){
       renderDeviceStatuses(ds);
     }catch(e){}
   }catch(e){console.warn('patrol status error:',e);}
-  finally{setTimeout(pollPatrolStatus,2000);}
+  finally{setTimeout(pollPatrolStatus,1000);}
 }
 function renderDeviceStatuses(statuses){
   const tbody=document.getElementById('device-status-tbody');if(!tbody)return;
