@@ -1487,7 +1487,18 @@ async function pollPatrolStatus(){
 				progressPct = phaseState.start + ((phaseState.end - phaseState.start) * 0.6);
 			}
 			const remainingSecs = totalMs > 0 ? Math.max(0, Math.ceil((totalMs - elapsedMs) / 1000)) : 0;
-			const phaseLabel = phaseState.label;
+			let phaseLabel = phaseState.label;
+			if(currentPhase === 'wait_0x2e' && d.avg_signal_latency_secs > 0 && d.switch_started_at_unix_ms > 0){
+				const switchElapsedMs = now - Number(d.switch_started_at_unix_ms);
+				const predictedRemainMs = d.avg_signal_latency_secs * 1000 - switchElapsedMs;
+				if(predictedRemainMs > 1000){
+					phaseLabel += ' ~' + Math.ceil(predictedRemainMs / 1000) + 's';
+				} else if(predictedRemainMs > 0){
+					phaseLabel += ' ~まもなく';
+				} else {
+					phaseLabel += ' (遅延)';
+				}
+			}
 			const progressText = Math.round(progressPct) + '%';
 			const timeoutText = remainingSecs > 0 ? '⏱ ' + remainingSecs + 's' : '';
 			const timeoutColor = remainingSecs > 0 ? (remainingSecs <= 10 ? 'var(--danger)' : remainingSecs <= 20 ? 'var(--warn)' : 'var(--accent2)') : '';
