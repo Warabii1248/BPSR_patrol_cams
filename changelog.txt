@@ -1,4 +1,39 @@
 ﻿====--------------------------------------------------------------------------------
+[No.49] 2026/05/24 — screen モード: shotTimeout 拡張 + fail-closed 化（誤判定修正）
+
+【背景 / 原因】
+  patrol_screen_poll_ms=500 / 8 台同時運用で:
+    [PostLoadReady] serial=X mode=screen delay=2.0s
+    [Screen] スクショタイムアウト serial=X → 非黒扱い      ← 約 3s で頻発
+    [Screen] serial=X 初回非黒 → 即完了                    ← ロード未確認で進行
+  原因 (mumu/screen.go の captureIsBlack):
+    - shotTimeout = max(PollInterval * 5, 3秒) で 500ms 設定だと **3 秒固定**
+    - 8 台並列 ADB screencap で 3 秒では足りずタイムアウト頻発
+    - fail-open（タイムアウト時 false = 非黒扱い）で「初回非黒 → 即完了」誤判定
+  → screen モードの「より確実な判定」目的を達成できていなかった。
+
+【変更内容】
+  mumu/screen.go:
+    - shotTimeout を拡張: max(PollInterval * 15, 8秒)
+      8 台並列 ADB screencap の詰まりを十分カバーする値
+    - captureIsBlack を fail-closed 化:
+        context.Canceled       → false 返却 (不変、他戦略勝利の正常離脱)
+        context.DeadlineExceeded → **true 返却（黒継続扱い）**
+        その他のエラー         → **true 返却（黒継続扱い）**
+    - ログ文言も「→ 黒継続扱い」に変更
+
+【効果】
+  - スクショタイムアウト時は黒画面継続中とみなしてポーリングを続ける
+  - 真に黒画面が消えた時点で「黒消失検知」で完了
+  - ADB 完全死亡時は ScreenDetectTimeout (config 値、デフォ 20s) で
+    runScreenStrategy がフォールバック発火「画面判定タイムアウト → 強制進行」
+
+【影響範囲】
+  - 変更ファイル: mumu/screen.go のみ
+  - 設定キー変更なし、後方互換性 100%
+  - time / either モードへの影響なし (captureIsBlack は screen 系経路でのみ使用)
+
+====--------------------------------------------------------------------------------
 [No.48] 2026/05/23 — チャット重複カット・[CHAT-*]ログカテゴリ化・検知不要発言での巡回ch削除
 
 【背景 / 原因】

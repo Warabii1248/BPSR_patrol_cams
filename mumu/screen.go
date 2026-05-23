@@ -143,12 +143,17 @@ func isRegionBlack(img image.Image, rx, ry, rw, rh int, luma uint8, pixelRatio f
 }
 
 // captureIsBlack は 1 回のスクショで isRegionBlack を呼ぶ。
-// スクショ失敗時は fail-open（false = 黒でない）を返し、ロード完了とみなして即進行させる。
+// エラー時の戻り値:
+//   - context.Canceled:   false (他戦略勝利による正常キャンセル、ループ継続無意味)
+//   - DeadlineExceeded:   true  (fail-closed: 黒継続扱い、ScreenDetectTimeout で抜ける)
+//   - その他のエラー:     true  (fail-closed: 真の障害でも誤判定を避ける)
+//
+// 8 台並列 ADB screencap は詰まりやすいため shotTimeout は十分長めに取る。
 func (p *Patroller) captureIsBlack(ctx context.Context, serial string, cfg Config) bool {
-	// スクショ単体に上限タイムアウト（PollInterval * 5、最低 3 秒）を設ける
-	shotTimeout := cfg.ScreenPollInterval * 5
-	if shotTimeout < 3*time.Second {
-		shotTimeout = 3 * time.Second
+	// スクショ単体タイムアウト: PollInterval * 15、最低 8 秒（並列 ADB 負荷対応）
+	shotTimeout := cfg.ScreenPollInterval * 15
+	if shotTimeout < 8*time.Second {
+		shotTimeout = 8 * time.Second
 	}
 	shotCtx, cancel := context.WithTimeout(ctx, shotTimeout)
 	defer cancel()
@@ -156,16 +161,21 @@ func (p *Patroller) captureIsBlack(ctx context.Context, serial string, cfg Confi
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
-			// 他戦略（either モードの time goroutine 等）が先勝ちして subCancel された正常終了。
+			// 他戦略（either の time 先勝）または Stop による正常キャンセル。
+			// false を返すとループ即抜け（呼出元の ctx.Err() チェックで notifyMoveSignal 抑制される）。
 			debuglog.Vlogf("0x2E", "[Screen] スクショ中断 serial=%s (他戦略勝利)", serial)
+			return false
 		case errors.Is(err, context.DeadlineExceeded):
-			// shotTimeout (PollInterval*5、最低 3s) 経過。adb 応答ハング等を疑う。
-			debuglog.Vlogf("0x2E", "[Screen] スクショタイムアウト serial=%s → 非黒扱い", serial)
+			// shotTimeout 経過。fail-closed: 黒継続扱いでポーリングを続け、
+			// 最終的に ScreenDetectTimeout (cfg.ScreenDetectTimeout) で runScreenStrategy が
+			// フォールバック発火する。
+			debuglog.Vlogf("0x2E", "[Screen] スクショタイムアウト serial=%s → 黒継続扱い", serial)
+			return true
 		default:
-			// 真のエラー（adb 通信障害、PNG decode 失敗等）。
-			debuglog.Vlogf("0x2E", "[Screen] スクショ失敗 serial=%s err=%v → 非黒扱い", serial, err)
+			// 真のエラー（adb 通信障害、PNG decode 失敗等）。fail-closed で誤判定を避ける。
+			debuglog.Vlogf("0x2E", "[Screen] スクショ失敗 serial=%s err=%v → 黒継続扱い", serial, err)
+			return true
 		}
-		return false
 	}
 	return isRegionBlack(img,
 		cfg.ScreenRegionX, cfg.ScreenRegionY, cfg.ScreenRegionW, cfg.ScreenRegionH,
