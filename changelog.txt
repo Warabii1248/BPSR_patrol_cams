@@ -1,4 +1,41 @@
 ﻿====--------------------------------------------------------------------------------
+[No.48] 2026/05/23 — チャット重複カット・[CHAT-*]ログカテゴリ化・検知不要発言での巡回ch削除
+
+【背景 / 原因】
+  1. チャット表示重複: dedup キーに label||client_ip を含めていたため、同一メッセージが
+     接続インスタンス数ぶん (例: 6行) チャットペインに表示されていた。
+  2. [CHAT-*] ログが chat chip の対象外: LOG_CATS.chat のテストが '[チャット' のみで、
+     [CHAT-RAW]/[CHAT-DEDUP]/[CHAT-CLAIM]/[CHAT-BIND] が pkt/other に漏れていた。
+  3. 検知不要プレイヤー (chat_report_excluded_senders) の発言は Discord 通知対象外だが、
+     対象 ch の占有情報を無視するため巡回リストから削除されなかった。
+
+【変更内容】
+  gui/assets/app.js:
+    - dedupeChatEvents: キーを ch|sender|message に変更、Map ベース実装に切替。
+      同一メッセージは最初の 1 件を表示し、末尾に "(N台受信)" バッジを付与。
+    - appendChatToPanel の isDup キーから label||client_ip を除外。
+    - LOG_CATS.chat の test に l.includes('[CHAT-') を追加。
+    - getChatCandidateScore に opts.ignoreExcluded フラグを追加 (発言者除外をスキップ可)。
+    - isChatExcludedPatrolHit() 新設: excludedSenders に一致 & スコア閾値到達時に true。
+    - appendChatToPanel: isChatExcludedPatrolHit(ev) の時 /api/patrol/remove-ch を呼出。
+  gui/gui.go:
+    - Server 構造体に patrolRemoveDedupMu / patrolRemoveDedup フィールド追加。
+    - /api/patrol/remove-ch ルーティング登録。
+  gui/handlers.go:
+    - handlePatrolRemoveCh 新規追加: ch を patrolChannels から削除 + 30 分クールダウン。
+      5 分間の二重削除 dedup あり。Discord 通知・検知履歴追加は行わない。
+
+【効果】
+  - チャットパネルが 1 メッセージ 1 行表示 (N台受信バッジ付き)。
+  - ログタブの「チャット」chip OFF で [チャット]/[CHAT-*] 系ログが一括非表示になる。
+  - 検知不要プレイヤーが有効 ch を発言した場合でも巡回リストから自動除外される。
+
+【影響範囲】
+  - gui/assets/app.js, gui/gui.go, gui/handlers.go
+  - CLAUDE.md §4-4.3 の dedup キー定義を更新 (今回の変更で意図的にルール変更)
+  - 後方互換性: config.json スキーマ変更なし
+
+====--------------------------------------------------------------------------------
 [No.47] 2026/05/23 18:01 — ロード完了判定に画面認識モード追加（黒画面消失検知）
 
 【背景 / 原因】

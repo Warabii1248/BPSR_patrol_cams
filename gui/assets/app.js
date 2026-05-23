@@ -512,7 +512,7 @@ function initPatrolGridDragDrop(){
 const LOG_CATS=[
   {id:'mumu',  label:'[MuMu]', test:l=>l.includes('[MuMu]')},
   {id:'det',   label:'検知',    test:l=>l.includes('[DETECTION]')||l.includes('[検知]')},
-  {id:'chat',  label:'チャット',test:l=>l.includes('[チャット')},
+  {id:'chat',  label:'チャット',test:l=>l.includes('[チャット')||l.includes('[CHAT-')},
   {id:'pkt',   label:'パケット',test:l=>/\[0x[0-9a-fA-F]+\]/.test(l)||/\[Instance-/.test(l)},
   {id:'gas',   label:'GAS',    test:l=>l.includes('[GASFetch]')},
   {id:'gui',   label:'GUI',    test:l=>l.includes('[GUI]')},
@@ -1030,7 +1030,8 @@ function getChatCandidateConfig(){
 		maxLength: parseInt(cfgData.chat_report_max_length)||80,
 	};
 }
-function getChatCandidateScore(ev){
+function getChatCandidateScore(ev,opts){
+	opts=opts||{};
 	const facts=extractChatCandidateFacts(ev);
 	const message=facts.rawMessage.toLowerCase();
 	const sender=facts.sender;
@@ -1038,7 +1039,7 @@ function getChatCandidateScore(ev){
 	const rules=getChatCandidateConfig();
 	if(!message||length<rules.minLength||length>rules.maxLength)return 0;
 	const excludeKeywords=['ありがとう','ありがと','よろしく','こん','こんばんは','おつ','了解','りょ','募集','売り','買い','null'];
-	if(rules.excludedSenders.some(v=>sender.includes(v.toLowerCase())))return 0;
+	if(!opts.ignoreExcluded&&rules.excludedSenders.some(v=>sender.includes(v.toLowerCase())))return 0;
 	if(excludeKeywords.some(v=>message.includes(v)))return 0;
 	if(!facts.channel && !facts.location && !facts.monster && !facts.hasCoords && !facts.hasReportVerb)return 0;
 	let score=0;
@@ -1070,9 +1071,18 @@ function isChatCandidate(ev){
 	const score=getChatCandidateScore(ev);
 	return score>=getChatNotifyMinScore();
 }
+function isChatExcludedPatrolHit(ev){
+	const rules=getChatCandidateConfig();
+	const sender=(ev.sender||'').toLowerCase();
+	if(!rules.excludedSenders.some(v=>v&&sender.includes(v.toLowerCase())))return false;
+	const facts=extractChatCandidateFacts(ev);
+	if(!(facts.channel>0))return false;
+	return getChatCandidateScore(ev,{ignoreExcluded:true})>=getChatNotifyMinScore();
+}
 function dedupeChatEvents(source){
-	const seen=new Set();
-	return (source||[]).filter(ev=>{const k=(ev.label||ev.client_ip)+'|'+ev.channel+'|'+ev.sender+'|'+ev.message;if(seen.has(k))return false;seen.add(k);return true;});
+	const map=new Map();
+	(source||[]).forEach(ev=>{const k=ev.channel+'|'+ev.sender+'|'+ev.message;const prev=map.get(k);if(prev){prev.recv_count=(prev.recv_count||1)+1;}else{map.set(k,Object.assign({},ev,{recv_count:1}));}});
+	return Array.from(map.values());
 }
 function getPickedChatEvents(source){
 	return dedupeChatEvents((source||[]).filter(isChatCandidate));
@@ -1103,6 +1113,7 @@ function chatMsgHtml(ev,opts){
 		+'<span style="color:var(--text2);font-size:.88em;margin-right:3px">['+escHtml(serial)+']</span>'
 		+ch+'<span style="color:var(--warn);font-weight:600;margin-right:3px">'+escHtml(ev.sender)+'</span>'
 		+'<span class="chat-msg-text">'+escHtml(ev.message)+'</span>'
+		+(ev.recv_count>1?'<span class="chat-dup-count" style="color:var(--text3);font-size:.78em;margin-left:6px">('+ev.recv_count+'台受信)</span>':'')
 		+(opts.report?chatCandidateMetaHtml(ev):'')
 		+scoreBadge
 		+'</div>'
@@ -1227,13 +1238,16 @@ function applyNotifySoundUI(){
 	if(vol){vol.value=notifySoundVolume;vol.disabled=!notifySoundEnabled;}
 }
 function appendChatToPanel(ev){
-  const isDup=chatEvents.slice(-50).some(e=>(e.label||e.client_ip)===(ev.label||ev.client_ip)&&e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
+  const isDup=chatEvents.slice(-50).some(e=>e.channel===ev.channel&&e.sender===ev.sender&&e.message===ev.message);
   if(isDup)return;
   if(ev.label&&!chatKnownLabels.has(ev.label)){chatKnownLabels.add(ev.label);refreshChatDeviceDropdown();}
   chatEvents.push(ev);if(chatEvents.length>500)chatEvents=chatEvents.slice(-500);
   if(isChatCandidate(ev)){
     const facts=extractChatCandidateFacts(ev);
 		fetch('/api/chat-report/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:facts.channel||0,message:ev.message,location:facts.location,monster:facts.monster||'',sender:ev.sender||'',score:getChatCandidateScore(ev)})}).catch(()=>{});
+  }else if(isChatExcludedPatrolHit(ev)){
+    const facts=extractChatCandidateFacts(ev);
+    fetch('/api/patrol/remove-ch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:facts.channel,reason:'excluded_sender',sender:ev.sender||'',message:ev.message||''})}).catch(()=>{});
   }
 	renderChatPanel();
 }

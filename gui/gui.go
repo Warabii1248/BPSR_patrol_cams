@@ -83,6 +83,9 @@ type Server struct {
 	chatReportDedupMu sync.Mutex
 	chatReportDedup   map[string]time.Time
 
+	patrolRemoveDedupMu sync.Mutex
+	patrolRemoveDedup   map[uint32]time.Time
+
 	getLabelByIPFn func(string) string // デバイスIP → インスタンスラベル解決コールバック
 
 	identifyRunning bool   // デバイス識別フェーズ実行中フラグ
@@ -775,6 +778,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/chat-log", s.handleChatLog)
 	mux.HandleFunc("/api/chat-events", s.handleChatEvents)
 	mux.HandleFunc("/api/chat-report/notify", s.handleChatReportNotify)
+	mux.HandleFunc("/api/patrol/remove-ch", s.handlePatrolRemoveCh)
 	mux.HandleFunc("/api/portmap/pending", s.handlePortMapPending)
 	mux.HandleFunc("/api/portmap/confirm", s.handlePortMapConfirm)
 	mux.HandleFunc("/api/portmap/entries", s.handlePortMapEntries)

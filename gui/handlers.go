@@ -893,6 +893,72 @@ func (s *Server) handleChatReportNotify(w http.ResponseWriter, r *http.Request) 
 	writeOK(w)
 }
 
+// handlePatrolRemoveCh は検知不要プレイヤーの発言から ch を巡回リストに削除するエンドポイント。
+// Discord 通知・検知履歴追加は行わず、patrolChannels 削除と 30 分クールダウンのみ実施する。
+func (s *Server) handlePatrolRemoveCh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Channel uint32 `json:"channel"`
+		Reason  string `json:"reason"`
+		Sender  string `json:"sender"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Channel == 0 {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	// 5 分間の二重削除抑止
+	now := time.Now()
+	s.patrolRemoveDedupMu.Lock()
+	if s.patrolRemoveDedup == nil {
+		s.patrolRemoveDedup = make(map[uint32]time.Time)
+	}
+	if t, seen := s.patrolRemoveDedup[req.Channel]; seen && now.Sub(t) < 5*time.Minute {
+		s.patrolRemoveDedupMu.Unlock()
+		writeOK(w)
+		return
+	}
+	s.patrolRemoveDedup[req.Channel] = now
+	for ch, t := range s.patrolRemoveDedup {
+		if now.Sub(t) > 10*time.Minute {
+			delete(s.patrolRemoveDedup, ch)
+		}
+	}
+	s.patrolRemoveDedupMu.Unlock()
+
+	s.mu.Lock()
+	newChs := make([]uint32, 0, len(s.patrolChannels))
+	removed := false
+	for _, pc := range s.patrolChannels {
+		if pc == req.Channel {
+			removed = true
+			continue
+		}
+		newChs = append(newChs, pc)
+	}
+	if removed {
+		s.patrolChannels = newChs
+	}
+	s.cooldownChs[req.Channel] = now.Add(30 * time.Minute)
+	saveChannelsFn := s.saveChannelsFn
+	s.mu.Unlock()
+
+	if removed {
+		log.Printf("[GUI] 検知不要プレイヤー発言: Ch%d を巡回リストから削除 (sender=%q msg=%q 残%d ch)",
+			req.Channel, req.Sender, req.Message, len(newChs))
+		if saveChannelsFn != nil {
+			if err := saveChannelsFn(newChs); err != nil {
+				log.Printf("[GUI] channels.txt 保存失敗: %v", err)
+			}
+		}
+	}
+	writeOK(w)
+}
+
 // handleChatLog はチャットログ履歴をJSONで返す
 func (s *Server) handleChatLog(w http.ResponseWriter, r *http.Request) {
 	s.chatMu.RLock()

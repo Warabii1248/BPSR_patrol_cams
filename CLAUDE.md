@@ -104,7 +104,7 @@ go vet ./...           # 静的解析
 
 1. **`extractInstanceLabel`** は Go 標準ロガーのタイムスタンプ付き行に対応必須。`line[0]=='['` を前提にしない（`strings.Index(line, "[Instance-")` を使う・No.12）
 2. **`guiWriter.Write` の `NotifyChMovePacket` 呼び出しに `!HasBinding()` ガードを付けてはいけない**（No.12 で削除済み、再導入禁止）
-3. **チャット SSE dedup キー**: JS 側 `dedupeChatEvents()` のキーは `label||client_ip + ch + sender + msg`（No.24）
+3. **チャット SSE dedup キー**: JS 側 `dedupeChatEvents()` のキーは `ch + sender + msg`（label/IP を含めない）。同一内容を 1 件に集約し `recv_count` バッジで台数表示（No.48）。label を含めると label 確定後に重複するため除外した。
 4. **`btn-ch-save` 等の DOM 参照**: `null` 安全化必須。`_setChSaveBtnDisabled()` ヘルパーに集約済み（No.14）
 
 ### 4-5. 別バイナリ（cmd/chat-reporter）
