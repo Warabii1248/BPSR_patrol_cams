@@ -1,4 +1,73 @@
 ﻿====--------------------------------------------------------------------------------
+[No.44] 2026/05/23 18:00 — stale 0x2E シグナル流用による巡回完了誤判定修正
+
+【背景 / 原因】
+  Ch35 巡回中に1台（Instance-7/serial=127.0.0.1:5567）が戦闘中で操作不能になり、
+  0x2E SyncToMeDeltaInfo（UUID 付き）パケットを毎秒数回連続受信し続けた。
+  各パケットで NotifyPostLoadReady が無条件に発火し（dedup なし）、delay=2s 後に
+  moveSignal channel へ積み続けた。金ウリボ検知で Ch35 削除 → Ch37 切替後、
+  Ch37 の移動完了待ち buffered drain が stale lineID=35 のシグナル 8 個を Ch37 用に
+  流用し（lineID チェックなし）、同一 serial 5567 で 8/8 を即時達成、巡回が崩壊した。
+
+  根本3層:
+  1. 0x2E ハンドラが UUID 付き毎パケットで PostLoadReady 発火（dedup なし）
+  2. moveSignalMsg に lineID フィールドが存在せず wait loop で stale 識別不可
+  3. wait loop 3箇所で respondedSet チェックが got++ の後にあり serial 重複カウント可
+
+【変更内容】
+  ncap/cap_device.go:
+    - session 構造体に postLoadFiredForLineID uint32 追加
+    - processSyncToMeDeltaInfo: PostLoadReady 発火を「lineID 変化後の初回のみ」に変更
+      （sess.postLoadFiredForLineID != sess.lineID のときのみ発火し、同時に更新）
+
+  mumu/mumu.go:
+    - moveSignalMsg 構造体に lineID uint32 追加
+    - notifyMoveSignal のシグネチャに lineID uint32 を追加し moveSignalMsg に詰める
+    - NotifyPostLoadReady のゴルーチンで lineID を notifyMoveSignal へ伝搬
+    - NotifyChMovePacket（GUI 経由）は lineID=0 で送信（スキップ対象外・後方互換）
+    - buffered drain / フェーズ1 / フェーズ2 の3箇所を同一パターンで修正:
+        (msg.lineID == 0 || msg.lineID == ch) && !respondedSet[msg.label] を
+        got++ の前にガード。lineID 不一致時は debug ログに stale skip を記録
+
+【効果】
+  - 戦闘中などで 0x2E を連射するデバイスが新 Ch の完了判定を汚染しない
+  - 同一 serial が同一サイクルで複数回カウントされない
+  - PostLoadReady ログが 1 lineID = 1 回に抑制（ログ・channel 負荷軽減）
+
+【影響範囲】
+  - ncap/cap_device.go（session 構造体・0x2E ハンドラのみ）
+  - mumu/mumu.go（moveSignalMsg 構造体・notifyMoveSignal・wait loop 3箇所）
+  - CLAUDE.md §4-2 に不変条件 11・12 追記
+  - 後方互換性: config.json 影響なし。session 内部フィールド追加のみ
+
+====--------------------------------------------------------------------------------
+[No.43] 2026/05/23 — シグナル待ちフェーズに到達予測時間を表示
+
+【背景 / 原因】
+  wait_0x2e フェーズでは「いつシグナルが届くか」が見えず、ただ待つしかなかった。
+  postLoadLatencies（過去の 0x2E 到達レイテンシ履歴）をもとに予測値を表示できる。
+
+【変更内容】
+  mumu/mumu.go:
+    - PatrolStatus に SwitchStartedAtUnixMs / AvgSignalLatencySecs フィールド追加
+    - 巡回ループで switchStartAt を SwitchStartedAtUnixMs にセット
+    - Status() で postLoadLatencies の単純平均を AvgSignalLatencySecs として返す
+
+  gui/assets/app.js:
+    - wait_0x2e フェーズかつ avg_signal_latency_secs > 0 のとき予測残り時間を計算
+    - phaseLabel に '~Xs' / '~まもなく' / '(遅延)' を追加表示
+
+【効果】
+  - 履歴が蓄積されると「シグナル待ち ~20s」のように予測を表示
+  - 初回実行時は履歴なしのため通常通り「シグナル待ち」のみ表示
+  - タイムアウトカウントダウン（⏱）と共存し補完的な情報を提供
+
+【影響範囲】
+  - mumu/mumu.go（PatrolStatus 追加のみ、既存ロジック変更なし）
+  - gui/assets/app.js（表示ロジックのみ）
+  - 後方互換性: 新フィールドは省略可、旧クライアントは無視するだけ
+
+====--------------------------------------------------------------------------------
 [No.42] 2026/05/23 15:40 — 巡回開始ボタン押下時の「巡回停止」ログ誤出力・巡回ゴルーチン停滞修正
 
 【背景 / 原因】

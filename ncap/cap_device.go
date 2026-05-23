@@ -101,10 +101,11 @@ type session struct {
 	streams map[string]*tcpSubStream // key = "ip:port"
 
 	// ゲーム状態
-	userUID   uint64
-	mapID     uint32
-	lineID    uint32
-	playerPos *playerPosition
+	userUID                uint64
+	mapID                  uint32
+	lineID                 uint32
+	playerPos              *playerPosition
+	postLoadFiredForLineID uint32 // PostLoadReady を発火済みの lineID（同 lineID 内 1 回のみ）
 
 	// サーバー判定用シグネチャ
 	serverSignature      []byte
@@ -1702,8 +1703,10 @@ func (cd *CapDevice) processSyncToMeDeltaInfo(sess *session, payload []byte) {
 				debuglog.Vlogf("0x2E", "[%s] UUID変化 uid=%d UID=%d lineID=%d", sess.label, rawUUID, uid, sess.lineID)
 				cd.mergeSessionIfDuplicate(sess) // 同一キャラの既存セッションがあれば統合
 			}
-			// ロード 75% シグナル: userUID 変化有無に関係なく lineID 既知なら毎回発火
-			if uid != 0 && sess.lineID != 0 && cd.onPostLoadReady != nil {
+			// ロード 75% シグナル: lineID 変化後の初回のみ発火（同 lineID 内重複抑制）
+			if uid != 0 && sess.lineID != 0 && cd.onPostLoadReady != nil &&
+				sess.postLoadFiredForLineID != sess.lineID {
+				sess.postLoadFiredForLineID = sess.lineID
 				go cd.onPostLoadReady(uid, sess.lineID, time.Now())
 			}
 		}

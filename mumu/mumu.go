@@ -746,8 +746,9 @@ type chPendingProbe struct {
 
 // moveSignalMsg は [0x2E] パケット受信時のシグナル（インスタンスラベル付き）
 type moveSignalMsg struct {
-	t     time.Time
-	label string // "Instance-N"
+	t      time.Time
+	label  string // serial
+	lineID uint32 // 信号発生時の lineID（0 = 不明・GUI 経由互換）
 }
 
 // PatrolStatus は現在の巡回状態
@@ -919,7 +920,7 @@ func (p *Patroller) NotifyChMovePacket(instanceLabel string) {
 		}
 	}
 	p.serialLabelMu.RUnlock()
-	p.notifyMoveSignal(serial, time.Now())
+	p.notifyMoveSignal(serial, 0, time.Now()) // lineID 不明（GUI 経由）: 0 = スキップなし
 }
 
 // loadStabilizationDelay は 0x2E UUID 着信から完了シグナルを発火するまでの遅延を返す。
@@ -1039,15 +1040,15 @@ func (p *Patroller) NotifyPostLoadReady(uid uint64, lineID uint32, t time.Time) 
 	delay := p.loadStabilizationDelay()
 	fireAt := t.Add(delay)
 	debuglog.Vlogf("0x2E", "[PostLoadReady] serial=%s uid=%d lineID=%d delay=%.1fs", serial, uid, lineID, delay.Seconds())
-	go func(s string, at time.Time) {
+	go func(s string, line uint32, at time.Time) {
 		time.Sleep(time.Until(at))
-		p.notifyMoveSignal(s, at)
-	}(serial, fireAt)
+		p.notifyMoveSignal(s, line, at)
+	}(serial, lineID, fireAt)
 }
 
 // notifyMoveSignal は serial を label として moveSignal チャネルに t 付きで送信する。
 // 巡回中でない場合・バッファ満杯の場合は何もしない（ブロックしない）。
-func (p *Patroller) notifyMoveSignal(serial string, t time.Time) {
+func (p *Patroller) notifyMoveSignal(serial string, lineID uint32, t time.Time) {
 	if serial == "" {
 		return
 	}
@@ -1059,7 +1060,7 @@ func (p *Patroller) notifyMoveSignal(serial string, t time.Time) {
 		return
 	}
 	select {
-	case ch <- moveSignalMsg{t: t, label: serial}:
+	case ch <- moveSignalMsg{t: t, label: serial, lineID: lineID}:
 	default: // バッファ満杯なら捨てる（ブロックしない）
 	}
 }
@@ -1105,6 +1106,15 @@ func (p *Patroller) Status() PatrolStatus {
 	s := p.status
 	p.mu.RUnlock()
 	s.DeviceStatuses = p.GetDeviceStatuses()
+	p.postLoadMu.Lock()
+	if n := len(p.postLoadLatencies); n > 0 {
+		var sum float64
+		for _, v := range p.postLoadLatencies {
+			sum += v
+		}
+		s.AvgSignalLatencySecs = sum / float64(n)
+	}
+	p.postLoadMu.Unlock()
 	return s
 }
 
@@ -2234,11 +2244,13 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				for draining && got < need {
 					select {
 					case msg := <-sig:
-						if msg.t.After(switchStartAt) {
+						if msg.t.After(switchStartAt) &&
+							(msg.lineID == 0 || msg.lineID == ch) &&
+							!respondedSet[msg.label] {
 							got++
 							respondedSet[msg.label] = true
 							log.Printf("[MuMu] 巡回: Ch%d [0x2E] buffered %s (%d/%d台)", ch, msg.label, got, need)
-								debuglog.Vlogf("巡回", "  → 受信遅延 %.2fs (switchDoneAt基準)", msg.t.Sub(switchDoneAt).Seconds())
+							debuglog.Vlogf("巡回", "  → 受信遅延 %.2fs (switchDoneAt基準)", msg.t.Sub(switchDoneAt).Seconds())
 							if got == 1 {
 								stabilizeSecs := p.loadStabilizationDelay().Seconds()
 								p.mu.Lock()
@@ -2247,6 +2259,8 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 								p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
 								p.mu.Unlock()
 							}
+						} else if msg.t.After(switchStartAt) && msg.lineID != 0 && msg.lineID != ch {
+							debuglog.Vlogf("巡回", "  → stale lineID=%d skipped (target=%d, serial=%s)", msg.lineID, ch, msg.label)
 						}
 					default:
 						draining = false
@@ -2267,7 +2281,9 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 							log.Printf("[MuMu] 巡回: Ch%d 移動失敗（完了シグナルなし） → スキップ", ch)
 							break waitFirst
 						case msg := <-sig:
-							if msg.t.After(switchStartAt) {
+							if msg.t.After(switchStartAt) &&
+								(msg.lineID == 0 || msg.lineID == ch) &&
+								!respondedSet[msg.label] {
 								got++
 								respondedSet[msg.label] = true
 								log.Printf("[MuMu] 巡回: Ch%d [0x2E] %s (%d/%d台) ← マージタイマー開始 (%.0fs)",
@@ -2280,6 +2296,8 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 									p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
 									p.mu.Unlock()
 								}
+							} else if msg.t.After(switchStartAt) && msg.lineID != 0 && msg.lineID != ch {
+								debuglog.Vlogf("巡回", "  → stale lineID=%d skipped (target=%d, serial=%s)", msg.lineID, ch, msg.label)
 							}
 						}
 					}
@@ -2299,10 +2317,14 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 							log.Printf("[MuMu] 巡回: Ch%d 移動待ちタイムアウト (%d/%d台) → 強制進行", ch, got, need)
 							break waitRest
 						case msg := <-sig:
-							if msg.t.After(switchStartAt) {
+							if msg.t.After(switchStartAt) &&
+								(msg.lineID == 0 || msg.lineID == ch) &&
+								!respondedSet[msg.label] {
 								got++
 								respondedSet[msg.label] = true
 								log.Printf("[MuMu] 巡回: Ch%d [0x2E] %s (%d/%d台)", ch, msg.label, got, need)
+							} else if msg.t.After(switchStartAt) && msg.lineID != 0 && msg.lineID != ch {
+								debuglog.Vlogf("巡回", "  → stale lineID=%d skipped (target=%d, serial=%s)", msg.lineID, ch, msg.label)
 							}
 						}
 					}
