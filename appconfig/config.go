@@ -96,17 +96,23 @@ type Config struct {
 	// PatrolDwellSecs はch移動完了後〜次ch移動開始までの待機秒数。デフォルト: 10
 	PatrolDwellSecs float64 `json:"patrol_dwell_secs"`
 
-	// PatrolMoveTimeoutSecs は1台目の[0x2E]パケットを待つ最大秒数。
-	// 時間内に1台も来なければ移動失敗と判定してスキップ。0=無効。デフォルト: 30
+	// PatrolMoveTimeoutSecs は全台シグナル待ちの最大秒数（全台移動失敗の判定閾値）。
+	// 1台もシグナルが届かない場合に移動失敗と判定してスキップ。0=無効。デフォルト: 180
 	PatrolMoveTimeoutSecs float64 `json:"patrol_move_timeout_secs"`
 
 	// PatrolMergeTimeoutSecs は1台目受信後、残り台数を待つ最大秒数。
 	// 0=PatrolMoveTimeoutSecsと同じ従来動作。デフォルト: 15
 	PatrolMergeTimeoutSecs float64 `json:"patrol_merge_timeout_secs"`
 
-	// PatrolLoadStabilizationSecs は lineID-change 着信からゲーム内ロード完了までの
-	// 安定化遅延（秒）。0 の場合はデフォルト 6s を使用する。
+	// PatrolLoadStabilizationSecs は 0x2E UUID 着信からゲーム内ロード完了までの
+	// 安定化遅延（秒、手動値）。PatrolLoadStabilizationAuto=false の場合に使用する。
+	// 0 の場合はデフォルト 6s を使用する。
 	PatrolLoadStabilizationSecs float64 `json:"patrol_load_stabilization_secs"`
+
+	// PatrolLoadStabilizationAuto が true の場合は直近の観測データから安定化遅延を自動算出する。
+	// false の場合は PatrolLoadStabilizationSecs を使用する。
+	// デフォルト true。旧 config.json では未定義 → true (Load 起点でデフォルト値補完)。
+	PatrolLoadStabilizationAuto bool `json:"patrol_load_stabilization_auto"`
 
 	// ParallelLimit は同時切替の最大台数。0=無制限（グループディレイも無効）。
 	ParallelLimit int `json:"parallel_limit"`
@@ -200,9 +206,10 @@ func defaultConfig() *Config {
 		PatrolChannelsFile:       "config/channels.txt",
 		PortMapFile:              "config/port_ch_map.json",
 		PatrolDwellSecs:          10,
-		PatrolMoveTimeoutSecs:        30,
+		PatrolMoveTimeoutSecs:        180,
 		PatrolMergeTimeoutSecs:       15,
 		PatrolLoadStabilizationSecs:  6,
+		PatrolLoadStabilizationAuto:  true,
 		ActiveDeviceCount:        0,
 		MoveFailThreshold:            0.0, // 0=従来通り全台
 		ConsecutiveMoveFailThreshold: 3,   // 3連続移動失敗でクラッシュ判定

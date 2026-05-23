@@ -161,6 +161,7 @@ func main() {
 		MoveTimeout:               time.Duration(cfg.PatrolMoveTimeoutSecs * float64(time.Second)),
 		MergeTimeout:              time.Duration(cfg.PatrolMergeTimeoutSecs * float64(time.Second)),
 		LoadStabilizationDuration: time.Duration(cfg.PatrolLoadStabilizationSecs * float64(time.Second)),
+		LoadStabilizationAuto:     cfg.PatrolLoadStabilizationAuto,
 		DwellDuration:             time.Duration(cfg.PatrolDwellSecs * float64(time.Second)),
 		AdaptiveTimeout:        cfg.PatrolAdaptiveTimeout,
 		AdaptiveTimeoutWindow:  cfg.PatrolAdaptiveTimeoutWindow,
@@ -304,6 +305,11 @@ func main() {
 	// 0x15/0x16 の LineID 観測を Patroller に通知し per-device CH 追跡を実現する
 	capDevice.SetLineIDObserver(func(uid uint64, lineID uint32, changedAt time.Time) {
 		guiServer.NotifyLineIDChange(uid, lineID, changedAt)
+	})
+
+	// 0x2E UUID 受信（ロード 75% シグナル）を Patroller に通知する
+	capDevice.SetPostLoadReadyCallback(func(uid uint64, lineID uint32, t time.Time) {
+		guiServer.NotifyPostLoadReady(uid, lineID, t)
 	})
 
 	// exclude_uids: 起動時ロード（誤バインド防止）

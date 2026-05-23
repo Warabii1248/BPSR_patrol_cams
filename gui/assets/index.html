@@ -113,6 +113,7 @@
         <span class="hero-ch" id="dash-ps-ch">--</span>
         <span id="dash-ps-prog" style="font-size:11px;color:var(--text3);font-family:var(--font-mono)"></span>
         <span style="margin-left:auto;font-size:11px;color:var(--text3)">進捗 <b id="dash-patrol-label" style="color:var(--text1)">--</b></span>
+        <span id="dash-patrol-timeout" style="font-size:11px;font-family:var(--font-mono);font-weight:600"></span>
         <span style="font-size:11px;color:var(--accent2);font-family:var(--font-mono);font-weight:600" id="dash-patrol-percent"></span>
       </div>
       <div class="hero-progress" id="dash-patrol-progress"><div id="dash-patrol-fill"></div></div>
@@ -390,7 +391,7 @@
         <div class="patrol-status"><span class="stopped" id="ps-state">■ 停止中</span><span id="ps-ch"></span><span id="ps-prog"></span><span id="ps-parallel"></span></div>
         <div class="patrol-progress" id="ps-progress">
           <div class="progress-line"><div class="progress-fill" id="ps-progress-fill"></div></div>
-          <div class="progress-text"><span id="ps-patrol-label">--</span><span id="ps-patrol-percent"></span></div>
+          <div class="progress-text"><span id="ps-patrol-label">--</span><span style="display:flex;align-items:center;gap:8px"><span id="ps-patrol-timeout" style="font-family:var(--font-mono);font-weight:600"></span><span id="ps-patrol-percent"></span></span></div>
         </div>
         <div id="crash-warning" class="crash-warning">⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。</div>
         <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">

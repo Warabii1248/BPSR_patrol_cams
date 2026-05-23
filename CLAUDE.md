@@ -82,17 +82,17 @@ go vet ./...           # 静的解析
 3. **`MatchLineChange` の Probe マッチ条件**: `changedAt >= probe.sentAt - 2s` を必ずチェック。ADB 発行前の lineID 変化（本物クライアントの操作等）を拒否（No.33）
 4. **`MatchLineChange` の二重チェック**: RLock で未バインド確認後に WriteLock 取得しても、ロック取得後に `serialToUID[bindSerial] != 0` を再チェックして early return（並走ゴルーチン対策・No.26）
 5. **`moveSignal` の時刻フィルタは `switchStartAt` 基準**: `switchDoneAt` 基準にしない。ADB done がゲームサーバ応答より遅れることがある（No.30）
-6. **完了シグナルは `lineID-change + 遅延 6s`**: `PatrolLoadStabilizationSecs` 経由で調整可。ロード画面中の早期発火を防ぐ（No.31）
+6. **完了シグナルは `0x2E UUID 受信 + 遅延`**: `NotifyPostLoadReady` → `notifyMoveSignal` 経路。遅延は自動（直近観測ベース）または手動（`PatrolLoadStabilizationSecs`）。lineID-change では発火しない（No.39）
 7. **既到達ch（`CurrentCh == 目的ch`）のデバイス**: `switchTargets` から除外、ただし `RecordPatrolMove` は呼ぶ（ExpectedCh 更新のため）、`need` も除外後の件数（No.29）
 8. **`labelToSerial` は `serialToLabel` の逆引きで常に同期更新**: `notifyMoveSignal` が serial で送るため（No.30）
 9. **`excludeUIDs`**: 本物クライアントの UID を probe マッチから除外する。永続化（config.json `exclude_uids`）（No.33）
-10. **`MatchLineChange` の既バインド分岐でも `notifyMoveSignal` を発火**: バインド済み serial の ch 移動で moveSignal が届かない罠（No.30）
+10. **`MatchLineChange` は `notifyMoveSignal` を発火しない**: 完了シグナルは `NotifyPostLoadReady`（0x2E UUID 受信時）が担当。MatchLineChange は ActualCh 更新のみ（No.39）
 
 ### 4-3. 設定（appconfig/config.go）
 
 1. **`Load` は `defaultConfig` 起点**: 欠損キーはデフォルト値で埋まる
 2. **`SaveWindowState` は JSON マップとして部分更新**: zero-value `Config` を base に unmarshal → 全フィールド書き戻しは **禁止**。デフォルト `true` な bool フィールドが旧 config.json で false に上書きされる（No.31）
-3. **デフォルト `true` の bool フィールド**: `gas_enable`, `patrol_adaptive_timeout`, `show_no_device_dialog` 等は **キー欠損 → false 暗黙上書きの罠** がある
+3. **デフォルト `true` の bool フィールド**: `gas_enable`, `patrol_adaptive_timeout`, `patrol_load_stabilization_auto`, `show_no_device_dialog` 等は **キー欠損 → false 暗黙上書きの罠** がある
 4. **キー名・型変更時の後方互換**:
    - リネームは必ず旧キー読み込みフォールバック付き
    - 例: `full_threshold → move_fail_threshold` の時は旧キーも読む or マイグレーション

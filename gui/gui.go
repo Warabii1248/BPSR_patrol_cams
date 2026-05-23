@@ -385,6 +385,14 @@ func (s *Server) NotifyLineIDChange(uid uint64, lineID uint32, changedAt time.Ti
 	}
 }
 
+// NotifyPostLoadReady は ncap が 0x2E UUID パケットを受信したとき main.go から呼ぶ。
+// ロード 75% シグナルとして Patroller に転送する。巡回中のみ有効。
+func (s *Server) NotifyPostLoadReady(uid uint64, lineID uint32, t time.Time) {
+	if s.patrolEnabled {
+		s.patroller.NotifyPostLoadReady(uid, lineID, t)
+	}
+}
+
 
 
 // SetExcludeUIDs はバインド候補から除外する UID リストを Patroller に設定する。

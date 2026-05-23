@@ -39,9 +39,12 @@ type Config struct {
 	MoveTimeout time.Duration
 	// MergeTimeout は1台目受信後、残り台数を待つ最大時間。0=MoveTimeoutと同じ従来動作
 	MergeTimeout time.Duration
-	// LoadStabilizationDuration は lineID-change 着信から完了シグナル発火までの遅延。
-	// 0 の場合はデフォルト 6s を使用する。
+	// LoadStabilizationDuration は 0x2E UUID 着信から完了シグナル発火までの遅延（手動値）。
+	// 0 かつ LoadStabilizationAuto=false の場合は 6s を使用する。
 	LoadStabilizationDuration time.Duration
+	// LoadStabilizationAuto が true の場合は直近ロード時間の観測値から遅延を自動算出する。
+	// false の場合は LoadStabilizationDuration を使用する。
+	LoadStabilizationAuto bool
 	// DwellDuration はch移動完了後〜次ch移動開始までの待機時間
 	DwellDuration time.Duration
 	// AdaptiveTimeout は実ロード時間を学習して MoveTimeout/MergeTimeout を自動調整する
@@ -830,6 +833,8 @@ type PatrolStatus struct {
 	LoopMode             bool     `json:"loop_mode"`              // true=ループ / false=一巡で停止
 	WaitingMove          bool     `json:"waiting_move"`           // ch移動完了待ち中
 	MoveTimeoutSecs      float64  `json:"move_timeout_secs"`      // 移動待ちタイムアウト(秒)
+	SwitchStartedAtUnixMs int64   `json:"switch_started_at_unix_ms"` // 現在スイッチ開始時刻
+	AvgSignalLatencySecs  float64 `json:"avg_signal_latency_secs"`   // 0x2E到達レイテンシ平均(秒)
 	MoveFailedChannels       []uint32 `json:"move_failed_channels"`          // 移動失敗（完了シグナルなし）でスキップしたch一覧
 	ConsecutiveMoveFailCount int      `json:"consecutive_move_fail_count"` // 連続して移動失敗スキップしたch数（クラッシュ検知用）
 	KnownInstances       []string       `json:"known_instances"`        // 認識済みUID一覧
@@ -889,6 +894,13 @@ type Patroller struct {
 	// deviceAssignments はデバイスペア別のch分担設定。空の場合は全デバイスが全chを巡回。
 	deviceAssignments   []GroupAssignment
 	deviceAssignmentsMu sync.RWMutex
+
+	// postLoadLatencies は 0x2E UUID 受信に基づくロード時間サンプル（T_0x2E - T_switchStart 秒）
+	postLoadLatencies []float64
+	postLoadMu        sync.Mutex
+	// switchStartTimes は serial → 直近の switch_channel 発行時刻（autoDelay 計算用）
+	switchStartTimes   map[string]time.Time
+	switchStartTimesMu sync.Mutex
 }
 
 // NotifyChMovePacket は guiWriter が "[0x2E] UUID=" ログ行を検出したときに呼び出す。
@@ -910,15 +922,127 @@ func (p *Patroller) NotifyChMovePacket(instanceLabel string) {
 	p.notifyMoveSignal(serial, time.Now())
 }
 
-// loadStabilizationDelay は lineID-change 着信から完了シグナルを発火するまでの遅延を返す。
+// loadStabilizationDelay は 0x2E UUID 着信から完了シグナルを発火するまでの遅延を返す。
+// LoadStabilizationAuto=true の場合は直近観測値から自動算出する。
 func (p *Patroller) loadStabilizationDelay() time.Duration {
 	p.mu.RLock()
+	auto := p.cfg.LoadStabilizationAuto
 	d := p.cfg.LoadStabilizationDuration
 	p.mu.RUnlock()
+	if auto {
+		return p.autoStabilizationDelay()
+	}
 	if d > 0 {
 		return d
 	}
 	return 6 * time.Second
+}
+
+// autoStabilizationDelay は直近の postLoadLatencies（T_0x2E - T_switchStart）サンプルから
+// 遅延を自動算出する。
+// 0x2E UUID はロード 75% 到達時に届く想定。残り 25% + 操作可能までの余裕として
+// P90 の 40% を使う（クランプ: 2s – 15s）。サンプル不足時は 6s。
+func (p *Patroller) autoStabilizationDelay() time.Duration {
+	p.postLoadMu.Lock()
+	samples := make([]float64, len(p.postLoadLatencies))
+	copy(samples, p.postLoadLatencies)
+	p.postLoadMu.Unlock()
+
+	if len(samples) == 0 {
+		return 6 * time.Second
+	}
+	// 昇順ソートして P90 を取得
+	sort.Float64s(samples)
+	p90idx := int(float64(len(samples)) * 0.9)
+	if p90idx >= len(samples) {
+		p90idx = len(samples) - 1
+	}
+	p90 := samples[p90idx]
+	delaySecs := p90 * 0.4
+	const minDelay, maxDelay = 2.0, 15.0
+	if delaySecs < minDelay {
+		delaySecs = minDelay
+	}
+	if delaySecs > maxDelay {
+		delaySecs = maxDelay
+	}
+	return time.Duration(delaySecs * float64(time.Second))
+}
+
+// postLoadLatencyP90 は直近の 0x2E 到達レイテンシ（switchStartAt からの秒数）の P90 を返す。
+// サンプルなし時は 0 を返す。dwell 延長の推定最大ロード時間計算に使用する。
+func (p *Patroller) postLoadLatencyP90() float64 {
+	p.postLoadMu.Lock()
+	samples := make([]float64, len(p.postLoadLatencies))
+	copy(samples, p.postLoadLatencies)
+	p.postLoadMu.Unlock()
+	if len(samples) == 0 {
+		return 0
+	}
+	sort.Float64s(samples)
+	idx := int(float64(len(samples)) * 0.9)
+	if idx >= len(samples) {
+		idx = len(samples) - 1
+	}
+	return samples[idx]
+}
+
+// recordPostLoadLatency は 0x2E UUID 受信時刻と serial の switchStartTime の差分を記録する。
+func (p *Patroller) recordPostLoadLatency(serial string, t time.Time, window int) {
+	p.switchStartTimesMu.Lock()
+	startAt, ok := p.switchStartTimes[serial]
+	p.switchStartTimesMu.Unlock()
+	if !ok || startAt.IsZero() {
+		return
+	}
+	secs := t.Sub(startAt).Seconds()
+	if secs < 0 || secs > 120 {
+		return // 異常値除外
+	}
+	if window <= 0 {
+		window = 10
+	}
+	p.postLoadMu.Lock()
+	p.postLoadLatencies = append(p.postLoadLatencies, secs)
+	if len(p.postLoadLatencies) > window {
+		p.postLoadLatencies = p.postLoadLatencies[len(p.postLoadLatencies)-window:]
+	}
+	p.postLoadMu.Unlock()
+}
+
+// NotifyPostLoadReady は 0x2E UUID 受信時に ncap から呼ばれる（ロード 75% シグナル）。
+// バインド済み serial に対し、loadStabilizationDelay 後に moveSignal を発火する。
+func (p *Patroller) NotifyPostLoadReady(uid uint64, lineID uint32, t time.Time) {
+	if uid == 0 || lineID == 0 {
+		return
+	}
+	// 除外 UID チェック
+	p.excludeUIDsMu.RLock()
+	excluded := p.excludeUIDs[uid]
+	p.excludeUIDsMu.RUnlock()
+	if excluded {
+		return
+	}
+	// serial 解決
+	p.serialUIDMu.RLock()
+	serial := p.uidToSerial[uid]
+	p.serialUIDMu.RUnlock()
+	if serial == "" {
+		return // バインド前は対象外
+	}
+	// ラテンシ記録
+	p.mu.RLock()
+	window := p.cfg.AdaptiveTimeoutWindow
+	p.mu.RUnlock()
+	p.recordPostLoadLatency(serial, t, window)
+
+	delay := p.loadStabilizationDelay()
+	fireAt := t.Add(delay)
+	debuglog.Vlogf("0x2E", "[PostLoadReady] serial=%s uid=%d lineID=%d delay=%.1fs", serial, uid, lineID, delay.Seconds())
+	go func(s string, at time.Time) {
+		time.Sleep(time.Until(at))
+		p.notifyMoveSignal(s, at)
+	}(serial, fireAt)
 }
 
 // notifyMoveSignal は serial を label として moveSignal チャネルに t 付きで送信する。
@@ -1220,12 +1344,7 @@ func (p *Patroller) MatchLineChange(uid uint64, lineID uint32, changedAt time.Ti
 	if serial != "" {
 		debuglog.VlogfDedup("0x2E", "bind:"+serial, 5*time.Second, "既バインド: serial=%s lineID=%d", serial, lineID)
 		p.updateActualCh(serial, lineID, t)
-		// ロード安定化遅延後に完了シグナルを発火
-		delay := p.loadStabilizationDelay()
-		go func(s string, fireAt time.Time) {
-			time.Sleep(time.Until(fireAt))
-			p.notifyMoveSignal(s, fireAt)
-		}(serial, t.Add(delay))
+		// 完了シグナルは 0x2E UUID 受信経路（NotifyPostLoadReady）で発火する
 		return
 	}
 
@@ -1274,12 +1393,7 @@ func (p *Patroller) MatchLineChange(uid uint64, lineID uint32, changedAt time.Ti
 		log.Printf("[Patroller][Bind] serial=%s ↔ uid=%d (targetCh=%d, lineID=%d)",
 			bindSerial, uid, matched[0].targetCh, lineID)
 		p.updateActualCh(bindSerial, lineID, t)
-		// ロード安定化遅延後に完了シグナルを発火
-		delay := p.loadStabilizationDelay()
-		go func(s string, fireAt time.Time) {
-			time.Sleep(time.Until(fireAt))
-			p.notifyMoveSignal(s, fireAt)
-		}(bindSerial, t.Add(delay))
+		// 完了シグナルは 0x2E UUID 受信経路（NotifyPostLoadReady）で発火する
 		if saveFn != nil {
 			go saveFn(snapshot)
 		}
@@ -1469,24 +1583,32 @@ func (p *Patroller) resolveLabel(ctx context.Context, serial string, cfg Config)
 }
 
 // getCachedIP はADBシリアルのIPをキャッシュ付きで取得する（TTL: 5分）。
+// ADB呼び出しはmutex外で実行し、ctx cancellationが効くようにする。
 func (p *Patroller) getCachedIP(ctx context.Context, serial string, cfg Config) string {
 	const ttl = 5 * time.Minute
 	p.serialIPCacheMu.Lock()
-	defer p.serialIPCacheMu.Unlock()
 	if t, ok := p.serialIPCacheAt[serial]; ok && time.Since(t) < ttl {
-		return p.serialIPCache[serial]
+		ip := p.serialIPCache[serial]
+		p.serialIPCacheMu.Unlock()
+		return ip
 	}
+	p.serialIPCacheMu.Unlock()
+
 	ipCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	ip, err := GetDeviceIP(ipCtx, serial, cfg)
-	if err == nil && ip != "" {
-		if p.serialIPCache == nil {
-			p.serialIPCache = make(map[string]string)
-			p.serialIPCacheAt = make(map[string]time.Time)
-		}
-		p.serialIPCache[serial] = ip
-		p.serialIPCacheAt[serial] = time.Now()
+	if err != nil || ip == "" {
+		return ip
 	}
+
+	p.serialIPCacheMu.Lock()
+	if p.serialIPCache == nil {
+		p.serialIPCache = make(map[string]string)
+		p.serialIPCacheAt = make(map[string]time.Time)
+	}
+	p.serialIPCache[serial] = ip
+	p.serialIPCacheAt[serial] = time.Now()
+	p.serialIPCacheMu.Unlock()
 	return ip
 }
 
@@ -1654,7 +1776,9 @@ func (p *Patroller) Stop() {
 	if cancel != nil {
 		cancel()
 	}
-	log.Println("[MuMu] 巡回停止")
+	if cancel != nil {
+		log.Println("[MuMu] 巡回停止")
+	}
 }
 
 // Identify は対象 serial の既存バインドを破棄してからデバイス識別フェーズ（Stagger Probe）を実行する。
@@ -1797,6 +1921,9 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 	p.knownInstances = make(map[string]bool)
 	p.missedCounts = make(map[string]int)
 	p.crashedInstances = make(map[string]bool)
+	p.switchStartTimesMu.Lock()
+	p.switchStartTimes = make(map[string]time.Time)
+	p.switchStartTimesMu.Unlock()
 	p.status = PatrolStatus{
 		Running:            true,
 		TotalChannels:      len(channels),
@@ -1988,7 +2115,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			p.status.ParallelLimit = currentCfg.ParallelLimit
 			p.status.ParallelGroupDelay = currentCfg.ParallelGroupDelay.Seconds()
 			p.status.DwellSecs = dwell.Seconds()
-			p.status.Phase = "move_start"
+			p.status.Phase = "adb_sending"
 			p.status.PhaseTotalSecs = 0
 			p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
 			p.lastChannel = ch
@@ -2007,6 +2134,15 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 
 			// 切替開始時刻を記録（この時刻以降に届いた[0x2E]のみ有効）
 			switchStartAt := time.Now()
+			p.mu.Lock()
+			p.status.SwitchStartedAtUnixMs = switchStartAt.UnixMilli()
+			p.mu.Unlock()
+			// autoDelay 計算用: serial ごとに switchStartAt を記録
+			p.switchStartTimesMu.Lock()
+			for _, ser := range switchTargets {
+				p.switchStartTimes[ser] = switchStartAt
+			}
+			p.switchStartTimesMu.Unlock()
 
 			// デバイスをグループに分けて並列切替
 			patrolResults := make(map[string]error, len(switchTargets))
@@ -2042,6 +2178,13 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				go notifyFn(ch)
 			}
 
+			// ADB 発行完了 → 0x2E UUID 受信待ちフェーズ
+			p.mu.Lock()
+			p.status.Phase = "wait_0x2e"
+			p.status.PhaseTotalSecs = 0
+			p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
+			p.mu.Unlock()
+
 			failCount := 0
 			for serial, err := range patrolResults {
 				if err != nil {
@@ -2073,22 +2216,14 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				if mergeTimeout <= 0 {
 					mergeTimeout = currentCfg.MoveTimeout // 未設定なら従来動作
 				}
-				// 適応型タイムアウト: 直近ロード履歴の最大値×1.5 を下限として実効値を算出
+				// effectiveMove: 全台移動失敗判定タイムアウト（固定）
+				// effectiveMerge: 1台目シグナル受信後に残り台数を待つタイムアウト
 				effectiveMove := currentCfg.MoveTimeout
 				effectiveMerge := mergeTimeout
-				if currentCfg.AdaptiveTimeout {
-					effectiveMove = p.adaptiveMaxLoad(currentCfg.MoveTimeout)
-					if currentCfg.MoveTimeout > 0 {
-						ratio := float64(mergeTimeout) / float64(currentCfg.MoveTimeout)
-						if scaled := time.Duration(float64(effectiveMove) * ratio); scaled > mergeTimeout {
-							effectiveMerge = scaled
-						}
-					}
-				}
 				debuglog.Vlogf("巡回", "Ch%d: effectiveMove=%.0fs effectiveMerge=%.0fs adaptiveTimeout=%v need=%d", ch, effectiveMove.Seconds(), effectiveMerge.Seconds(), currentCfg.AdaptiveTimeout, need)
 				p.mu.Lock()
 				p.status.WaitingMove = true
-				p.status.Phase = "loading"
+				p.status.Phase = "wait_0x2e"
 				p.status.PhaseTotalSecs = effectiveMerge.Seconds()
 				p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
 				p.mu.Unlock()
@@ -2104,6 +2239,14 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 							respondedSet[msg.label] = true
 							log.Printf("[MuMu] 巡回: Ch%d [0x2E] buffered %s (%d/%d台)", ch, msg.label, got, need)
 								debuglog.Vlogf("巡回", "  → 受信遅延 %.2fs (switchDoneAt基準)", msg.t.Sub(switchDoneAt).Seconds())
+							if got == 1 {
+								stabilizeSecs := p.loadStabilizationDelay().Seconds()
+								p.mu.Lock()
+								p.status.Phase = "stabilizing"
+								p.status.PhaseTotalSecs = stabilizeSecs
+								p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
+								p.mu.Unlock()
+							}
 						}
 					default:
 						draining = false
@@ -2129,6 +2272,14 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 								respondedSet[msg.label] = true
 								log.Printf("[MuMu] 巡回: Ch%d [0x2E] %s (%d/%d台) ← マージタイマー開始 (%.0fs)",
 									ch, msg.label, got, need, effectiveMerge.Seconds())
+								if got == 1 {
+									stabilizeSecs := p.loadStabilizationDelay().Seconds()
+									p.mu.Lock()
+									p.status.Phase = "stabilizing"
+									p.status.PhaseTotalSecs = stabilizeSecs
+									p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
+									p.mu.Unlock()
+								}
 							}
 						}
 					}
@@ -2252,7 +2403,7 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 					if !alreadyIn {
 						p.status.MoveFailedChannels = append(p.status.MoveFailedChannels, ch)
 					}
-					p.status.Phase = "move_start"
+					p.status.Phase = "adb_sending"
 					p.status.PhaseTotalSecs = 0
 					p.status.PhaseStartedAtUnixMs = time.Now().UnixMilli()
 				} else {
@@ -2288,16 +2439,19 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				}
 			}
 
-			// ロード猶予: 適応型タイムアウト有効時、推定最大ロード時間に達していなければ
-			// dwell を延長してロード中デバイスへの次切替コマンドを遅延させる
+			// ロード猶予: postLoadLatencies P90 + 安定化遅延 + 5s を推定最大ロード時間として
+			// dwell を延長し、まだロード中のデバイスへの次切替コマンドを遅延させる
 			effectiveDwell := dwell
-			if currentCfg.AdaptiveTimeout && currentCfg.MoveTimeout > 0 {
-				estimatedMax := p.adaptiveMaxLoad(currentCfg.MoveTimeout)
-				if elapsed := time.Since(switchDoneAt); elapsed < estimatedMax {
-					if grace := estimatedMax - elapsed; grace > effectiveDwell {
-						effectiveDwell = grace
-						log.Printf("[MuMu] 巡回: Ch%d ロード猶予: dwell を %.1fs に延長 (推定最大=%.1fs, 経過=%.1fs)",
-							ch, effectiveDwell.Seconds(), estimatedMax.Seconds(), elapsed.Seconds())
+			if currentCfg.AdaptiveTimeout {
+				if p90Lat := p.postLoadLatencyP90(); p90Lat > 0 {
+					stab := p.loadStabilizationDelay()
+					estimatedMax := time.Duration((p90Lat + stab.Seconds() + 5) * float64(time.Second))
+					if elapsed := time.Since(switchDoneAt); elapsed < estimatedMax {
+						if grace := estimatedMax - elapsed; grace > effectiveDwell {
+							effectiveDwell = grace
+							log.Printf("[MuMu] 巡回: Ch%d ロード猶予: dwell を %.1fs に延長 (推定最大=%.1fs, 経過=%.1fs)",
+								ch, effectiveDwell.Seconds(), estimatedMax.Seconds(), elapsed.Seconds())
+						}
 					}
 				}
 			}

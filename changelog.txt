@@ -1,4 +1,159 @@
 ﻿====--------------------------------------------------------------------------------
+[No.42] 2026/05/23 15:40 — 巡回開始ボタン押下時の「巡回停止」ログ誤出力・巡回ゴルーチン停滞修正
+
+【背景 / 原因】
+  巡回開始を押しても「巡回停止」だけが出て巡回開始ログが付随しないことがあった（15:26:54〜15:27:04）。
+  原因は2点:
+  ① Stop() が cancel==nil（巡回停止中）でも無条件に "巡回停止" をログ出力していた。
+    Start() は先頭で必ず Stop() を呼ぶため、停止中に開始ボタンを押しても "巡回停止" が先に出る。
+  ② getCachedIP が serialIPCacheMu を ADB 呼び出し（最大5秒）の間ずっと握ったまま。
+    8台並列の resolveLabel がほぼ直列化し、ctx cancel しても mutex 待ち中のゴルーチンは
+    キャンセルを受け取れないため wg.Wait() が長期ブロックする。
+    結果として連打した Stop/Start が "巡回停止" だけを吐き続け、巡回が再起動しない。
+
+【変更内容】
+  mumu/mumu.go:
+    - Stop(): cancel != nil の時だけ "巡回停止" をログ出力するよう条件追加
+    - getCachedIP(): mutex を ADB 呼び出しから切り離し、キャッシュ参照/書き戻しのみ短いクリティカルセクションで保護
+
+【効果】
+  - 巡回停止中に開始ボタンを押しても "巡回停止" が出なくなり、直接 "巡回開始" が出る
+  - Stop() 後に 8 並列の resolveLabel が同時に走り ctx キャンセルに即応するため、
+    Stop/Start ボタンが詰まる現象が解消
+
+【影響範囲】
+  - mumu/mumu.go（Stop, getCachedIP のみ。§4-2 不変条件は変更なし）
+  - 後方互換性: 問題なし
+
+====--------------------------------------------------------------------------------
+[No.41] 2026/05/23 — プログレスバーにタイムアウトカウントダウン表示を追加
+
+【背景 / 原因】
+  wait_0x2e フェーズ中のタイムアウトまでの残り時間がフェーズラベルに "(Xs)" として埋め込まれており
+  目立たず視認性が低かった。
+
+【変更内容】
+  gui/assets/index.html:
+    - `id="dash-patrol-timeout"` span を hero-row1 に追加（パーセント表示の左）
+    - `id="ps-patrol-timeout"` span を progress-text に追加（パーセント表示の左）
+
+  gui/assets/app.js:
+    - phaseLabel から "(Xs)" サフィックスを除去し専用要素に分離
+    - timeoutText = "⏱ Xs"（remainingSecs > 0 の時のみ表示）
+    - 残り時間に応じて色変化: >20s=accent2, <=20s=warn, <=10s=danger
+    - 停止時はタイムアウト要素をクリア
+
+【効果】
+  - タイムアウトまでの残り時間が独立した要素として明確に表示される
+  - 10秒以下で赤・20秒以下でオレンジに色変化し緊急度が視覚的にわかる
+
+【影響範囲】
+  - gui/assets/index.html、gui/assets/app.js のみ
+  - mumu.go / appconfig / パケット解析に変更なし
+  - 後方互換性: 影響なし
+
+====--------------------------------------------------------------------------------
+[No.40] 2026/05/23 14:40 — 巡回タイムアウト 2段構え構造の明確化（全体=180s固定・マージ=XX秒）
+
+【背景 / 原因】
+  No.39 で 0x2E UUID 受信 + stabilization_delay をロード完了シグナルに変更したが、
+  `PatrolMoveTimeoutSecs=40s`（effectiveMove）が旧シグナル（lineID-change≈8s 後）向けの値のまま
+  だったため、新シグナル（0x2E≈28s + delay14s = 42s 後）がタイムアウトに 2-6 秒差で負ける。
+  全サイクルが「移動失敗（完了シグナルなし）」となり、loadHistory も更新されず永遠に失敗し続ける
+  無限ループになっていた。
+
+【変更内容】
+  appconfig/config.go:
+    - PatrolMoveTimeoutSecs コメント更新（「全台移動失敗の判定閾値」に明確化）
+    - PatrolMoveTimeoutSecs デフォルト 30 → 180（全台クラッシュ・ゲーム未起動等の安全網）
+
+  mumu/mumu.go:
+    - effectiveMove 計算を adaptiveMaxLoad なしの固定値（currentCfg.MoveTimeout）に変更。
+      役割は「1台もシグナルが来なければ全台失敗」のサーフェスネットタイムアウト。
+    - effectiveMerge（1台目シグナル後の残り待ち）は既存の PatrolMergeTimeoutSecs のまま維持。
+    - postLoadLatencyP90() ヘルパーを追加（autoStabilizationDelay と同ロジック、×0.4 なし）。
+    - dwell 延長計算を adaptiveMaxLoad(MoveTimeout) から postLoadLatencyP90() ベースに変更。
+      MoveTimeout=180s になると adaptiveMaxLoad が 180s を返して dwell が 135s 延長される問題を修正。
+      新式: P90(postLoadLatencies) + stabilization_delay + 5s バッファ を推定最大とする。
+
+【効果】
+  - Ch8 パトロール: 0x2E シグナルが 42s 後に届いても 180s タイムアウトが余裕で待つ → 成功
+  - dwell 延長: P90=36s + stab=14.4s + 5s = 55.4s → 経過 45s → grace=10.4s（妥当）
+  - タイムアウトの意味が明確化: 全体（180s）= 完全失敗判定 / マージ（15s）= 残り台数待ち
+
+【影響範囲】
+  - appconfig/config.go: PatrolMoveTimeoutSecs デフォルト変更（既存 config.json の値はそのまま優先）
+  - mumu/mumu.go: effectiveMove 計算・dwell 延長・postLoadLatencyP90() 追加
+  - 後方互換性: 既存 config.json に patrol_move_timeout_secs が明示されている場合はその値を使用
+
+====--------------------------------------------------------------------------------
+[No.39] 2026/05/23 12:10 — 巡回ロード完了シグナルを 0x2E UUID 受信ベースに変更・遅延自動算出・フェーズUI詳細化
+
+【背景 / 原因】
+  以前（No.27 以前）は `[Instance-N][0x2E] UUID=…` ログが毎回出力されており、これをグレップして
+  `NotifyChMovePacket → moveSignal` を駆動していた。No.27 で sess.userUID を rawUUID>>16 に正規化した
+  結果、0x15/0x2E の値が一致して flip-flop がなくなり、ログはセッション初回のみ出力されるように変化。
+  No.36+37 で代替として lineID-change + 6s 遅延に移行したが、lineID-change は TCP セッション開設時
+  （ロード 0% 付近）にしか飛ばないため、「ロード 75% 到達シグナル」である 0x2E UUID 着信とは
+  タイミングが異なり精度が低い。またロード安定化遅延が固定値だったため PC 負荷・台数の変動に追従できなかった。
+
+【変更内容】
+  ncap/cap_device.go:
+    - CapDevice に onPostLoadReady func(uid, lineID, t) フィールド追加。
+    - SetPostLoadReadyCallback(fn) setter 追加。
+    - processSyncToMeDeltaInfo: info.Uuid != nil のブロック内で、
+      userUID 変化有無に関係なく uid != 0 && sess.lineID != 0 なら毎回 go onPostLoadReady() を発火。
+
+  mumu/mumu.go:
+    - Config に LoadStabilizationAuto bool 追加（true=自動）。
+    - Patroller に postLoadLatencies / postLoadMu / switchStartTimes / switchStartTimesMu 追加。
+    - loadStabilizationDelay(): Auto=true なら autoStabilizationDelay() を呼ぶ。
+    - autoStabilizationDelay(): 直近サンプルの P90 * 0.4 を遅延とする（2s–15s クランプ、初期値 6s）。
+    - recordPostLoadLatency(serial, t, window): T_0x2E - T_switchStart を蓄積。
+    - NotifyPostLoadReady(uid, lineID, t): 除外UID確認 → serial解決 → ラテンシ記録 → 遅延発火。
+    - MatchLineChange: 既バインド/Probe 成立分岐から loadStabilizationDelay goroutine を削除。
+      ActualCh 更新のみ担当。完了シグナルは NotifyPostLoadReady 経路に統一。
+    - 巡回ループ switchStartAt 記録時に switchStartTimes[serial] も更新。
+    - Phase 更新: move_start → adb_sending、SwitchGroup 完了後 wait_0x2e、
+      1台目 moveSignal 受信後 stabilizing（PhaseTotalSecs=loadStabilizationDelay()）。
+
+  appconfig/config.go:
+    - PatrolLoadStabilizationAuto bool (json: patrol_load_stabilization_auto) 追加。
+    - defaultConfig でデフォルト true に設定。
+
+  gui/gui.go:
+    - NotifyPostLoadReady(uid, lineID, t) ラッパ追加。
+
+  gui/handlers.go:
+    - handleConfig POST の struct に PatrolLoadStabilizationAuto 追加。
+    - mumu.Config マッピングに LoadStabilizationAuto 追加。
+
+  gui/assets/app.js:
+    - phaseMap を adb_sending / wait_0x2e / stabilizing / dwell_wait に更新（旧キー互換維持）。
+    - 設定フォーム CFG_FIELDS_PATROL に patrol_load_stabilization_auto / secs を追加。
+
+  main.go:
+    - mumu.Config に LoadStabilizationAuto マッピング追加。
+    - SetPostLoadReadyCallback で NotifyPostLoadReady を配線。
+
+  CLAUDE.md:
+    - §4-2.6 を「0x2E UUID 受信 + 遅延」に更新。
+    - §4-2.10 を「MatchLineChange は notifyMoveSignal を発火しない（NotifyPostLoadReady が担当）」に更新。
+    - §4-3.3 に patrol_load_stabilization_auto を追記。
+
+【効果】
+  - ロード 75% 時点（0x2E UUID 受信）を起点とすることで完了シグナルがより実態に即す。
+  - 自動モードでは直近の (T_0x2E - T_switchStart) P90 × 0.4 を遅延に使うため PC 負荷・台数に自動追従。
+  - フェーズバーが「ADB送信中 / 0x2E待ち / 安定化中 / 滞在待機」と詳細化され視認性が向上。
+
+【影響範囲】
+  - 変更ファイル: ncap/cap_device.go, mumu/mumu.go, appconfig/config.go, gui/gui.go,
+    gui/handlers.go, gui/assets/app.js, main.go, CLAUDE.md
+  - 後方互換性: PatrolLoadStabilizationAuto は Load() でデフォルト true（欠損キーは補完）。
+    既存 config.json に追加キーなしでも自動モードで動作する。
+  - §4-2.6 §4-2.10 は本 No.39 で更新済み。
+
+====--------------------------------------------------------------------------------
 [No.38] 2026/05/23 00:39 — 開発環境改善 第2波（changelog skill / 自動test / PRテンプレ / pre-commit hook）
 
 【背景 / 原因】

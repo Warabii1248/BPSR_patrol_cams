@@ -1465,11 +1465,15 @@ async function pollPatrolStatus(){
     const els=(id)=>document.getElementById(id);
     if(d.running){
 			const phaseMap = {
-				move_start: {label:'移動開始', start:0, end:20},
-				loading: {label:'ロード中', start:20, end:68},
-				dwell_wait: {label:'滞在待機', start:68, end:100}
+				adb_sending: {label:'ADB送信中',  start:0,  end:15},
+				wait_0x2e:   {label:'シグナル待ち', start:15, end:60},
+				stabilizing: {label:'安定化中',   start:60, end:90},
+				dwell_wait:  {label:'滞在待機',   start:90, end:100},
+				// 旧値互換（No.37以前のキャッシュ等に対応）
+				move_start:  {label:'移動開始',   start:0,  end:20},
+				loading:     {label:'ロード中',   start:20, end:68},
 			};
-      const currentPhase = d.phase && phaseMap[d.phase] ? d.phase : (d.waiting_move ? 'loading' : 'move_start');
+      const currentPhase = d.phase && phaseMap[d.phase] ? d.phase : (d.waiting_move ? 'wait_0x2e' : 'adb_sending');
 			const phaseState = phaseMap[currentPhase] || {label:'巡回中', start:0, end:0};
 			const now = Date.now();
 			const startedAt = Number(d.phase_started_at_unix_ms || 0);
@@ -1483,8 +1487,10 @@ async function pollPatrolStatus(){
 				progressPct = phaseState.start + ((phaseState.end - phaseState.start) * 0.6);
 			}
 			const remainingSecs = totalMs > 0 ? Math.max(0, Math.ceil((totalMs - elapsedMs) / 1000)) : 0;
-			const phaseLabel = phaseState.label + (remainingSecs > 0 ? ' (' + remainingSecs + 's)' : '');
+			const phaseLabel = phaseState.label;
 			const progressText = Math.round(progressPct) + '%';
+			const timeoutText = remainingSecs > 0 ? '⏱ ' + remainingSecs + 's' : '';
+			const timeoutColor = remainingSecs > 0 ? (remainingSecs <= 10 ? 'var(--danger)' : remainingSecs <= 20 ? 'var(--warn)' : 'var(--accent2)') : '';
       updatePatrolCycleStats(d, currentPhase);
       ['ps-state'].forEach(id=>{const e=els(id);if(e){e.className='running';e.textContent='▶ '+phaseState.label+(d.waiting_move?' ⏳':'');}});
       { const e=els('dash-ps-state'); if(e){e.className='hero-state';e.textContent=phaseState.label+(d.waiting_move?' ⏳':'');} }
@@ -1495,6 +1501,7 @@ async function pollPatrolStatus(){
       ['dash-patrol-label','ps-patrol-label'].forEach(id=>{const e=els(id);if(e)e.textContent=phaseLabel;});
       ['dash-patrol-percent','ps-patrol-percent'].forEach(id=>{const e=els(id);if(e)e.textContent=progressText;});
 			['dash-patrol-fill','ps-progress-fill'].forEach(id=>{const e=els(id);if(e)e.style.width=Math.round(progressPct)+'%';});
+			['dash-patrol-timeout','ps-patrol-timeout'].forEach(id=>{const e=els(id);if(e){e.textContent=timeoutText;e.style.color=timeoutColor;}});
       ['ps-parallel','dash-ps-parallel'].forEach(id=>{
         const par=els(id);if(par){
           const delay=d.parallel_group_delay>0?'(+'+d.parallel_group_delay+'s)':'';
@@ -1511,6 +1518,7 @@ async function pollPatrolStatus(){
 			['dash-patrol-label','ps-patrol-label'].forEach(id=>{const e=els(id);if(e)e.textContent='--';});
 			['dash-patrol-percent','ps-patrol-percent'].forEach(id=>{const e=els(id);if(e)e.textContent='';});
 			['dash-patrol-fill','ps-progress-fill'].forEach(id=>{const e=els(id);if(e)e.style.width='0%';});
+			['dash-patrol-timeout','ps-patrol-timeout'].forEach(id=>{const e=els(id);if(e)e.textContent='';});
 			updatePatrolCycleStats(d, '');
       ['ps-parallel','dash-ps-parallel'].forEach(id=>{const par=els(id);if(par)par.textContent='';});
       updatePatrolUI(false);
@@ -1618,6 +1626,8 @@ const CFG_FIELDS_PATROL=[
   {k:'patrol_merge_timeout_secs',label:'残りマージ待ちタイムアウト (秒)',type:'number',desc:'1台目受信後、残り台数を待つ最大秒数 (適応型有効時は下限値として機能)'},
   {k:'patrol_adaptive_timeout',label:'適応型タイムアウト',type:'bool',desc:'実ロード時間を学習してタイムアウトを自動延長。ロード中デバイスへの早期切替を防止'},
   {k:'patrol_adaptive_timeout_window',label:'適応型: 学習サンプル数',type:'number',desc:'参照する直近ロード回数（デフォルト: 10）'},
+  {k:'patrol_load_stabilization_auto',label:'ロード安定化遅延: 自動',type:'bool',desc:'ONの場合、0x2E受信からの遅延をロード観測データから自動算出する。OFFは手動値を使用'},
+  {k:'patrol_load_stabilization_secs',label:'ロード安定化遅延: 手動値 (秒)',type:'number',desc:'0x2E UUID受信から完了シグナル発火までの待機秒数。自動モードOFF時に使用（0=デフォルト6s）'},
 ];
 const CFG_FIELDS_GAME=[
   {k:'game_package_name',label:'ゲームパッケージ名',type:'text',desc:'クラッシュ検知・ADB起動用のパッケージ名。例: com.example.game'},

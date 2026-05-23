@@ -200,6 +200,10 @@ type CapDevice struct {
 	// changedAt は session 内で lineID が変化した時刻（probe 時刻との比較に使用）。
 	onLineIDObserved func(uid uint64, lineID uint32, changedAt time.Time)
 
+	// 0x2E SyncToMeDeltaInfo で UUID を含むパケットを受信したとき毎回呼ばれるコールバック。
+	// userUID の変化有無に関係なく発火する（ロード 75% 到達シグナルとして使用）。
+	onPostLoadReady func(uid uint64, lineID uint32, t time.Time)
+
 	// チャンネルデバッグモード
 	// --ch-debug で有効: 全methodIdとシーン変更パケットをログ出力する
 	chDebug bool
@@ -252,6 +256,12 @@ func (cd *CapDevice) SetChatNotifier(fn func(clientIP, label string, userUID uin
 // changedAt は session 内で lineID が変化した時刻（probe 時刻との比較に使用）。
 func (cd *CapDevice) SetLineIDObserver(fn func(uid uint64, lineID uint32, changedAt time.Time)) {
 	cd.onLineIDObserved = fn
+}
+
+// SetPostLoadReadyCallback は 0x2E で UUID を含むパケットを受信するたびに呼ばれるコールバックを設定する。
+// ロード画面 75% 到達シグナルとして利用する。userUID の変化有無に関係なく毎回発火する。
+func (cd *CapDevice) SetPostLoadReadyCallback(fn func(uid uint64, lineID uint32, t time.Time)) {
+	cd.onPostLoadReady = fn
 }
 
 // nextInstanceNum は再利用可能な最小のインスタンス番号を返す
@@ -1691,6 +1701,10 @@ func (cd *CapDevice) processSyncToMeDeltaInfo(sess *session, payload []byte) {
 				log.Printf("[%s][0x2E] UUID=%d (UID=%d)", sess.label, rawUUID, uid)
 				debuglog.Vlogf("0x2E", "[%s] UUID変化 uid=%d UID=%d lineID=%d", sess.label, rawUUID, uid, sess.lineID)
 				cd.mergeSessionIfDuplicate(sess) // 同一キャラの既存セッションがあれば統合
+			}
+			// ロード 75% シグナル: userUID 変化有無に関係なく lineID 既知なら毎回発火
+			if uid != 0 && sess.lineID != 0 && cd.onPostLoadReady != nil {
+				go cd.onPostLoadReady(uid, sess.lineID, time.Now())
 			}
 		}
 	}

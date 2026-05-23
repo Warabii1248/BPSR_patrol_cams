@@ -467,6 +467,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 					PatrolMoveTimeoutSecs            float64 `json:"patrol_move_timeout_secs"`
 					PatrolMergeTimeoutSecs           float64 `json:"patrol_merge_timeout_secs"`
 					PatrolLoadStabilizationSecs      float64 `json:"patrol_load_stabilization_secs"`
+					PatrolLoadStabilizationAuto      bool    `json:"patrol_load_stabilization_auto"`
 					PatrolDwellSecs             float64 `json:"patrol_dwell_secs"`
 					PatrolAdaptiveTimeout       bool              `json:"patrol_adaptive_timeout"`
 					PatrolAdaptiveTimeoutWindow int               `json:"patrol_adaptive_timeout_window"`
@@ -492,6 +493,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 						MoveTimeout:               time.Duration(appCfg.PatrolMoveTimeoutSecs * float64(time.Second)),
 						MergeTimeout:              time.Duration(appCfg.PatrolMergeTimeoutSecs * float64(time.Second)),
 						LoadStabilizationDuration: time.Duration(appCfg.PatrolLoadStabilizationSecs * float64(time.Second)),
+						LoadStabilizationAuto:     appCfg.PatrolLoadStabilizationAuto,
 						DwellDuration:         time.Duration(appCfg.PatrolDwellSecs * float64(time.Second)),
 						AdaptiveTimeout:        appCfg.PatrolAdaptiveTimeout,
 						AdaptiveTimeoutWindow:  appCfg.PatrolAdaptiveTimeoutWindow,
