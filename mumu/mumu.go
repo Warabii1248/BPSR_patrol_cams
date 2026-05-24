@@ -321,6 +321,7 @@ func listDevicesOnce(ctx context.Context, cfg Config) ([]string, error) {
 		log.Printf("[MuMu] adb devices 失敗: %v", err)
 		return nil, err
 	}
+	debuglog.Vlogf("ADB", "adb devices raw:\n%s", out)
 
 	var devices []string
 	var offline []string
@@ -342,6 +343,9 @@ func listDevicesOnce(ctx context.Context, cfg Config) ([]string, error) {
 
 	// emulator-* エントリが存在するとき、対応する emulator-* を持たない
 	// TCP デバイス（ゴースト接続）を除外する。
+	// ただし MuMu Player 12 の標準ポートレンジ（奇数 5555–5679）は
+	// emulator-* ペアが無くても本物として保持する。
+	// MuMu 独自 ADB は台数によって emulator-* 形式で登録しないインスタンスがあるため。
 	emulatorCanonicals := map[string]bool{}
 	for _, d := range devices {
 		if strings.HasPrefix(d, "emulator-") {
@@ -351,7 +355,10 @@ func listDevicesOnce(ctx context.Context, cfg Config) ([]string, error) {
 	if len(emulatorCanonicals) > 0 {
 		filtered := devices[:0]
 		for _, d := range devices {
-			if strings.HasPrefix(d, "emulator-") || emulatorCanonicals[canonicalADBSerial(d)] {
+			keep := strings.HasPrefix(d, "emulator-") ||
+				emulatorCanonicals[canonicalADBSerial(d)] ||
+				isMuMuADBPort(d)
+			if keep {
 				filtered = append(filtered, d)
 			}
 		}
@@ -365,6 +372,19 @@ func listDevicesOnce(ctx context.Context, cfg Config) ([]string, error) {
 		log.Printf("[MuMu] 設定シリアル %d台のうち %d台のみ検出", len(cfg.ConnectSerials), len(selected))
 	}
 	return selected, nil
+}
+
+// isMuMuADBPort は MuMu Player 12 の標準 ADB ポートレンジ（127.0.0.1 奇数 5555–5679）か返す。
+func isMuMuADBPort(serial string) bool {
+	host, portStr, err := net.SplitHostPort(serial)
+	if err != nil || host != "127.0.0.1" {
+		return false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return false
+	}
+	return port >= 5555 && port <= 5679 && port%2 == 1
 }
 
 func canonicalADBSerial(serial string) string {
