@@ -1290,6 +1290,7 @@ async function tapLoopStart(){
   const d=await r.json();
   const st=document.getElementById('tap-status');
   if(d.ok){
+    if(cfgData){cfgData.tap_loop_x=x;cfgData.tap_loop_y=y;cfgData.tap_loop_interval_ms=interval;saveConfig(true);}
     document.getElementById('btn-tap-start').disabled=true;
     document.getElementById('btn-tap-stop').disabled=false;
     if(st)st.textContent='実行中...';
@@ -2055,6 +2056,11 @@ async function loadConfig(){
 	renderChatCandidatePanels();
 	renderConfigForm(cfgData);
 	applyChatFilterMinimizeState();
+	// タップループ入力値を config から復元（ループ実行中はステータスポールが上書き）
+	{const xi=document.getElementById('tap-x'),yi=document.getElementById('tap-y'),ii=document.getElementById('tap-interval');
+	if(xi&&cfgData.tap_loop_x!==undefined)xi.value=cfgData.tap_loop_x;
+	if(yi&&cfgData.tap_loop_y!==undefined)yi.value=cfgData.tap_loop_y;
+	if(ii&&cfgData.tap_loop_interval_ms)ii.value=cfgData.tap_loop_interval_ms;}
 }
 async function saveConfig(silent){
 	const updated={...cfgData};

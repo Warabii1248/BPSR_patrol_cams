@@ -81,6 +81,10 @@ type Config struct {
 	MumuPreKeycode string `json:"mumu_pre_keycode"`
 	// MumuDelayMs は各ADBコマンド間のウェイト(ms)。デフォルト: 1200
 	MumuDelayMs int `json:"mumu_delay_ms"`
+	// TapLoopX / TapLoopY はタップループの座標。TapLoopIntervalMs は間隔(ms)。
+	TapLoopX          int `json:"tap_loop_x"`
+	TapLoopY          int `json:"tap_loop_y"`
+	TapLoopIntervalMs int `json:"tap_loop_interval_ms"`
 	// WindowState はGUIウィンドウの位置・サイズ。
 	WindowState *WindowState `json:"window_state,omitempty"`
 
@@ -234,6 +238,7 @@ func defaultConfig() *Config {
 		MumuClearLength:          3,
 		MumuPreKeycode:           "KEYCODE_P",
 		MumuDelayMs:              1200,
+		TapLoopIntervalMs:        1000,
 		ParallelLimit:            0,
 		ParallelGroupDelaySecs:   0,
 		PatrolChannelsFile:       "config/channels.txt",
@@ -298,6 +303,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.MumuDelayMs == 0 {
 		cfg.MumuDelayMs = 1200
+	}
+	if cfg.TapLoopIntervalMs < 100 {
+		cfg.TapLoopIntervalMs = 1000
 	}
 	if cfg.FilterFile == "" {
 		cfg.FilterFile = "config/filter.json"

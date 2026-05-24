@@ -1,4 +1,27 @@
 ﻿====--------------------------------------------------------------------------------
+[No.52] 2026/05/24 — タップループの X/Y/間隔を config.json に保存・復元
+
+【背景 / 原因】
+  タップループの X・Y 座標と間隔(ms)は入力欄に値を入れても再起動後にリセットされていた。
+
+【変更内容】
+  appconfig/config.go:
+    - Config struct に TapLoopX / TapLoopY / TapLoopIntervalMs を追加（json: tap_loop_x / tap_loop_y / tap_loop_interval_ms）
+    - defaultConfig(): TapLoopIntervalMs = 1000
+    - applyDefaults(): TapLoopIntervalMs < 100 なら 1000 にリセット（旧 config.json 互換）
+  gui/assets/app.js:
+    - tapLoopStart(): 開始成功時に cfgData を更新して saveConfig(true) で即時保存
+    - loadConfig(): cfgData から tap-x / tap-y / tap-interval を復元
+
+【効果】
+  再起動後もタップループの設定値が維持される。
+
+【影響範囲】
+  - appconfig/config.go
+  - gui/assets/app.js
+  - 後方互換性: 旧 config.json に tap_loop_* キーなし → applyDefaults で補完。XY は 0 のまま、間隔は 1000ms がデフォルト
+
+====--------------------------------------------------------------------------------
 [No.51] 2026/05/24 — MuMu 17台目以降のデバイスがゴーストフィルタで除外される不具合修正
 
 【背景 / 原因】
