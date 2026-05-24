@@ -111,6 +111,7 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',system-ui,s
 .view{display:none;flex-direction:column;gap:10px;flex:1;min-height:0}
 .view.active{display:flex}
 #view-dashboard{overflow-y:auto}
+#view-devices{overflow-y:auto;padding-right:4px}
 #view-patrol{overflow-y:auto;padding-right:4px}
 #view-settings{overflow-y:auto;padding-right:4px}
 #view-data-management{overflow-y:auto;padding-right:4px}
