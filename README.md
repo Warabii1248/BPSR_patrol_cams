@@ -99,7 +99,7 @@ MuMu Player は負荷軽減のため 1280x720 解像度での運用を前提（�
 ### [工事中]クラッシュ検知・自動復帰
 
 - `crash_recovery_enabled=true` のとき、移動タイムアウト時に `game_package_name` のプロセス生死を ADB で確認
-- 落ちていた場合は `game_launch_activity` （未指定時は `monkey -p`）でゲームを再起動し、`crash_recovery_delay_secs` 待機後に巡回を再開
+- 落ちていた場合は `game_launch_activity` （未指定時は `monkey -p`）でゲームを再起動
 
 ### Discord 通知
 
