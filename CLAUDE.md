@@ -43,19 +43,25 @@ go vet ./...           # 静的解析
 
 | パス | 役割 | 行数 | 触る時の慎重度 |
 |---|---|---|---|
-| `main.go` | 起動・配線（capture↔patroller↔gui の接続） | ~615 | 中 |
-| `ncap/cap_device.go` | パケット解析・session 管理・0x15/0x2E ハンドラ | ~2271 | **最高（要確認）** |
+| `main.go` | 起動・配線（capture↔patroller↔gui の接続） | ~630 | 中 |
+| `ncap/cap_device.go` | パケット解析・session 管理・0x15/0x2E ハンドラ | ~2288 | **最高（要確認）** |
 | `ncap/portmap.go` | port→ch マッピングの永続化（JSON） | ~185 | 中（フォーマット互換注意） |
 | `ncap/cap_helper.go`, `byte_reader.go`, `queue.go` | バイナリ読み出しユーティリティ | 小 | 低 |
 | `pb/bp.pb.go` | protobuf 生成コード（手動編集禁止） | - | **編集禁止** |
-| `mumu/mumu.go` | Patroller（巡回ロジック）・状態機械・ADB呼出 | ~2443 | **最高（要確認）** |
-| `gui/gui.go` | HTTP サーバー + HTML/JS/CSS 一体（巨大ファイル） | ~6017 | 高 |
-| `appconfig/config.go` | config.json Load/Save・defaults | 小 | **高（Load/Save 非対称の罠あり）** |
-| `notifier/discord.go` | Discord webhook 送信 | 小 | 低 |
-| `debuglog/debuglog.go` | Verbose/Dedup ログ | 小 | 低 |
+| `mumu/mumu.go` | Patroller（巡回ロジック）・状態機械・ADB呼出 | ~2707 | **最高（要確認）** |
+| `mumu/screen.go` | スクリーンショット取得・ADB画面操作 | ~297 | 中 |
+| `gui/gui.go` | HTTP サーバー起動・WebView2 ウィンドウ・HTML/JS/CSS | ~1012 | 高 |
+| `gui/handlers.go` | HTTP ハンドラ群（gui.go から分離） | ~1423 | 高 |
+| `appconfig/config.go` | config.json Load/Save・defaults | ~494 | **高（Load/Save 非対称の罠あり）** |
+| `appconfig/filter.go` | filter.json のロード・保存 | ~61 | 低 |
+| `global/cache.go` | グローバルキャッシュ（モンスター名等）の読み書き | ~52 | 低 |
+| `global/monster_names.go` | MonsterNames マップ変数の宣言 | ~3 | 低 |
+| `location/store.go` | 場所名マスタ・最近傍検索（locations.json ラッパー） | ~77 | 低 |
+| `notifier/discord.go` | Discord webhook 送信 | ~186 | 低 |
+| `debuglog/debuglog.go` | Verbose/Dedup ログ | ~216 | 低 |
 | `cmd/chat-reporter/main.go` | 別バイナリ（chat-reporter.exe） | ~329 | 中（main.go と設定同期必須） |
-| `config/*.json`, `config/channels.txt` | ランタイム設定（後方互換必須） | - | 高 |
-| `data/locations.json` | 場所名マスタ | - | 低 |
+| `config/*.json`, `config/channels.txt` | ランタイム設定（後方互換必須）。`gold_history.json` を含む | - | 高 |
+| `data/locations.json` | 場所名マスタ（location/store.go が読む） | - | 低 |
 
 ---
 
