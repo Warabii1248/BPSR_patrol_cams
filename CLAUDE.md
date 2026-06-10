@@ -227,6 +227,7 @@ Select-String -Path logs\log.txt -Pattern "\[CHAT-"
 ## 10. 実機レス検証フロー（sim 基盤）
 
 実機検証は最終確認のみ。日常の検証は以下の2レベルで行う（仕様書: `docs/plan_sim.md` / `docs/plan_sim_l2.md`）。
+skill 経由でも実行できる: `/sim [シナリオ名]`（Level 1・flake 自動再実行付き）、`/replay-check [pcap] [golden]`（Level 2）。
 
 ### Level 1: patrol-sim（mumu 層・実機/実ゲーム不要）
 
