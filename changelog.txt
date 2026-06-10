@@ -1,4 +1,68 @@
 ﻿====--------------------------------------------------------------------------------
+[No.59] 2026/06/10 14:21 — patrol-sim: 実機レスシミュレーター Phase A（fake-adb + ハーネス + baseline.json PASS）
+
+【背景 / 原因】
+  実機（MuMu 8台 + ゲーム + Npcap）なしで巡回ロジックの検証サイクルを回すため
+  docs/plan_sim.md Phase A を実装。mumu/ 等既存ファイルは 1 行も変更しない。
+
+【変更内容】
+  cmd/fake-adb/main.go（新規）:
+    - PATROL_SIM_ADDR 未設定時は即 exit 1（本物環境への誤混入防止）
+    - ADB コマンド引数を JSON 1行で SimServer へ送信 → 応答の delay_ms 待機 → stdout 出力
+    - screencap コマンドは screen="black"|"normal" に応じた 16×16 PNG を stdout へバイナリ出力
+
+  sim/scenario.go（新規）:
+    - シナリオ JSON（DeviceDef/PatrolDef/ServerDef/EventDef/AssertDef）の Load
+    - dwell_phase_secs を {"min":N,"max":M} object 形式でパース
+
+  sim/server.go（新規）:
+    - TCP listen（ephemeral port）で fake-adb からの接続を受け付け
+    - adb コマンドを JSON で受信し devices/keyevent/tap/screencap/start-server 等に応答
+    - serial ごとの pendingDigits バッファで DEL+数字列 → ENTER 間またぎのチャンネル番号復元
+    - SetOnEnter コールバックで KEYCODE_ENTER 検出を GameServer へ通知
+
+  sim/gameserver.go（新規）:
+    - ENTER 受信 → screencap=black → line_id_change_delay 後 NotifyLineIDChange →
+      post_load_delay 後 NotifyPostLoadReady → screencap=normal の一連シーケンス
+
+  sim/assert.go（新規）:
+    - PhaseTracker: PatrolStatus.Phase 遷移を時刻付き記録
+    - LogCapture: io.Writer 実装・行バッファ（mutex 保護）
+    - Evaluate: forbid/require パターン照合・dwell_phase_secs 実測検証・ActualCh 追跡
+
+  cmd/patrol-sim/main.go（新規）:
+    - -scenario / -v / -fake-adb フラグ
+    - fake-adb パス: 自バイナリ同ディレクトリの fake-adb.exe をデフォルト
+    - mumu.NewPatroller(cfg) に LoadSerialUIDMap / LoadSerialLabelMap / SetExcludeUIDs 投入
+    - log.SetOutput(io.MultiWriter(os.Stderr, capture)) でログキャプチャ
+    - 100ms ポーリングで dwell_wait 遷移をカウントし max_cycles×nCh 回で完了判定
+    - 全体タイムアウト 5 分
+
+  scenarios/baseline.json（新規）:
+    - 3台×3ch、dwell=2s、line_id_change_delay=500-1000ms、post_load_delay=800-1500ms
+    - assert: forbid ["移動失敗","未応答","Mismatch","発行前追加待ちタイムアウト"] /
+      dwell_phase_secs 1.8〜3.5s / all_devices_actual_ch_follows
+
+【効果】
+  baseline.json が PASS（dwell_wait 実測 avg≈2.1s、9回、56秒で完了）。
+  実機なしで巡回ロジックの正常系を一貫検証できる基盤が完成。
+
+【備考（レビュー・flake 知見）】
+  - patrol-flow-reviewer 指摘: load_detect_mode "packet" は mumu.go 未認識値で
+    "time" フォールバックになるため baseline.json を "time" に修正
+  - 計測上の注意: mumu.go:2544 で Phase=dwell_wait 設定後に extraWait
+    （発行前追加待ち・最大 MoveTimeout）が走るため、シグナル遅延時は
+    dwell_wait 実測に合算される。検知のため forbid に
+    「発行前追加待ちタイムアウト」を追加（ビルド直後の初回実行で
+    dwell[5]=196.7s の flake を 1 回観測。以後 2 連続 PASS）
+
+【影響範囲】
+  - 新規ファイルのみ（既存ファイル 1 行も変更なし）
+  - cmd/fake-adb/, cmd/patrol-sim/, sim/, scenarios/ ディレクトリ新規追加
+  - release/fake-adb.exe, release/patrol-sim.exe が go build 対象に追加
+  - 後方互換性: 既存バイナリ・config への影響なし
+
+====--------------------------------------------------------------------------------
 [No.58] 2026/06/10 14:05 — pcap replay ツール（ncap/replay.go + cmd/pcap-replay・Level 2 Phase E）
 
 【背景 / 原因】

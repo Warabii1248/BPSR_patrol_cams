@@ -1,0 +1,143 @@
+// Package sim はパトロールシミュレーターのコアパッケージ。
+// シナリオ JSON の読み込み・ゲームサーバーシミュレータ・アサーションエンジンを提供する。
+package sim
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+// DelayRange は min_ms〜max_ms の一様乱数遅延仕様。
+type DelayRange struct {
+	MinMs int `json:"min_ms"`
+	MaxMs int `json:"max_ms"`
+}
+
+// DeviceDef はシナリオ内のデバイス定義。
+type DeviceDef struct {
+	Serial    string `json:"serial"`
+	UID       uint64 `json:"uid"`
+	Label     string `json:"label"`
+	InitialCh uint32 `json:"initial_ch"`
+}
+
+// PatrolDef はシナリオ内の巡回パラメーター。
+type PatrolDef struct {
+	DwellSecs      float64 `json:"dwell_secs"`
+	MoveTimeoutSecs float64 `json:"move_timeout_secs"`
+	LoadDetectMode  string  `json:"load_detect_mode"`
+}
+
+// ServerDef はゲームサーバーシミュレーターのパラメーター。
+type ServerDef struct {
+	LineIDChangeDelay DelayRange `json:"line_id_change_delay"`
+	PostLoadDelay     DelayRange `json:"post_load_delay"`
+	AdbCmdDelayMs     int        `json:"adb_cmd_delay_ms"`
+}
+
+// EventDef はシナリオ内の外乱イベント定義。
+type EventDef struct {
+	AtPhase string `json:"at_phase"` // フェーズ名で発火
+	Type    string `json:"type"`     // "native_move" | "burst_0x2e" | "silent_device" | "delayed_signal"
+	UID     uint64 `json:"uid"`
+	ToCh    uint32 `json:"to_ch"`
+	Serial  string `json:"serial"`
+	Count   int    `json:"count"` // burst_0x2e 用
+}
+
+// AssertDef はアサーション仕様。
+type AssertDef struct {
+	MaxCycles                int      `json:"max_cycles"`
+	ForbidLogPatterns        []string `json:"forbid_log_patterns"`
+	RequireLogPatterns       []string `json:"require_log_patterns"`
+	DwellPhaseSecsMin        float64  `json:"dwell_phase_secs_min"`
+	DwellPhaseSecsMax        float64  `json:"dwell_phase_secs_max"`
+	AllDevicesActualChFollows bool     `json:"all_devices_actual_ch_follows"`
+}
+
+// rawAssertDef は JSON パース用中間型（dwell_phase_secs が object の場合に対応）。
+type rawAssertDef struct {
+	MaxCycles                int      `json:"max_cycles"`
+	ForbidLogPatterns        []string `json:"forbid_log_patterns"`
+	RequireLogPatterns       []string `json:"require_log_patterns"`
+	DwellPhaseSecs           *struct {
+		Min float64 `json:"min"`
+		Max float64 `json:"max"`
+	} `json:"dwell_phase_secs"`
+	AllDevicesActualChFollows bool `json:"all_devices_actual_ch_follows"`
+}
+
+// Scenario はシナリオ JSON のトップレベル構造体。
+type Scenario struct {
+	Name     string      `json:"name"`
+	Seed     int64       `json:"seed"`
+	Devices  []DeviceDef `json:"devices"`
+	Channels []uint32    `json:"channels"`
+	Patrol   PatrolDef   `json:"patrol"`
+	Server   ServerDef   `json:"server"`
+	Events   []EventDef  `json:"events"`
+	Assert   AssertDef   `json:"-"` // カスタムパース
+}
+
+// scenarioJSON は JSON パース用中間型。
+type scenarioJSON struct {
+	Name     string          `json:"name"`
+	Seed     int64           `json:"seed"`
+	Devices  []DeviceDef     `json:"devices"`
+	Channels []uint32        `json:"channels"`
+	Patrol   PatrolDef       `json:"patrol"`
+	Server   ServerDef       `json:"server"`
+	Events   []EventDef      `json:"events"`
+	Assert   json.RawMessage `json:"assert"`
+}
+
+// LoadScenario はファイルからシナリオを読み込む。
+func LoadScenario(path string) (*Scenario, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("scenario load: %w", err)
+	}
+
+	var raw scenarioJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("scenario parse: %w", err)
+	}
+
+	s := &Scenario{
+		Name:     raw.Name,
+		Seed:     raw.Seed,
+		Devices:  raw.Devices,
+		Channels: raw.Channels,
+		Patrol:   raw.Patrol,
+		Server:   raw.Server,
+		Events:   raw.Events,
+	}
+
+	// assert フィールドを中間型でパース
+	if raw.Assert != nil {
+		var ra rawAssertDef
+		if err := json.Unmarshal(raw.Assert, &ra); err != nil {
+			return nil, fmt.Errorf("assert parse: %w", err)
+		}
+		s.Assert = AssertDef{
+			MaxCycles:                ra.MaxCycles,
+			ForbidLogPatterns:        ra.ForbidLogPatterns,
+			RequireLogPatterns:       ra.RequireLogPatterns,
+			AllDevicesActualChFollows: ra.AllDevicesActualChFollows,
+		}
+		if ra.DwellPhaseSecs != nil {
+			s.Assert.DwellPhaseSecsMin = ra.DwellPhaseSecs.Min
+			s.Assert.DwellPhaseSecsMax = ra.DwellPhaseSecs.Max
+		}
+	}
+
+	if len(s.Devices) == 0 {
+		return nil, fmt.Errorf("scenario: devices は1台以上必要")
+	}
+	if len(s.Channels) == 0 {
+		return nil, fmt.Errorf("scenario: channels は1ch以上必要")
+	}
+
+	return s, nil
+}
