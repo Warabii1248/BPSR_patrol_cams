@@ -1,4 +1,38 @@
 ﻿====--------------------------------------------------------------------------------
+[No.58] 2026/06/10 14:05 — pcap replay ツール（ncap/replay.go + cmd/pcap-replay・Level 2 Phase E）
+
+【背景 / 原因】
+  No.57（録画）に続く Level 2 Phase E。録画した .pcap を ncap の実パース処理へ
+  流し込み、ゲームアップデートによるパース層破壊（No.23/34 型）や ncap 内部
+  リグレッション（session merge / donor 補完 / UID 抽出）を実機なしで検知する。
+
+【変更内容】
+  ncap/replay.go（新規・既存ファイルは無変更）:
+    - ReplayFile: pcap.OpenOffline で開き全パケットを handlePacket へ同期投入。
+      Start() と異なり queue / cleanupSessions 不使用、EOF で正常 return
+    - BPF 設定失敗は警告のみで続行（非 Ethernet リンクタイプ対応）
+  cmd/pcap-replay/main.go（新規）:
+    - NewCapDevice(nil) にコールバック登録し lineid/postload/chat/detect を収集
+    - コールバックは go ディスパッチのため、replay 後にイベント数の静止判定
+      （500ms 安定・上限10s）でドレイン
+    - golden 記録/比較は順序非依存のマルチセット（seq 除外 JSON 正規形ソート）。
+      発火順序が goroutine スケジューリング依存で非決定的なため。
+      重複発火・欠落は件数差で検出可能
+    - lineid イベント 0 件 / UID 確定 0 件で「パース層破壊の可能性」警告 + exit 1
+    - chat の sender/msg は SHA-256 先頭8桁ハッシュ（プライバシー）
+    - -portmap は一時コピー方式（本番 config/ 非汚染）。Discord 送信なし
+
+【効果】
+  アップデート前に録った baseline .pcap で golden を作り、アップデート後 /
+  コード変更後に replay して回帰検知できる。運用手順は docs/plan_sim_l2.md。
+
+【影響範囲】
+  - 新規ファイルのみ（ncap/replay.go, cmd/pcap-replay/main.go）
+  - 既存コード変更なし。後方互換性: 影響なし
+  - packet-analyst レビュー: SAFE（go ディスパッチのドレインとマルチセット比較で
+    BLOCKING 2件解消を確認）
+
+====--------------------------------------------------------------------------------
 [No.57] 2026/06/10 13:43 — pcap録画ツール cmd/pcap-record 新設（Level 2 検証基盤 Phase D）
 
 【背景 / 原因】
