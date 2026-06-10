@@ -1,3 +1,5 @@
 *.pcap
 release/
 *.exe
+logs/sim/
+logs/sim_run*.log
