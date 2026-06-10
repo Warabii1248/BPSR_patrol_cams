@@ -742,6 +742,13 @@ func (cd *CapDevice) mergeSessionIfDuplicate(newSess *session) {
 		existing.serverIPSetAt = newSess.serverIPSetAt
 	}
 	existing.userUID = newSess.userUID
+	// ロード完了シグナルの dedup 状態を引き継ぐ（同一 lineID 二重発火防止・No.44 関連）
+	if newSess.postLoadFiredForLineID != 0 {
+		existing.postLoadFiredForLineID = newSess.postLoadFiredForLineID
+	}
+	if existing.lineIDChangedAt.Before(newSess.lineIDChangedAt) {
+		existing.lineIDChangedAt = newSess.lineIDChangedAt
+	}
 	existing.lastAnyPacketAt = newSess.lastAnyPacketAt
 
 	// newSess の TCP sub-stream を existing に移植する。

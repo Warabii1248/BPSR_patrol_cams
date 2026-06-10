@@ -83,7 +83,7 @@ go vet ./...           # 静的解析
 
 ### 4-2. 巡回（mumu/mumu.go）
 
-1. **`RecordPatrolMove` は SwitchGroup の前に呼ぶ**: ADB コマンド発行前に pendingProbes を登録する。さもないとサーバ側の新 TCP セッションが先行して `MatchLineChange` 時点で pending probe が空になる（No.35）
+1. **`RecordPatrolMove` は SwitchGroup の前に呼ぶ**: ADB コマンド発行前に pendingProbes を登録する。さもないとサーバ側の新 TCP セッションが先行して `MatchLineChange` 時点で pending probe が空になる（No.35）。巡回本ループも No.56 で SwitchGroup 前（switchStartAt 時点）に統一済み
 2. **`probeWindow` は 60 秒**: 5台直列切替で30s以上かかる（No.23）
 3. **`MatchLineChange` の Probe マッチ条件**: `changedAt >= probe.sentAt - 2s` を必ずチェック。ADB 発行前の lineID 変化（本物クライアントの操作等）を拒否（No.33）
 4. **`MatchLineChange` の二重チェック**: RLock で未バインド確認後に WriteLock 取得しても、ロック取得後に `serialToUID[bindSerial] != 0` を再チェックして early return（並走ゴルーチン対策・No.26）

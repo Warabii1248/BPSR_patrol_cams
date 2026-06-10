@@ -2265,6 +2265,12 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			}
 			p.switchStartTimesMu.Unlock()
 
+			// per-device CH バインド用: 各 serial の切替予約を ADB 発行前に登録する（§4-2.1, No.35 と同根）。
+			// 既到達スキップ分（switchTargets 外）も ExpectedCh 更新のため targets 全件で呼ぶ（No.29）。
+			for _, ser := range targets {
+				p.RecordPatrolMove(ser, ch, switchStartAt)
+			}
+
 			// デバイスをグループに分けて並列切替
 			patrolResults := make(map[string]error, len(switchTargets))
 			var patrolMu sync.Mutex
@@ -2285,11 +2291,6 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			}
 			// 全台切替完了時刻を記録（この時刻以降の[0x2E]のみカウント）
 			switchDoneAt := time.Now()
-
-			// per-device CH バインド用: 各 serial の切替予約を記録
-			for _, ser := range targets {
-				p.RecordPatrolMove(ser, ch, switchDoneAt)
-			}
 
 			// チャンネル切替完了を CapDevice に通知（lineIDパケットが来ない場合のフォールバック用）
 			p.mu.RLock()

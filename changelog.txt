@@ -1,4 +1,40 @@
 ﻿====--------------------------------------------------------------------------------
+[No.56] 2026/06/10 12:33 — 巡回本ループのRecordPatrolMoveをSwitchGroup前へ + マージ時のロード判定フィールド引き継ぎ
+
+【背景 / 原因】
+  CLAUDE.md §4-2.1 は「RecordPatrolMove は SwitchGroup の前」だが、No.35 で
+  修正されたのは runStaggerProbe のみで、巡回本ループは SwitchGroup 全完了後
+  （switchDoneAt 時刻）に登録していた。これにより (1) 巡回中の再バインドが
+  成立しない、(2) ExpectedCh 更新遅れによる一時的な [Patroller][Mismatch] ログが
+  発生し得た。
+  また mergeSessionIfDuplicate ではマージ時に postLoadFiredForLineID /
+  lineIDChangedAt が existing にコピーされず、0x2E 先着パターンで
+  PostLoadReady が同一 lineID で二重発火し得た。
+
+【変更内容】
+  mumu/mumu.go:
+    - switchDoneAt 直後にあった「targets 全件への RecordPatrolMove」ループを削除
+    - p.switchStartTimesMu.Unlock() の直後・SwitchGroup の for ループの前に、
+      targets 全件・時刻 switchStartAt で RecordPatrolMove を呼ぶブロックを新設
+      （runStaggerProbe 内の RecordPatrolMove は変更なし）
+  ncap/cap_device.go:
+    - mergeSessionIfDuplicate の existing.userUID = newSess.userUID の直後に、
+      newSess.postLoadFiredForLineID != 0 なら existing にコピー、
+      existing.lineIDChangedAt が newSess.lineIDChangedAt より古ければ更新する
+      処理を追加
+
+【効果】
+  - per-device CH バインド予約が ADB 発行前（switchStartAt 時点）に揃うことで
+    §4-2.1 の不変条件どおりの動作になり、巡回中の再バインド不成立や
+    ExpectedCh 更新遅れによる一時的 Mismatch ログが解消される
+  - セッションマージ後も PostLoadReady の dedup 状態（lineID単位）が維持され、
+    同一 lineID での二重発火を防止する
+
+【影響範囲】
+  - mumu/mumu.go, ncap/cap_device.go
+  - 後方互換性: config.json のキー・スキーマ変更なし
+
+====--------------------------------------------------------------------------------
 [No.55] 2026/06/10 12:24 — NotifyChMovePacketのUID検証 + 0x2E donor lineID補完を同一userUID限定に
 
 【背景 / 原因】
