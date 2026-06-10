@@ -1,4 +1,37 @@
 ﻿====--------------------------------------------------------------------------------
+[No.65] 2026/06/11 07:02 — gui-sim Phase B: 設定変更の動的反映 + 外乱×ボタン競合シナリオ
+
+【背景 / 原因】
+  No.64 (Phase A) で gui-sim 基盤と gui_baseline が入った。Phase B は仕様書
+  docs/plan_gui_sim.md の残り2シナリオ: 「設定変更が巡回中の Patroller に即時反映されるか」と
+  「外乱イベントとボタン操作の同時発生」の検証。Go コード変更なし（シナリオ JSON のみ）。
+
+【変更内容】
+  scenarios/gui/config_reflect.json（新規）:
+    - 巡回中に config_patch で patrol_dwell_secs 2→4 を POST → handleConfig の
+      UpdatePatrollerCfg 即時反映を「反映ログ + 後続 dwell 実測 + 2周目の GET 永続確認」で検証
+    - dwell 実測 [3.30 5.30 5.20 5.20 5.30] = patch 直後の次 dwell から 4s 設定が効くことを数値確認
+  scenarios/gui/interference_buttons.json（新規）:
+    - native_move 外乱（uid=430314 to_ch=7）を wait_0x2e で注入しつつ、device-statuses 取得 /
+      clear-move-failed POST / status running=true 確認を並走実行
+    - forbid は「移動失敗（完了シグナルなし）」を使用。「移動失敗」単独は clear-move-failed の
+      確認ログ「移動失敗チャンネルリストをクリアしました」に部分一致して偽陽性（実装時に発生・修正）
+  CLAUDE.md:
+    - §10 Level 1.5 のシナリオ表に2本追記 + 既知の注意点2件
+      （gui-sim の dwell 実測は HTTP ポーリング経由で ~1.2s 膨らむ / forbid「移動失敗」偽陽性）
+  docs/plan_gui_sim.md:
+    - Phase B 仕様を実装実態に同期（at_cycle・dwell 上限 6.5・マーシャル表記・forbid 注意）
+
+【効果】
+  「設定を変更した場合の挙動・反映確認」が実機なしの回帰テストになった。
+  外乱とボタン操作の競合という実機で再現困難なタイミングを決定論的に再現できる。
+
+【影響範囲】
+  - 新規: scenarios/gui/ 2本 / 更新: CLAUDE.md, docs/plan_gui_sim.md, changelog.txt
+  - Go コード無変更・後方互換性への影響なし
+  - 検証: run_all.ps1 全10シナリオ PASS（既存7 + gui 3本・547s）
+
+====--------------------------------------------------------------------------------
 [No.64] 2026/06/10 23:29 — gui-sim: GUI×sim ハイブリッド検証 Phase A（HTTP API 駆動の end-to-end + run_all 統合）
 
 【背景 / 原因】

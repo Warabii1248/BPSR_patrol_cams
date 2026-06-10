@@ -262,8 +262,12 @@ skill 経由でも実行できる: `/sim [シナリオ名]`（Level 1・flake �
 | シナリオ | 検証内容 |
 |---|---|
 | baseline (gui_baseline) | 開始/停止ボタン → 巡回 → status 反映 + 全 GET API スイープ + config GET→POST→GET 同一性（No.31 型の動的検出） |
+| config_reflect | 巡回中の config_patch（dwell 2→4s）→ 即時反映ログ + 後続 dwell 実測変化 + 保存値永続 |
+| interference_buttons | native_move 外乱とボタン操作（device-statuses / clear-move-failed / status）の同時発生 |
 
 - gui_actions の `config_patch` は「全量 GET → マージ → 全量 POST」で GUI JS の実挙動を模倣する。部分 JSON の直接 POST は禁止（zero-value unmarshal で欠損キーが false/0 保存されるため）
+- gui-sim の dwell 実測は HTTP ポーリング経由のため patrol-sim より **~1.2s 膨らむ**（dwell assert は余裕を持たせる）
+- forbid に `移動失敗` 単独は使わない（clear-move-failed のログ「移動失敗チャンネルリストをクリアしました」に偽陽性）。実害シグネチャは `移動失敗（完了シグナルなし）`
 - main.go へ guiServer 配線を追加した時は cmd/gui-sim の配線への要否を判断する（§4-5 と同種の同期義務）
 
 ### Level 2: pcap-record / pcap-replay（ncap 層）

@@ -196,20 +196,27 @@ patrol-sim main の流れを踏襲。差分のみ記す:
   - `{type: "config_identity_check", at_phase: "dwell_wait", at_cycle: 1}`
 - assert: baseline 同等（forbid: 既存セット / dwell 1.8〜3.5s / all_devices_actual_ch_follows）
 
-**Phase B: config_reflect.json**
+**Phase B: config_reflect.json**（実装済み・実測反映）
 - 3台 × 3ch × 2周、初期 dwell=2s
 - gui_actions:
   - `{type: "config_patch", at_phase: "dwell_wait", at_cycle: 1, patch: {"patrol_dwell_secs": 4}}`
-  - `{type: "api", method: "GET", path: "/api/config", at_phase: "dwell_wait", at_cycle: 2,
-     expect_body_contains: ["\"patrol_dwell_secs\": 4"]}`（保存値の永続確認・表記は実装時に実マーシャル出力へ合わせる）
+  - `{type: "api", method: "GET", path: "/api/config", at_phase: "dwell_wait", at_cycle: 4,
+     expect_body_contains: ["\"patrol_dwell_secs\":4"]}`（保存値の永続確認。at_cycle=4 = 2周目最初の dwell。
+     マーシャル出力はスペースなしの `"key":value`）
 - assert:
   - require_log_patterns: `["巡回設定を即時反映: 滞在=4s"]`（handleConfig の反映ログ・handlers.go:528）
-  - dwell_phase_secs: min 1.8 / max 4.6（1周目 2s・2周目 4s の両方を許容）
+  - dwell_phase_secs: min 1.8 / max 6.5
+    （gui-sim の dwell 実測は HTTP ポーリング経由のため patrol-sim より ~1.2s 膨らむ。
+     実測例: `[3.30 5.30 5.20 5.20 5.30]` — patch 前 2s 設定→3.3s、patch 後 4s 設定→5.2〜5.3s。
+     反映の本体検証は require_log + GET 永続確認が担い、dwell 範囲は暴走ガード）
 
-**Phase B: interference_buttons.json**
-- native_move イベント（既存 EventDef）を 1 周目 dwell 中に注入しつつ、同時に gui_actions で
-  `/api/patrol/device-statuses` 取得・`/api/patrol/clear-move-failed` POST を実行
-- assert: native_move_same_ch と同等の forbid セット + 全アクション 200 + actual_ch follows
+**Phase B: interference_buttons.json**（実装済み・実測反映）
+- native_move イベント（既存 EventDef・uid=430314 to_ch=7）を 1 周目 wait_0x2e で注入しつつ、
+  gui_actions で `/api/patrol/device-statuses` 取得（同 wait_0x2e）・`/api/patrol/clear-move-failed` POST
+  （dwell_wait 2回目）・`/api/patrol/status` running=true 確認（dwell_wait 3回目）を実行
+- assert: forbid は `移動失敗（完了シグナルなし）` を使う。**`移動失敗` 単独は禁止** —
+  clear-move-failed ボタン自身のログ「移動失敗チャンネルリストをクリアしました」に部分一致して偽陽性になる
+  （実装時に実際に発生・修正済み）
 - 目的: 実機で再現困難な「外乱とボタン操作の同時発生」の決定論的再現
 
 ### 6. run_all.ps1（変更）
