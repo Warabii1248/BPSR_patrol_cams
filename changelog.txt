@@ -1,4 +1,49 @@
 ﻿====--------------------------------------------------------------------------------
+[No.55] 2026/06/10 12:24 — NotifyChMovePacketのUID検証 + 0x2E donor lineID補完を同一userUID限定に
+
+【背景 / 原因】
+  ネイティブクライアントの ch 移動で "[Instance-K][0x2E] UUID=...(UID=N)" ログが出ると、
+  guiWriter.Write → Patroller.NotifyChMovePacket(label) が excludeUIDs 未適用・lineID=0 で
+  moveSignal に phantom シグナルを注入していた（label のみで serial 解決するため、
+  ネイティブと巡回対象インスタンスの label が一致/誤解決すると誤カウントの原因になる）。
+  また processSyncToMeDeltaInfo 末尾の 0x2E donor lineID 補完は「同 clientIP で
+  confirmedAt 最新」のセッションを donor とするため、MuMu NAT 環境では直前に ch 移動した
+  別インスタンス（ネイティブ含む）のセッションが donor に選ばれ、ch を誤って借用し得た。
+
+【変更内容】
+  gui/gui.go:
+    - extractInstanceLabel の直後に extractUIDFromLine ヘルパーを追加。
+      "(UID=N)" 形式から UID を抽出（見つからない・解析失敗時は 0）
+    - import に "strconv" を追加
+    - guiWriter.Write 内の NotifyChMovePacket 呼び出しを
+      NotifyChMovePacket(extractInstanceLabel(line), extractUIDFromLine(line)) に変更
+    - Server.NotifyChMovePacket のシグネチャを (label string, uid uint64) に変更し透過転送
+  mumu/mumu.go:
+    - Patroller.NotifyChMovePacket のシグネチャを (instanceLabel string, uid uint64) に変更
+    - uid != 0 の場合: excludeUIDs に含まれていれば破棄、uidToSerial でバインド済みなら
+      そのserialで notifyMoveSignal、未バインドなら破棄（phantom防止）
+    - uid == 0 の場合: 従来どおり label → labelToSerial 解決で notifyMoveSignal（変更なし）
+  ncap/cap_device.go:
+    - processSyncToMeDeltaInfo 末尾の lineID 補完: 外側条件に sess.userUID != 0 を追加し、
+      donor の userUID（donorUID）を読み出して donorLine != 0 && donorUID == sess.userUID の
+      場合のみ補完を実行するよう変更（lineID/mapIDコピー・ログ・onLineIDObserved発火は変更なし）
+
+【効果】
+  - ネイティブクライアントの ch 移動ログが、巡回対象として未バインドの uid の場合は
+    moveSignal に注入されなくなり、巡回中の「移動失敗」「未応答」誤判定を防げる
+  - 0x2E lineID 補完が同一 userUID（再起動後の同一アカウント）限定になり、
+    MuMu NAT 環境で別インスタンス（ネイティブ含む）の ch を誤って借用しなくなる
+
+【影響範囲】
+  - gui/gui.go, mumu/mumu.go, ncap/cap_device.go
+  - 後方互換性: config.json のキー・スキーマ変更なし。
+  - 挙動変更点: NotifyChMovePacket 経由のフォールバックシグナルにおいて、
+    uid が判明していて未バインド（uidToSerial 未登録）の場合は破棄されるようになった
+    （従来は label をそのまま serial として moveSignal に送っていた）。
+    識別（Identify）前のデバイスはこの fallback 経路ではカウントされなくなるが、
+    正規経路（NotifyPostLoadReady）も元々バインド前提のため運用上の影響なし。
+
+====--------------------------------------------------------------------------------
 [No.54] 2026/06/10 12:13 — dwell下限クランプ修正 + extraWaitループのlineIDガード追加
 
 【背景 / 原因】

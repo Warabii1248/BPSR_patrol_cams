@@ -949,14 +949,33 @@ type Patroller struct {
 	postLoadCancelMu sync.Mutex
 }
 
-// NotifyChMovePacket は guiWriter が "[0x2E] UUID=" ログ行を検出したときに呼び出す。
-// instanceLabel は "Instance-N" 形式。既知の場合は serial に解決してから moveSignal に送る。
-// 空文字列の場合は無視する。巡回中でない場合は何もしない。
-func (p *Patroller) NotifyChMovePacket(instanceLabel string) {
+// NotifyChMovePacket は guiWriter が "[0x2E] UUID=" ログ行を検出したとき呼ばれる fallback 経路。
+// uid が判明している場合は除外UID・バインドを検証し、phantom シグナル（同一PC上の
+// ネイティブクライアント等）を弾く。uid==0（解析不能な行）は従来動作を維持する。
+func (p *Patroller) NotifyChMovePacket(instanceLabel string, uid uint64) {
+	if uid != 0 {
+		// 除外 UID → 破棄
+		p.excludeUIDsMu.RLock()
+		excluded := p.excludeUIDs[uid]
+		p.excludeUIDsMu.RUnlock()
+		if excluded {
+			return
+		}
+		// バインド済み uid → 確実な serial で送信
+		p.serialUIDMu.RLock()
+		serial := p.uidToSerial[uid]
+		p.serialUIDMu.RUnlock()
+		if serial != "" {
+			p.notifyMoveSignal(serial, 0, time.Now())
+			return
+		}
+		// uid 判明かつ未バインド → 巡回デバイスに紐付けられないため破棄（phantom 防止）
+		return
+	}
+	// uid 不明: 従来どおり label → serial 解決で送信（既存コードをそのまま残す）
 	if instanceLabel == "" {
 		return
 	}
-	// Instance label → serial に解決（未解決時は instanceLabel をそのまま使用）
 	serial := instanceLabel
 	p.serialLabelMu.RLock()
 	if p.labelToSerial != nil {
@@ -965,7 +984,7 @@ func (p *Patroller) NotifyChMovePacket(instanceLabel string) {
 		}
 	}
 	p.serialLabelMu.RUnlock()
-	p.notifyMoveSignal(serial, 0, time.Now()) // lineID 不明（GUI 経由）: 0 = スキップなし
+	p.notifyMoveSignal(serial, 0, time.Now())
 }
 
 // loadStabilizationDelay は 0x2E UUID 着信から完了シグナルを発火するまでの遅延を返す。

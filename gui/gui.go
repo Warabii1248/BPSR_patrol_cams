@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -373,11 +374,11 @@ func (s *Server) SetWindowStateFns(loadFn func() (*appconfig.WindowState, error)
 
 // NotifyChMovePacket は ncap が [0x2E] パケットを受信したとき main.go から呼ぶ。
 // label は "Instance-N" 形式のインスタンスラベル。巡回中であれば Patroller に転送する。
-func (s *Server) NotifyChMovePacket(label string) {
+func (s *Server) NotifyChMovePacket(label string, uid uint64) {
 	if !s.patrolEnabled {
 		return
 	}
-	s.patroller.NotifyChMovePacket(label)
+	s.patroller.NotifyChMovePacket(label, uid)
 }
 
 // NotifyLineIDChange は ncap が 0x15/0x16 で LineID を観測したとき main.go から呼ぶ。
@@ -667,7 +668,7 @@ func (w *guiWriter) Write(p []byte) (int, error) {
 			// - "[Instance-N][0x2E] lineID補完: ..." は補助情報 → 二重カウント防止
 			// - "[MuMu] 巡回: Ch%d [0x2E] ..." は自ログ → フィードバックループ防止
 			if w.srv.patrolEnabled && strings.Contains(line, "[0x2E] UUID=") {
-				w.srv.patroller.NotifyChMovePacket(extractInstanceLabel(line))
+				w.srv.patroller.NotifyChMovePacket(extractInstanceLabel(line), extractUIDFromLine(line))
 			}
 		}
 	}
@@ -688,6 +689,25 @@ func extractInstanceLabel(line string) string {
 		return ""
 	}
 	return rest[:end]
+}
+
+// extractUIDFromLine は "[0x2E] UUID=... (UID=12345)" 形式のログ行から UID を抽出する。
+// 見つからない・解析失敗時は 0 を返す（呼び出し側で従来動作にフォールバック）。
+func extractUIDFromLine(line string) uint64 {
+	idx := strings.Index(line, "(UID=")
+	if idx < 0 {
+		return 0
+	}
+	rest := line[idx+5:]
+	end := strings.IndexByte(rest, ')')
+	if end <= 0 {
+		return 0
+	}
+	v, err := strconv.ParseUint(rest[:end], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // getDeviceIPCtx は mumu.GetDeviceIP をコンテキストのキャンセルに対応させるラッパー。

@@ -1731,13 +1731,14 @@ func (cd *CapDevice) processSyncToMeDeltaInfo(sess *session, payload []byte) {
 
 	// 再起動後など 0x15 未受信で lineID が未確定の場合、
 	// 同じ clientIP の確認済みセッションから lineID/mapID を補完する
-	if sess.lineID == 0 {
+	if sess.lineID == 0 && sess.userUID != 0 {
 		if donor := cd.findConfirmedSessionByClientIP(sess.clientIP); donor != nil && donor != sess {
 			donor.mu.Lock()
 			donorLine := donor.lineID
 			donorMap := donor.mapID
+			donorUID := donor.userUID
 			donor.mu.Unlock()
-			if donorLine != 0 {
+			if donorLine != 0 && donorUID == sess.userUID {
 				sess.lineID = donorLine
 				if sess.mapID == 0 && donorMap != 0 {
 					sess.mapID = donorMap
