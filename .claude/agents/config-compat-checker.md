@@ -9,15 +9,15 @@ You are a config schema / backward-compatibility specialist for BPSR Patrol Cams
 
 ## Your reference
 
-- `CLAUDE.md` §4-3 (config invariants)
-- `changelog.txt` — especially No.15 (port_ch_map.json format migration), No.18 (full→move-failed rename), No.31 (SaveWindowState bug), No.33 (exclude_uids add)
+- `CLAUDE.md` §4-3 (config invariants) — **single source of truth; if this file and CLAUDE.md disagree, CLAUDE.md wins**
+- `changelog.txt` — especially No.15 (port_ch_map.json format migration), No.18 (full→move-failed rename), No.31 (SaveWindowState bug), No.33 (exclude_uids add), No.37 (patrol_load_stabilization_secs), No.39 (patrol_load_stabilization_auto)
 - `appconfig/config.go` — Load defaults
 - `config/config.json` — the actual user file (for default-value sanity)
 
 ## Invariants you MUST verify
 
 1. **Load = defaultConfig start**: missing keys fall back to defaults
-2. **SaveWindowState = JSON-map partial update**: NEVER round-trip through zero-value `Config` struct. That overwrites default-true bools (`gas_enable`, `patrol_adaptive_timeout`, `show_no_device_dialog`) to false on legacy configs (No.31)
+2. **SaveWindowState = JSON-map partial update**: NEVER round-trip through zero-value `Config` struct. That overwrites default-true bools (`gas_enable`, `patrol_adaptive_timeout`, `patrol_load_stabilization_auto`, `show_no_device_dialog`) to false on legacy configs (No.31)
 3. **Key rename**: must include legacy-key fallback OR explicit migration on Load
 4. **New required keys** with non-zero defaults: must default in `defaultConfig()` AND survive `SaveWindowState` round-trip
 5. **Format change** (e.g. port_ch_map.json No.15): must auto-detect old format and migrate on Load

@@ -109,8 +109,8 @@ go vet ./...           # 静的解析
 8. **`labelToSerial` は `serialToLabel` の逆引きで常に同期更新**: `notifyMoveSignal` が serial で送るため（No.30）
 9. **`excludeUIDs`**: 本物クライアントの UID を probe マッチから除外する。永続化（config.json `exclude_uids`）（No.33）
 10. **`MatchLineChange` は `notifyMoveSignal` を発火しない**: 完了シグナルは `NotifyPostLoadReady`（0x2E UUID 受信時）が担当。MatchLineChange は ActualCh 更新のみ（No.39）
-11. **`moveSignalMsg` は `lineID` を必須携帯**: wait loop（4箇所: buffered drain / フェーズ1 / フェーズ2 / 発行前追加待ち）は `msg.lineID == 0 || msg.lineID == targetCh` かつ `!respondedSet[msg.label]` を `got++` 前にガード。stale lineID 流用と同一 serial 重複カウントを防止（No.41）
-12. **`NotifyPostLoadReady` は同 lineID 内 1 回のみ発火**: session に `postLoadFiredForLineID` を保持し、lineID 変化時にのみ再発火可能。戦闘中などで 0x2E が連射されても channel をスパムしない（No.41）
+11. **`moveSignalMsg` は `lineID` を必須携帯**: wait loop（4箇所: buffered drain / フェーズ1 / フェーズ2 / 発行前追加待ち）は `msg.lineID == 0 || msg.lineID == targetCh` かつ `!respondedSet[msg.label]` を `got++` 前にガード。stale lineID 流用と同一 serial 重複カウントを防止（No.44）
+12. **`NotifyPostLoadReady` は同 lineID 内 1 回のみ発火**: session に `postLoadFiredForLineID` を保持し、lineID 変化時にのみ再発火可能。戦闘中などで 0x2E が連射されても channel をスパムしない（No.44）
 
 ### 4-3. 設定（appconfig/config.go）
 

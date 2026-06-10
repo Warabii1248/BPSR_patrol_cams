@@ -1,4 +1,41 @@
 ﻿====--------------------------------------------------------------------------------
+[No.62] 2026/06/10 19:10 — レビュー subagent 3本を現行 CLAUDE.md §4 と同期（重大な矛盾2件修正）
+
+【背景 / 原因】
+  .claude/agents/ の3 agent が No.35 時点の知識で停止していた。特に patrol-flow-reviewer は
+  No.39 以前の記述（完了シグナル=lineID-change・MatchLineChange が notifyMoveSignal を呼ぶ）を
+  保持しており、現行 §4-2.6/§4-2.10 と真逆 = 正しいコードを BROKEN 判定し、
+  リグレッションを SAFE 通過させる状態だった。
+  調査の副産物として CLAUDE.md §4-2.11/12 の出典が No.41（実際はプログレスバーUI変更）と
+  誤記されていることも発見（正: No.44 stale 0x2E シグナル流用修正）。
+
+【変更内容】
+  .claude/agents/patrol-flow-reviewer.md:
+    - invariant #6 を反転修正: 完了シグナル = 0x2E UUID 受信（NotifyPostLoadReady）+ 遅延（No.39）
+    - invariant #10 を反転修正: MatchLineChange は notifyMoveSignal を呼ばない（No.39）
+    - #11 moveSignalMsg lineID 必須携帯 / #12 PostLoadReady dedup（No.44）を追加
+    - changelog 参照を No.60 まで更新、CLAUDE.md 優先の原則・sim シナリオ対応付け・
+      「Next step: run_all.ps1（実行は主セッション）」を出力フォーマットに追加
+  .claude/agents/packet-analyst.md:
+    - #7 を精密化（0x2E 座標は完了シグナル不可、ただし UUID 受信の NotifyPostLoadReady 経路は
+      No.39 の正規経路なので削除禁止）、#8 PostLoadReady dedup（No.44）追加
+    - #10 pb/bp.pb.go 編集禁止 / #11 ncap/replay.go の位置付けを明文化
+    - changelog 参照更新、「Next step: pcap-replay golden 比較」を出力フォーマットに追加
+  .claude/agents/config-compat-checker.md:
+    - default-true bool リストに patrol_load_stabilization_auto を追加（§4-3.3 同期）
+    - changelog 参照に No.37/No.39 を追加、CLAUDE.md 優先の原則を明記
+  CLAUDE.md:
+    - §4-2.11/12 の出典誤記を No.41 → No.44 に修正
+
+【効果】
+  レビュー agent が現行不変条件で判定するようになり、逆判定（正→BROKEN / 誤→SAFE）リスクを解消。
+  agent 出力が sim 検証（§10）への導線を持つ。
+
+【影響範囲】
+  - .claude/agents/3本、CLAUDE.md（citation 修正のみ）
+  - 後方互換性: コード無変更・影響なし
+
+====--------------------------------------------------------------------------------
 [No.61] 2026/06/10 19:00 — CLAUDE.md 再整備（sim 基盤の組込み + §10 検証フロー + §11 実装ワークフロー新設）
 
 【背景 / 原因】
