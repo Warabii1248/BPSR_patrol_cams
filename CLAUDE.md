@@ -11,7 +11,8 @@ Windows / Go 1.23+ / CGO (Npcap)。
 - 思考中に方針変更・別案が浮上したら **即座に報告**、勝手に進めない
 - 応答は簡潔・箇条書き・敬語不要・同僚距離感
 - **触る前に下記「§3 ファイル責務マップ」「§4 不変条件」「§5 過去リグレッション罠リスト」を必ず確認**
-- ncap/ pb/ mumu/ MatchLineChange / processSyncContainerData / processSyncToMeDeltaInfo を変更する場合は **必ず先にユーザー確認**
+- ncap/ pb/ mumu/ MatchLineChange / processSyncContainerData / processSyncToMeDeltaInfo を変更する場合は **必ず先にユーザー確認**、変更は **§11 実装ワークフロー** に従う
+- mumu/ ncap/ の変更は実機前に **§10 sim 検証**（`run_all.ps1` / `pcap-replay`）を通す
 - config/ のキー名・スキーマ変更は **後方互換性の影響を必ず指摘**
 - 変更時は `changelog.txt` に追記必須（連番 No.NN・`yyyy/mm/dd hh:mm`）
 
@@ -33,6 +34,12 @@ Windows / Go 1.23+ / CGO (Npcap)。
 .\build.ps1 -Debug     # コンソール付き debug ビルド
 go build ./...         # 型・ビルドエラーだけ確認したい時
 go vet ./...           # 静的解析
+
+# 実機レス検証（詳細は §10）
+.\run_all.ps1                                          # Level 1: 全7シナリオ一括（mumu 変更時必須・約7分）
+.\release\patrol-sim.exe -scenario scenarios\X.json    # Level 1: 個別シナリオ
+.\release\pcap-record.exe                              # Level 2: 実トラフィック録画（本体と並行起動可）
+.\release\pcap-replay.exe -pcap X.pcap -golden testdata\golden.jsonl   # Level 2: ncap 回帰比較
 ```
 
 要件: Go 1.23+ / MinGW-w64 GCC (PATH 通っている事) / Npcap SDK (`C:\npcap-sdk`)。
@@ -62,6 +69,15 @@ go vet ./...           # 静的解析
 | `cmd/chat-reporter/main.go` | 別バイナリ（chat-reporter.exe） | ~329 | 中（main.go と設定同期必須） |
 | `config/*.json`, `config/channels.txt` | ランタイム設定（後方互換必須）。`gold_history.json` を含む | - | 高 |
 | `data/locations.json` | 場所名マスタ（location/store.go が読む） | - | 低 |
+| `ncap/replay.go` | pcap ファイルを実パーサに流す `ReplayFile`（cap_device.go 無変更の追加ファイル） | ~40 | 中 |
+| `sim/` (server, gameserver, scenario, events, assert) | Level 1 sim 基盤（SimServer・疑似ゲームサーバ・シナリオ・イベント注入・アサーション） | ~1200 | 中（本番コードに非依存方向のみ） |
+| `cmd/patrol-sim/main.go` | sim ハーネス（本番 Patroller を fake-adb で起動） | ~400 | 中 |
+| `cmd/fake-adb/main.go` | 偽 adb.exe（PATROL_SIM_ADDR 必須・未設定なら即 exit 1） | ~150 | 低 |
+| `cmd/pcap-record/main.go` | 実トラフィック .pcap 録画（本体と並行起動可） | ~139 | 低 |
+| `cmd/pcap-replay/main.go` | .pcap 再生 + golden 記録/比較（順序非依存マルチセット） | ~360 | 中 |
+| `scenarios/*.json` | Level 1 シナリオ定義 7本 | - | 低 |
+| `run_all.ps1` | Level 1 全シナリオ一括実行（FAIL で exit 1） | - | 低 |
+| `docs/plan_sim.md`, `docs/plan_sim_l2.md` | sim 基盤の仕様書 | - | 低 |
 
 ---
 
@@ -141,6 +157,8 @@ ncap/ または mumu/ を変更する場合、コミット前に以下を確認:
 - [ ] 変更したハンドラの全呼び出しパスを確認した（grep で全 caller 確認）
 - [ ] **§4 不変条件** を新規に破っていないか確認
 - [ ] **§5 過去罠リスト** で類似ケースが過去にないか changelog 検索
+- [ ] **mumu/ 変更時**: `.\run_all.ps1` 全7シナリオ PASS（§10。FAIL したらまず1回再実行 = flake 切り分け）
+- [ ] **ncap/ 変更時**: golden があれば `pcap-replay -golden` で回帰比較（§10）
 - [ ] `changelog.txt` に追記（背景・原因・変更・効果・影響範囲を含む）
 - [ ] 既存 config.json が無変更で動作するか（後方互換）
 
@@ -202,3 +220,63 @@ Select-String -Path logs\log.txt -Pattern "\[CHAT-"
 - **config-compat-checker**: appconfig/ config/ の変更を §4-3 と照合し後方互換性を検証
 
 該当ファイルを変更する時は **必ず該当 subagent でレビュー** してからコミット。
+レビュー agent は静的照合のみ。動的検証（run_all.ps1 / pcap-replay）は主セッションが §10 に従って実行する。
+
+---
+
+## 10. 実機レス検証フロー（sim 基盤）
+
+実機検証は最終確認のみ。日常の検証は以下の2レベルで行う（仕様書: `docs/plan_sim.md` / `docs/plan_sim_l2.md`）。
+
+### Level 1: patrol-sim（mumu 層・実機/実ゲーム不要）
+
+本番 `mumu.Patroller` を無変更のまま起動し、`cfg.ADBPath` を fake-adb.exe に差し替え、
+`NotifyLineIDChange` / `NotifyPostLoadReady` を直接呼んで疑似パケットシグナルを注入する。
+
+```powershell
+.\run_all.ps1                                          # 全7シナリオ（約7分・ログは logs\sim\<name>.log）
+.\release\patrol-sim.exe -scenario scenarios\X.json    # 個別（-v で verbose）
+```
+
+| シナリオ | 検証内容 |
+|---|---|
+| baseline | 正常巡回・dwell 実測 1.8〜3.5s |
+| native_move / native_move_same_ch | ネイティブクライアント干渉（別ch / 偶然同ch）を無視できるか |
+| burst_0x2e | 0x2E 10連射で moveSignal がスパムしないか（§4-2.12） |
+| silent_one | 1台無応答時にタイムアウト処理が正しく動くか |
+| slow_signal | 9s 遅延シグナルでも巡回が破綻しないか |
+| screen_mode | load_detect_mode=screen の画面判定パス |
+
+### Level 2: pcap-record / pcap-replay（ncap 層）
+
+```powershell
+.\release\pcap-record.exe                                                # 録画（本体と並行可・Ctrl+C 終了）
+.\release\pcap-replay.exe -pcap logs\capture_X.pcap                      # パース層生存確認
+.\release\pcap-replay.exe -pcap X.pcap -record-golden testdata\g.jsonl   # golden 記録
+.\release\pcap-replay.exe -pcap X.pcap -golden testdata\g.jsonl          # 回帰比較
+```
+
+- replay 出力の「**lineid 0件 / UID確定 0件**」警告 = No.23/34 型のパース層破壊の兆候
+- golden は**順序非依存マルチセット比較**（ncap のコールバックは go ディスパッチで順序非決定のため）。重複・欠落は件数差で検出される
+- **ゲームアップデート後の手順**: ①新版で録画（ログイン+ch切替+チャット 5-10分）→ ② replay で生存確認 → ③ golden 更新
+
+### 既知の注意点
+
+- ビルド直後の初回 sim 実行で flake を観測済み（AV スキャン疑い）。**FAIL したらまず再実行**
+- `mumu.go` は Phase=dwell_wait 設定後に extraWait（最大 MoveTimeout）が走るため、シグナル遅延時は dwell 実測が膨らむ（sim の計測特性・本番バグではない）。検知用に forbid「発行前追加待ちタイムアウト」をシナリオに入れてある
+- `load_detect_mode` の有効値は `screen` / `either` / それ以外=time（`packet` は無効値で time 扱い）
+
+---
+
+## 11. 実装ワークフロー（危険領域の変更手順）
+
+ncap/ mumu/ appconfig/ 等の危険領域を変更する時の標準フロー（1 Phase = 1 commit = changelog 1 エントリ）:
+
+1. **diff 仕様書を作成**（`docs/plan_*.md`）→ ユーザー承認を得る
+2. **実装 subagent（sonnet）** に仕様書を渡して実装させる（主セッションは直接編集しない）
+3. **専用レビュー agent**（§9）でレビュー → BLOCKING があれば修正して再レビュー
+4. **主セッション自身が diff を仕様書と照合**（subagent の逸脱検出）
+5. **動的検証**: mumu→`run_all.ps1` / ncap→`pcap-replay`（§10）+ `go build ./...` + `go vet ./...`
+6. **commit**: changelog No.NN 追記 → §6 チェックリスト確認 → コミット
+
+軽微な変更（GUI のみ・docs・typo）はこのフローを省略してよいが、§6 チェックリストは常に適用。
