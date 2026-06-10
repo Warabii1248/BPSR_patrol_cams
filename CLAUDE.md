@@ -36,8 +36,9 @@ go build ./...         # 型・ビルドエラーだけ確認したい時
 go vet ./...           # 静的解析
 
 # 実機レス検証（詳細は §10）
-.\run_all.ps1                                          # Level 1: 全7シナリオ一括（mumu 変更時必須・約7分）
+.\run_all.ps1                                          # Level 1+1.5: 全シナリオ一括（mumu/gui 変更時必須・約8分）
 .\release\patrol-sim.exe -scenario scenarios\X.json    # Level 1: 個別シナリオ
+.\release\gui-sim.exe -scenario scenarios\gui\X.json   # Level 1.5: GUI×sim ハイブリッド個別
 .\release\pcap-record.exe                              # Level 2: 実トラフィック録画（本体と並行起動可）
 .\release\pcap-replay.exe -pcap X.pcap -golden testdata\golden.jsonl   # Level 2: ncap 回帰比較
 ```
@@ -70,12 +71,13 @@ go vet ./...           # 静的解析
 | `config/*.json`, `config/channels.txt` | ランタイム設定（後方互換必須）。`gold_history.json` を含む | - | 高 |
 | `data/locations.json` | 場所名マスタ（location/store.go が読む） | - | 低 |
 | `ncap/replay.go` | pcap ファイルを実パーサに流す `ReplayFile`（cap_device.go 無変更の追加ファイル） | ~40 | 中 |
-| `sim/` (server, gameserver, scenario, events, assert) | Level 1 sim 基盤（SimServer・疑似ゲームサーバ・シナリオ・イベント注入・アサーション） | ~1200 | 中（本番コードに非依存方向のみ） |
-| `cmd/patrol-sim/main.go` | sim ハーネス（本番 Patroller を fake-adb で起動） | ~400 | 中 |
+| `sim/` (server, gameserver, scenario, events, assert, harness) | Level 1 sim 基盤（SimServer・疑似ゲームサーバ・シナリオ・イベント注入・アサーション・ハーネス共通部品） | ~1300 | 中（本番コードに非依存方向のみ） |
+| `cmd/patrol-sim/main.go` | sim ハーネス（本番 Patroller を fake-adb で起動） | ~280 | 中 |
+| `cmd/gui-sim/main.go`, `actions.go` | Level 1.5 ハーネス（本番 gui.Server + Patroller を HTTP API で駆動） | ~850 | 中（main.go の guiServer 配線と同期必須） |
 | `cmd/fake-adb/main.go` | 偽 adb.exe（PATROL_SIM_ADDR 必須・未設定なら即 exit 1） | ~150 | 低 |
 | `cmd/pcap-record/main.go` | 実トラフィック .pcap 録画（本体と並行起動可） | ~139 | 低 |
 | `cmd/pcap-replay/main.go` | .pcap 再生 + golden 記録/比較（順序非依存マルチセット） | ~360 | 中 |
-| `scenarios/*.json` | Level 1 シナリオ定義 7本 | - | 低 |
+| `scenarios/*.json` | Level 1 シナリオ定義 7本（`scenarios/gui/` は gui-sim 用） | - | 低 |
 | `run_all.ps1` | Level 1 全シナリオ一括実行（FAIL で exit 1） | - | 低 |
 | `docs/plan_sim.md`, `docs/plan_sim_l2.md` | sim 基盤の仕様書 | - | 低 |
 
@@ -226,7 +228,7 @@ Select-String -Path logs\log.txt -Pattern "\[CHAT-"
 
 ## 10. 実機レス検証フロー（sim 基盤）
 
-実機検証は最終確認のみ。日常の検証は以下の2レベルで行う（仕様書: `docs/plan_sim.md` / `docs/plan_sim_l2.md`）。
+実機検証は最終確認のみ。日常の検証は以下のレベルで行う（仕様書: `docs/plan_sim.md` / `docs/plan_sim_l2.md` / `docs/plan_gui_sim.md`）。
 skill 経由でも実行できる: `/sim [シナリオ名]`（Level 1・flake 自動再実行付き）、`/replay-check [pcap] [golden]`（Level 2）。
 
 ### Level 1: patrol-sim（mumu 層・実機/実ゲーム不要）
@@ -247,6 +249,22 @@ skill 経由でも実行できる: `/sim [シナリオ名]`（Level 1・flake �
 | silent_one | 1台無応答時にタイムアウト処理が正しく動くか |
 | slow_signal | 9s 遅延シグナルでも巡回が破綻しないか |
 | screen_mode | load_detect_mode=screen の画面判定パス |
+
+### Level 1.5: gui-sim（GUI API 層・実機/実ゲーム不要）
+
+本番 `gui.Server`（内部に本番 Patroller を所有）を WebView2 なしで起動し、ボタン押下を HTTP API として
+自動実行する。シグナル注入は `guiServer.Notify*` 経由。run_all.ps1 に内包（`scenarios\gui\*.json`）。
+
+```powershell
+.\release\gui-sim.exe -scenario scenarios\gui\baseline.json   # 個別実行（-v で verbose）
+```
+
+| シナリオ | 検証内容 |
+|---|---|
+| baseline (gui_baseline) | 開始/停止ボタン → 巡回 → status 反映 + 全 GET API スイープ + config GET→POST→GET 同一性（No.31 型の動的検出） |
+
+- gui_actions の `config_patch` は「全量 GET → マージ → 全量 POST」で GUI JS の実挙動を模倣する。部分 JSON の直接 POST は禁止（zero-value unmarshal で欠損キーが false/0 保存されるため）
+- main.go へ guiServer 配線を追加した時は cmd/gui-sim の配線への要否を判断する（§4-5 と同種の同期義務）
 
 ### Level 2: pcap-record / pcap-replay（ncap 層）
 

@@ -1,4 +1,4 @@
-# run_all.ps1 — 全シナリオを順番に実行し PASS/FAIL 一覧を表示する。
+﻿# run_all.ps1 — 全シナリオを順番に実行し PASS/FAIL 一覧を表示する。
 # 事前に patrol-sim.exe / fake-adb.exe をビルドする（ビルド込み）。
 # 1つでも FAIL なら exit 1 を返す（CI 利用可能）。
 
@@ -25,6 +25,13 @@ Write-Host "  go build -o release\fake-adb.exe ./cmd/fake-adb" -ForegroundColor 
 & go build -o release\fake-adb.exe ./cmd/fake-adb
 if ($LASTEXITCODE -ne 0) {
     Write-Host "FAIL: fake-adb.exe ビルド失敗" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "  go build -o release\gui-sim.exe ./cmd/gui-sim" -ForegroundColor DarkGray
+& go build -o release\gui-sim.exe ./cmd/gui-sim
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "FAIL: gui-sim.exe ビルド失敗" -ForegroundColor Red
     exit 1
 }
 
@@ -58,12 +65,10 @@ foreach ($scenario in $scenarios) {
     $scenarioPath = $scenario.FullName
     $simExe = Join-Path $PSScriptRoot "release\patrol-sim.exe"
 
-    # & 演算子で直接起動し、stdout+stderr を両方キャプチャしてログファイルへ保存
-    if ($Verbose) {
-        & $simExe -scenario $scenarioPath -v 2>&1 | Tee-Object -FilePath $logFile | Out-Null
-    } else {
-        & $simExe -scenario $scenarioPath 2>&1 | Tee-Object -FilePath $logFile | Out-Null
-    }
+    # cmd /c のネイティブリダイレクトで stdout+stderr をログファイルへ保存
+    # （PS 5.1 では EAP=Stop + 2>&1 がリダイレクトされたホストで NativeCommandError 化するため）
+    $vFlag = if ($Verbose) { " -v" } else { "" }
+    & cmd /c "`"$simExe`" -scenario `"$scenarioPath`"$vFlag > `"$logFile`" 2>&1"
     $exitCode = $LASTEXITCODE
 
     $elapsed = (Get-Date) - $start
@@ -79,6 +84,52 @@ foreach ($scenario in $scenarios) {
         Elapsed = $elapsed
         LogFile = $logFile
     }
+}
+
+# ── GUI シナリオ列挙・実行（gui-sim.exe / scenarios\gui\*.json） ─────────────
+$guiScenariosDir = Join-Path $ScenariosDir "gui"
+if (Test-Path $guiScenariosDir) {
+    # @() で配列化（1件の時 FileInfo 単体が返り StrictMode で .Count が落ちるため）
+    $guiScenarios = @(Get-ChildItem -Path $guiScenariosDir -Filter "*.json" | Sort-Object Name)
+} else {
+    $guiScenarios = @()
+}
+
+if ($guiScenarios.Count -gt 0) {
+    Write-Host ""
+    Write-Host "=== GUI シナリオ実行 ($($guiScenarios.Count) 件) ===" -ForegroundColor Cyan
+
+    foreach ($scenario in $guiScenarios) {
+        $name = "gui_" + $scenario.BaseName
+        $logFile = Join-Path $LogDir "$name.log"
+        $start = Get-Date
+
+        Write-Host "  [$name] 実行中..." -NoNewline
+
+        $scenarioPath = $scenario.FullName
+        $guiSimExe = Join-Path $PSScriptRoot "release\gui-sim.exe"
+
+        $vFlag = if ($Verbose) { " -v" } else { "" }
+        & cmd /c "`"$guiSimExe`" -scenario `"$scenarioPath`"$vFlag > `"$logFile`" 2>&1"
+        $exitCode = $LASTEXITCODE
+
+        $elapsed = (Get-Date) - $start
+        $passed = ($exitCode -eq 0)
+        $status = if ($passed) { "PASS" } else { "FAIL" }
+        $color  = if ($passed) { "Green" } else { "Red" }
+
+        Write-Host " $status  ($([math]::Round($elapsed.TotalSeconds, 1))s)" -ForegroundColor $color
+
+        $results += [PSCustomObject]@{
+            Name    = $name
+            Pass    = $passed
+            Elapsed = $elapsed
+            LogFile = $logFile
+        }
+    }
+} else {
+    Write-Host ""
+    Write-Host "=== GUI シナリオ: scenarios\gui が空または未存在のためスキップ ===" -ForegroundColor DarkGray
 }
 
 $totalElapsed = (Get-Date) - $totalStart

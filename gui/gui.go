@@ -858,6 +858,12 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	return url, nil
 }
 
+// StartServer はHTTPサーバーのみを起動する（WebView2なし・sim/テスト用）。
+// 戻り値は実際の listen URL（例 "http://127.0.0.1:54321"）。
+func (s *Server) StartServer(ctx context.Context) (string, error) {
+	return s.startHTTP(ctx)
+}
+
 const legacyWindowStateFile = "config/window_state.json"
 
 func isValidWindowState(ws *appconfig.WindowState) bool {

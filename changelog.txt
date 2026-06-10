@@ -1,4 +1,59 @@
 ﻿====--------------------------------------------------------------------------------
+[No.64] 2026/06/10 23:29 — gui-sim: GUI×sim ハイブリッド検証 Phase A（HTTP API 駆動の end-to-end + run_all 統合）
+
+【背景 / 原因】
+  GUI ボタンの挙動確認と設定変更の反映確認が手動・実機頼みだった。gui.Server は内部に
+  本番 Patroller を所有し（gui.New が生成）、ボタンは全て /api/* の薄いラッパーなので、
+  Level 1 sim 基盤（fake-adb + シグナル注入）に gui.Server を載せれば
+  「ボタン押下 = HTTP POST → 本番ハンドラ → 本番 Patroller → fake-adb → status 反映」の
+  end-to-end を実機なしで自動検証できる（仕様書: docs/plan_gui_sim.md・ユーザー承認済み）。
+
+【変更内容】
+  gui/gui.go:
+    - StartServer(ctx) を追加（startHTTP の export ラッパー・WebView2 なし起動）。既存コード無変更
+  sim/harness.go（新規）:
+    - BuildMumuConfig / ResolveFakeADB / IsExecutable を cmd/patrol-sim から export 移動
+      （patrol-sim / gui-sim の乖離防止。ロジック無変更）
+  cmd/patrol-sim/main.go:
+    - 上記の呼び出し置換のみ（挙動変更ゼロ・baseline PASS で確認）
+  sim/scenario.go:
+    - GUIActionDef / Scenario.GUIActions（JSON: gui_actions）を additive 追加
+  cmd/gui-sim/（新規・main.go + actions.go）:
+    - gui.New(port=0) + 一時ディレクトリ隔離（config.json / channels.txt / gold_history.json）
+    - シグナル注入は guiServer.NotifyLineIDChange / NotifyPostLoadReady 経由
+    - 巡回開始/停止を POST /api/patrol/start / stop で実行（=ボタン押下）、status を 100ms ポーリング
+    - アクション4型: api / sweep_readonly（GET系17本疎通）/ config_patch（全量GET→マージ→全量POST。
+      部分 POST は zero-value unmarshal で欠損キーが false/0 保存されるため禁止）/
+      config_identity_check（GET→POST→GET 完全一致 = No.31 型 Load/Save 非対称の動的検出）
+    - seedCfg は appconfig.Load のデフォルト起点で構築（仕様書からの唯一の逸脱。最小シードだと
+      MoveTimeout=0 が identity_check の POST → UpdatePatrollerCfg 経由で Patroller に入り、
+      mumu.go の if MoveTimeout > 0 ブロックごと dwell_wait/stabilizing が消失する実バグを
+      identity_check 自身が検出したため）
+  scenarios/gui/baseline.json（新規）:
+    - 3台×3ch×2周 + sweep_readonly + config_identity_check（run_all 表示名: gui_baseline）
+  run_all.ps1:
+    - gui-sim.exe ビルド + scenarios\gui\*.json の第2ループ追加（不存在ならスキップ）
+    - 環境互換修正: UTF-8 BOM 復元（欠落すると PS5.1 がパース不能）/ ネイティブ実行を cmd /c
+      リダイレクトに変更（EAP=Stop + 2>&1 がリダイレクトホストで NativeCommandError 化するため）/
+      Get-ChildItem 結果を @() 配列化（1件時に StrictMode で .Count が落ちるため）
+  CLAUDE.md:
+    - §2/§3/§10 に Level 1.5 (gui-sim) を組込み。main.go の guiServer 配線追加時は
+      cmd/gui-sim への要否判断を行う同期義務を §10 に明記
+  docs/plan_gui_sim.md（新規）:
+    - 本変更の仕様書（Phase B: config_reflect / interference_buttons は未実装・次コミット）
+
+【効果】
+  GUI の全 GET 系 API 疎通・開始/停止ボタン・config 保存経路の回帰検証が実機なしで回る。
+  config_identity_check が No.31 型の設定値脱落を動的に検出できる（実装中に実際に1件検出）。
+
+【影響範囲】
+  - 変更: gui/gui.go(追加のみ), sim/scenario.go(additive), cmd/patrol-sim/main.go(置換のみ),
+    run_all.ps1, CLAUDE.md / 新規: sim/harness.go, cmd/gui-sim/, scenarios/gui/, docs/plan_gui_sim.md
+  - 後方互換性: 本体 exe・config スキーマ無変更。gui-sim は一時ディレクトリのみ使用し
+    実 config/ logs/ に触れない。run_all.ps1 は scenarios\gui 不存在でも従来動作
+  - 検証: go build/vet クリーン + run_all.ps1 全8シナリオ PASS（既存7 + gui_baseline 63.1s）
+
+====--------------------------------------------------------------------------------
 [No.63] 2026/06/10 19:15 — sim 検証 skill 追加（/sim・/replay-check）
 
 【背景 / 原因】

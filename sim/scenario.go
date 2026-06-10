@@ -60,6 +60,24 @@ type EventDef struct {
 	SilentCycles    int    `json:"silent_cycles"`      // silent_device 用 無応答サイクル数（省略時=1）
 }
 
+// GUIActionDef はシナリオ内の GUI アクション定義（gui-sim 専用）。
+// EventDef と同じ意味論で at_phase/at_cycle 発火判定を行う。
+type GUIActionDef struct {
+	AtPhase   string  `json:"at_phase"`   // フェーズ名で発火（EventDef と同じ意味論）
+	AtCycle   int     `json:"at_cycle"`   // N 巡目（省略時=1）
+	AfterSecs float64 `json:"after_secs"` // at_phase 省略時: 開始からの経過秒で発火
+
+	Type   string `json:"type"`   // "api" | "sweep_readonly" | "config_patch" | "config_identity_check"
+	Method string `json:"method"` // api 用: "GET"|"POST"
+	Path   string `json:"path"`   // api 用: "/api/..."
+
+	Body  json.RawMessage `json:"body"`  // api 用 POST ボディ
+	Patch json.RawMessage `json:"patch"` // config_patch 用: マージするキー群
+
+	ExpectStatus       int      `json:"expect_status"`        // 省略時=200
+	ExpectBodyContains []string `json:"expect_body_contains"` // レスポンスボディ部分一致（任意）
+}
+
 // AssertDef はアサーション仕様。
 type AssertDef struct {
 	MaxCycles                int      `json:"max_cycles"`
@@ -84,26 +102,28 @@ type rawAssertDef struct {
 
 // Scenario はシナリオ JSON のトップレベル構造体。
 type Scenario struct {
-	Name     string      `json:"name"`
-	Seed     int64       `json:"seed"`
-	Devices  []DeviceDef `json:"devices"`
-	Channels []uint32    `json:"channels"`
-	Patrol   PatrolDef   `json:"patrol"`
-	Server   ServerDef   `json:"server"`
-	Events   []EventDef  `json:"events"`
-	Assert   AssertDef   `json:"-"` // カスタムパース
+	Name       string         `json:"name"`
+	Seed       int64          `json:"seed"`
+	Devices    []DeviceDef    `json:"devices"`
+	Channels   []uint32       `json:"channels"`
+	Patrol     PatrolDef      `json:"patrol"`
+	Server     ServerDef      `json:"server"`
+	Events     []EventDef     `json:"events"`
+	GUIActions []GUIActionDef `json:"gui_actions"` // gui-sim 専用（省略時 nil）
+	Assert     AssertDef      `json:"-"`           // カスタムパース
 }
 
 // scenarioJSON は JSON パース用中間型。
 type scenarioJSON struct {
-	Name     string          `json:"name"`
-	Seed     int64           `json:"seed"`
-	Devices  []DeviceDef     `json:"devices"`
-	Channels []uint32        `json:"channels"`
-	Patrol   PatrolDef       `json:"patrol"`
-	Server   ServerDef       `json:"server"`
-	Events   []EventDef      `json:"events"`
-	Assert   json.RawMessage `json:"assert"`
+	Name       string          `json:"name"`
+	Seed       int64           `json:"seed"`
+	Devices    []DeviceDef     `json:"devices"`
+	Channels   []uint32        `json:"channels"`
+	Patrol     PatrolDef       `json:"patrol"`
+	Server     ServerDef       `json:"server"`
+	Events     []EventDef      `json:"events"`
+	GUIActions []GUIActionDef  `json:"gui_actions"`
+	Assert     json.RawMessage `json:"assert"`
 }
 
 // LoadScenario はファイルからシナリオを読み込む。
@@ -119,13 +139,14 @@ func LoadScenario(path string) (*Scenario, error) {
 	}
 
 	s := &Scenario{
-		Name:     raw.Name,
-		Seed:     raw.Seed,
-		Devices:  raw.Devices,
-		Channels: raw.Channels,
-		Patrol:   raw.Patrol,
-		Server:   raw.Server,
-		Events:   raw.Events,
+		Name:       raw.Name,
+		Seed:       raw.Seed,
+		Devices:    raw.Devices,
+		Channels:   raw.Channels,
+		Patrol:     raw.Patrol,
+		Server:     raw.Server,
+		Events:     raw.Events,
+		GUIActions: raw.GUIActions,
 	}
 
 	// assert フィールドを中間型でパース
