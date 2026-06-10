@@ -1,0 +1,36 @@
+{
+  "name": "native_move_same_ch",
+  "seed": 22,
+  "devices": [
+    {"serial": "emu-1", "uid": 41000001, "label": "Instance-1", "initial_ch": 1},
+    {"serial": "emu-2", "uid": 41000002, "label": "Instance-2", "initial_ch": 1},
+    {"serial": "emu-3", "uid": 41000003, "label": "Instance-3", "initial_ch": 1}
+  ],
+  "channels": [1, 2, 3],
+  "patrol": {
+    "dwell_secs": 2,
+    "move_timeout_secs": 60,
+    "load_detect_mode": "time"
+  },
+  "server": {
+    "line_id_change_delay": {"min_ms": 500, "max_ms": 1000},
+    "post_load_delay": {"min_ms": 800, "max_ms": 1500},
+    "adb_cmd_delay_ms": 50
+  },
+  "events": [
+    {
+      "at_phase": "wait_0x2e",
+      "at_cycle": 1,
+      "type": "native_move",
+      "uid": 430314,
+      "to_ch": 2
+    }
+  ],
+  "assert": {
+    "max_cycles": 3,
+    "forbid_log_patterns": ["移動失敗", "未応答", "発行前追加待ちタイムアウト"],
+    "require_log_patterns": ["uid=430314"],
+    "dwell_phase_secs": {"min": 1.8, "max": 3.5},
+    "all_devices_actual_ch_follows": true
+  }
+}

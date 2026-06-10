@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/balrogsxt/StarResonanceAPI/debuglog"
 	"github.com/balrogsxt/StarResonanceAPI/mumu"
 	"github.com/balrogsxt/StarResonanceAPI/sim"
 )
@@ -36,6 +37,8 @@ func main() {
 	if !*verboseFlag {
 		log.SetFlags(log.Ltime | log.Lmicroseconds)
 	}
+	// stale lineID 等のデバッグログを常時有効にする（シナリオの require_log_patterns で参照するため）
+	debuglog.Verbose = true
 
 	// シナリオ読み込み
 	scenario, err := sim.LoadScenario(*scenarioFlag)
@@ -101,7 +104,11 @@ func main() {
 		NotifyLineIDChange:  p.NotifyLineIDChange,
 		NotifyPostLoadReady: p.NotifyPostLoadReady,
 	}
-	sim.NewGameServer(scenario, simSrv, inj)
+	gs := sim.NewGameServer(scenario, simSrv, inj)
+
+	// EventEngine（イベント注入）を作成し GameServer に接続
+	eventEngine := sim.NewEventEngine(scenario, simSrv, inj)
+	gs.SetEventEngine(eventEngine)
 
 	// Phase トラッカー
 	tracker := &sim.PhaseTracker{}
@@ -131,7 +138,7 @@ func main() {
 
 	// 監視ループ
 	log.Printf("[patrol-sim] 巡回監視開始 (max_cycles=%d)", scenario.Assert.MaxCycles)
-	result := runMonitor(p, tracker, scenario, capture)
+	result := runMonitor(p, tracker, scenario, capture, eventEngine)
 
 	// 停止
 	p.Stop()
@@ -187,7 +194,7 @@ type monitorResult struct {
 }
 
 // runMonitor は PatrolStatus を 100ms ポーリングし、max_cycles 巡回完了を検出する。
-func runMonitor(p *mumu.Patroller, tracker *sim.PhaseTracker, scenario *sim.Scenario, capture *sim.LogCapture) monitorResult {
+func runMonitor(p *mumu.Patroller, tracker *sim.PhaseTracker, scenario *sim.Scenario, capture *sim.LogCapture, eventEngine *sim.EventEngine) monitorResult {
 	maxCycles := scenario.Assert.MaxCycles
 	if maxCycles <= 0 {
 		maxCycles = 3
@@ -218,6 +225,11 @@ func runMonitor(p *mumu.Patroller, tracker *sim.PhaseTracker, scenario *sim.Scen
 
 			// Phase 遷移追跡
 			tracker.Update(st.Phase)
+
+			// イベントエンジンに Phase を通知
+			if eventEngine != nil {
+				eventEngine.Update(st.Phase)
+			}
 
 			if st.Phase != prevPhase {
 				log.Printf("[patrol-sim] phase=%s ch=%d idx=%d", st.Phase, st.CurrentChannel, st.CurrentIndex)
@@ -260,13 +272,39 @@ func buildMumuConfig(scenario *sim.Scenario, fakeADBPath string) mumu.Config {
 		moveTimeout = 60 * time.Second
 	}
 
+	// Screen 系パラメーター（デフォルト値を設定）
+	screenPollInterval := time.Duration(scenario.Patrol.ScreenPollIntervalMs) * time.Millisecond
+	if screenPollInterval <= 0 {
+		screenPollInterval = 500 * time.Millisecond
+	}
+	screenDetectTimeout := time.Duration(scenario.Patrol.ScreenDetectTimeoutSecs * float64(time.Second))
+	if screenDetectTimeout <= 0 {
+		screenDetectTimeout = 30 * time.Second
+	}
+	screenRegionW := scenario.Patrol.ScreenRegionW
+	screenRegionH := scenario.Patrol.ScreenRegionH
+	if screenRegionW <= 0 {
+		screenRegionW = 16
+	}
+	if screenRegionH <= 0 {
+		screenRegionH = 16
+	}
+	screenBlackLuma := scenario.Patrol.ScreenBlackLuma
+	if screenBlackLuma == 0 {
+		screenBlackLuma = 30
+	}
+	screenBlackPixelRatio := scenario.Patrol.ScreenBlackPixelRatio
+	if screenBlackPixelRatio <= 0 {
+		screenBlackPixelRatio = 0.8
+	}
+
 	return mumu.Config{
-		ADBPath:      fakeADBPath,
+		ADBPath:       fakeADBPath,
 		DwellDuration: dwell,
-		MoveTimeout:  moveTimeout,
+		MoveTimeout:   moveTimeout,
 		// シミュレーター向け: グローバルディレイなし
-		GlobalDelay:    0,
-		ParallelLimit:  0, // 無制限（全台並列）
+		GlobalDelay:   0,
+		ParallelLimit: 0, // 無制限（全台並列）
 		// LoadStabilizationAuto=true で直近観測から自動算出
 		LoadStabilizationAuto: true,
 		// LoadDetectMode: シナリオから（デフォルト "packet" → "time" 扱い）
@@ -278,6 +316,15 @@ func buildMumuConfig(scenario *sim.Scenario, fakeADBPath string) mumu.Config {
 		// TapX/TapY: 0 にしてタップをスキップ
 		TapX: 0,
 		TapY: 0,
+		// Screen 系パラメーター
+		ScreenPollInterval:    screenPollInterval,
+		ScreenDetectTimeout:   screenDetectTimeout,
+		ScreenRegionX:         scenario.Patrol.ScreenRegionX,
+		ScreenRegionY:         scenario.Patrol.ScreenRegionY,
+		ScreenRegionW:         screenRegionW,
+		ScreenRegionH:         screenRegionH,
+		ScreenBlackLuma:       screenBlackLuma,
+		ScreenBlackPixelRatio: screenBlackPixelRatio,
 	}
 }
 

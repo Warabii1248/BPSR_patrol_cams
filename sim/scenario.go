@@ -24,9 +24,18 @@ type DeviceDef struct {
 
 // PatrolDef はシナリオ内の巡回パラメーター。
 type PatrolDef struct {
-	DwellSecs      float64 `json:"dwell_secs"`
-	MoveTimeoutSecs float64 `json:"move_timeout_secs"`
-	LoadDetectMode  string  `json:"load_detect_mode"`
+	DwellSecs           float64 `json:"dwell_secs"`
+	MoveTimeoutSecs     float64 `json:"move_timeout_secs"`
+	LoadDetectMode      string  `json:"load_detect_mode"`
+	// Screen 系フィールド（load_detect_mode="screen"/"either" 用）
+	ScreenPollIntervalMs    int     `json:"screen_poll_interval_ms"`
+	ScreenDetectTimeoutSecs float64 `json:"screen_detect_timeout_secs"`
+	ScreenRegionX           int     `json:"screen_region_x"`
+	ScreenRegionY           int     `json:"screen_region_y"`
+	ScreenRegionW           int     `json:"screen_region_w"`
+	ScreenRegionH           int     `json:"screen_region_h"`
+	ScreenBlackLuma         uint8   `json:"screen_black_luma"`
+	ScreenBlackPixelRatio   float64 `json:"screen_black_pixel_ratio"`
 }
 
 // ServerDef はゲームサーバーシミュレーターのパラメーター。
@@ -38,12 +47,17 @@ type ServerDef struct {
 
 // EventDef はシナリオ内の外乱イベント定義。
 type EventDef struct {
-	AtPhase string `json:"at_phase"` // フェーズ名で発火
-	Type    string `json:"type"`     // "native_move" | "burst_0x2e" | "silent_device" | "delayed_signal"
-	UID     uint64 `json:"uid"`
-	ToCh    uint32 `json:"to_ch"`
-	Serial  string `json:"serial"`
-	Count   int    `json:"count"` // burst_0x2e 用
+	AtPhase         string `json:"at_phase"`          // フェーズ名で発火
+	Cycles          int    `json:"at_cycle"`           // N 巡目のその phase で発火（省略時=1）
+	Type            string `json:"type"`               // "native_move" | "burst_0x2e" | "silent_device" | "delayed_signal"
+	UID             uint64 `json:"uid"`                // native_move / burst_0x2e 用 UID
+	LineID          uint32 `json:"line_id"`            // burst_0x2e 用 lineID
+	ToCh            uint32 `json:"to_ch"`              // native_move 用 to_ch
+	Serial          string `json:"serial"`             // silent_device / delayed_signal 用 serial
+	Count           int    `json:"count"`              // burst_0x2e 用 連射数
+	IntervalMs      int    `json:"interval_ms"`        // burst_0x2e 用 間隔ms
+	PostLoadDelayMs int    `json:"post_load_delay_ms"` // delayed_signal 用 遅延ms
+	SilentCycles    int    `json:"silent_cycles"`      // silent_device 用 無応答サイクル数（省略時=1）
 }
 
 // AssertDef はアサーション仕様。

@@ -1,0 +1,35 @@
+{
+  "name": "silent_one",
+  "seed": 44,
+  "devices": [
+    {"serial": "emu-1", "uid": 41000001, "label": "Instance-1", "initial_ch": 1},
+    {"serial": "emu-2", "uid": 41000002, "label": "Instance-2", "initial_ch": 1},
+    {"serial": "emu-3", "uid": 41000003, "label": "Instance-3", "initial_ch": 1}
+  ],
+  "channels": [1, 2, 3],
+  "patrol": {
+    "dwell_secs": 2,
+    "move_timeout_secs": 15,
+    "load_detect_mode": "time"
+  },
+  "server": {
+    "line_id_change_delay": {"min_ms": 500, "max_ms": 1000},
+    "post_load_delay": {"min_ms": 800, "max_ms": 1500},
+    "adb_cmd_delay_ms": 50
+  },
+  "events": [
+    {
+      "at_phase": "wait_0x2e",
+      "at_cycle": 1,
+      "type": "silent_device",
+      "serial": "emu-1",
+      "silent_cycles": 1
+    }
+  ],
+  "assert": {
+    "max_cycles": 3,
+    "forbid_log_patterns": ["移動失敗（完了シグナルなし）"],
+    "require_log_patterns": ["移動待ちタイムアウト"],
+    "all_devices_actual_ch_follows": true
+  }
+}

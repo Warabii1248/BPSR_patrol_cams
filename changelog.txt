@@ -1,4 +1,102 @@
 ﻿====--------------------------------------------------------------------------------
+[No.60] 2026/06/10 15:56 — patrol-sim: Phase B+C（イベント注入エンジン + 全7シナリオ PASS + run_all.ps1）
+
+【背景 / 原因】
+  Phase A（No.59）で正常系 baseline.json が PASS した。
+  Phase B では外乱イベント（ネイティブ移動・無応答・0x2E 連射・遅延シグナル）の注入エンジンを実装し、
+  Phase C では残シナリオ 6 件と一括実行スクリプトを整備した。
+
+【変更内容】
+  sim/events.go（新規）:
+    - EventEngine: at_phase + at_cycle ポーリングで 1 回だけイベントを発火
+    - type "native_move": 未バインド UID で NotifyLineIDChange → 300〜800ms 後 NotifyPostLoadReady
+    - type "silent_device": SimServer.SetSilent で ENTER 後シグナルを N サイクル抑止、
+      GameServer.ConsumeSilentCycle で自動解除
+    - type "burst_0x2e": 同一 uid/lineID で NotifyPostLoadReady を N 連射（interval_ms 間隔）
+    - type "delayed_signal": serial の post_load_delay を 1 回限り上書き（GetPostLoadDelayOverride）
+
+  sim/scenario.go（既存）:
+    - EventDef に LineID / IntervalMs / PostLoadDelayMs / Cycles フィールドを追加
+    - PatrolDef に Screen 系フィールド 8 項目を追加
+      （ScreenPollIntervalMs / ScreenDetectTimeoutSecs / ScreenRegionX,Y,W,H /
+       ScreenBlackLuma / ScreenBlackPixelRatio）
+
+  sim/gameserver.go（既存）:
+    - GameServer に EventEngine フィールドを追加、SetEventEngine() を公開
+    - onEnter で silent フラグ確認 → ConsumeSilentCycle → 早期 return
+    - onEnter で GetPostLoadDelayOverride を確認し post_load_delay を 1 回上書き
+
+  cmd/patrol-sim/main.go（既存）:
+    - debuglog.Verbose = true を追加（stale lineID 等のデバッグログをキャプチャ）
+    - NewEventEngine 作成 → GameServer.SetEventEngine 注入 → runMonitor に渡す
+    - runMonitor 内で eventEngine.Update(phase) を 100ms ポーリングから呼び出す
+    - buildMumuConfig に Screen 系フィールドのマッピングを追加
+      （デフォルト: PollInterval=500ms, DetectTimeout=30s, Region=16×16, Luma=30, Ratio=0.8）
+
+  scenarios/native_move.json（新規）:
+    - wait_0x2e 中に UID=430314（未バインド）が ch7 へ移動
+    - require: "uid=430314 lineID=7: matched 0 pending probes"（未バインド UID が
+      Probe 0 件で無視される事を確認）
+    - forbid: 移動失敗 / 発行前追加待ちタイムアウト
+
+  scenarios/native_move_same_ch.json（新規）:
+    - ネイティブが偶然ターゲットと同じ ch2 へ移動（lineID==target の偽陽性ケース）
+    - 未バインド UID なので NotifyPostLoadReady は早期 return、respondedSet への影響なし
+    - forbid: 移動失敗 / 発行前追加待ちタイムアウト
+
+  scenarios/burst_0x2e.json（新規）:
+    - emu-1 (uid=41000001) の lineID=2 で 10 連射
+    - respondedSet による重複カウント防止（§4-2.11）を検証
+    - forbid: 移動失敗 / 発行前追加待ちタイムアウト
+
+  scenarios/silent_one.json（新規）:
+    - emu-1 を cycle1 wait_0x2e でサイレント（無応答）にする
+    - 2/3 台応答 → MergeTimeout → 移動待ちタイムアウト → 発行前追加待ちタイムアウト → 強制進行
+    - require: "移動待ちタイムアウト"（MergeTimeout 動作確認）
+    - forbid: "移動失敗（完了シグナルなし）"（0 台未受信ではなく 2/3 台受信が正）
+
+  scenarios/slow_signal.json（新規）:
+    - emu-1 の post_load_delay を 9s に上書き（MoveTimeout=60s 内で待ち切れる）
+    - forbid: 移動失敗 / 発行前追加待ちタイムアウト
+
+  scenarios/screen_mode.json（新規）:
+    - load_detect_mode="screen"、16×16 PNG で黒→非黒遷移検知
+    - Region=0,0,16,16 / Luma=30 / Ratio=0.8（全黒画素が閾値以下 → 黒判定）
+    - forbid: 移動失敗 / 未応答 / 発行前追加待ちタイムアウト
+
+  run_all.ps1（新規）:
+    - scenarios/*.json を列挙し順に patrol-sim.exe で実行
+    - 事前ビルド（patrol-sim.exe / fake-adb.exe）込み
+    - 各シナリオの stdout+stderr を logs/sim/<name>.log に保存
+    - PASS/FAIL 一覧と所要時間を表示、1 件でも FAIL なら exit 1
+
+【効果】
+  run_all.ps1 で全 7 シナリオ PASS（398.5s / 約 6 分 39 秒）。
+  正常系・ネイティブ干渉・0x2E 重複・無応答・遅延・screen 判定を網羅。
+
+【アサーション設計上の注意点（実挙動確認結果）】
+  - native_move の UID=430314 は非バインドなので NotifyPostLoadReady が early return する。
+    "stale lineID=7 skipped" は notifyMoveSignal 経由のバインド済み serial にしか現れない。
+    require は "[DBG][Probe] uid=430314 lineID=7: matched 0 pending probes" に変更。
+  - silent_one の require は "移動待ちタイムアウト"（2/3 台がタイムアウト）。
+    "移動失敗（完了シグナルなし）" は 0/N 台の場合のみ発火するため forbid で除外。
+  - slow_signal は extraWait（発行前追加待ち）なしで全台応答するため forbid に安全。
+  - screen_mode は ScreenBlackPixelRatio=0.8 で 16×16 全黒/全白 PNG を正確に判定可能。
+
+【レビュー対応（patrol-flow-reviewer・非ブロッキング5件）】
+  - EventDef に silent_cycles フィールド新設（at_cycle=発火タイミングと
+    無応答サイクル数の二重用途を分離）。fireSilentDevice は SilentCycles を参照
+  - burst_0x2e.json に require "[EventEngine] burst_0x2e" 追加（発火実績の正の証拠）
+  - native_move_same_ch.json に require "uid=430314" 追加（処理経路通過の正の証拠）
+  - 修正後 silent_one / burst_0x2e / native_move_same_ch 再実行 → 3件 PASS 確認
+
+【影響範囲】
+  - 新規ファイル: sim/events.go, scenarios/ 6件, run_all.ps1
+  - 変更ファイル: sim/scenario.go, sim/gameserver.go, cmd/patrol-sim/main.go
+  - mumu/ ncap/ gui/ appconfig/ pb/ は 1 行も変更なし
+  - 後方互換性: 既存バイナリ・config への影響なし
+
+====--------------------------------------------------------------------------------
 [No.59] 2026/06/10 14:21 — patrol-sim: 実機レスシミュレーター Phase A（fake-adb + ハーネス + baseline.json PASS）
 
 【背景 / 原因】
