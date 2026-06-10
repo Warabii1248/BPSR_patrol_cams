@@ -1,4 +1,37 @@
 ﻿====--------------------------------------------------------------------------------
+[No.54] 2026/06/10 12:13 — dwell下限クランプ修正 + extraWaitループのlineIDガード追加
+
+【背景 / 原因】
+  patrol_dwell_secs に 2 等の小さい値を設定しても「未設定なら最低5秒」のはずの
+  クランプが全値に適用され、5秒に切り上げられていた。
+  また No.41 で追加した stale lineID ガード（msg.lineID == 0 || msg.lineID == ch）が
+  wait loop 4箇所のうち「発行前追加待ち」（extraWait:）ループにだけ未適用で、
+  前サイクルの遅延発火シグナルが got にカウントされ得る状態だった。
+
+【変更内容】
+  mumu/mumu.go:
+    - Start() 内の dwell 初期化: dwell <= 0 なら5秒、設定済み(>0)なら最低1秒にクランプするロジックへ変更
+    - 巡回ループ内の dwell 毎サイクル再取得（currentCfg.DwellDuration）も同一ロジックに変更
+    - extraWait: ループの case msg := <-sig: に他3ループと同一の lineID ガード
+      （msg.lineID == 0 || msg.lineID == ch）と stale lineID skip の debuglog 出力を追加
+  CLAUDE.md:
+    - §4-2.11: 「wait loop（3箇所）」→「wait loop（4箇所: buffered drain / フェーズ1 / フェーズ2 / 発行前追加待ち）」に更新
+    - §4-4.4: btn-ch-save / _setChSaveBtnDisabled の項目を削除（No.46 で該当コード削除済みのため）
+
+【効果】
+  - patrol_dwell_secs に 1〜4秒等の小さい値を設定した場合、その値に近い dwell で巡回できる
+    （ADB連打防止のため最低1秒は維持）
+  - extraWait ループでも前サイクルの stale lineID シグナルを誤カウントしなくなり、
+    他3ループと一貫した挙動になる
+  - CLAUDE.md が現行コードと一致
+
+【影響範囲】
+  - mumu/mumu.go, CLAUDE.md
+  - 後方互換性: config.json のキー・スキーマ変更なし。
+    patrol_dwell_secs <= 0（未設定）の挙動は従来どおり5秒で変化なし。
+    1秒以上5秒未満を設定していたユーザーのみ実際の dwell 時間が短縮される（仕様どおりの修正）。
+
+====--------------------------------------------------------------------------------
 [No.53] 2026/05/25 09:02 — CLAUDE.mdのファイル責務マップを現行構成に更新
 
 【背景 / 原因】

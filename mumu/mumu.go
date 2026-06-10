@@ -2002,10 +2002,12 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 		}
 	}
 
-	// dwell: cfg.DwellDuration が未設定なら最低5秒
+	// dwell: 未設定(<=0)なら5秒、設定済みなら最低1秒（ADB連打防止の安全下限）
 	dwell := cfg.DwellDuration
-	if dwell < 5*time.Second {
+	if dwell <= 0 {
 		dwell = 5 * time.Second
+	} else if dwell < time.Second {
+		dwell = time.Second
 	}
 
 	// moveSignal: [0x2E]パケット受信ごとにインスタンスラベル付きでバッファリング
@@ -2121,8 +2123,10 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			currentCfg := p.cfg
 			// dwellも毎回cfgから再取得
 			dwell = currentCfg.DwellDuration
-			if dwell < 5*time.Second {
+			if dwell <= 0 {
 				dwell = 5 * time.Second
+			} else if dwell < time.Second {
+				dwell = time.Second
 			}
 			p.mu.Unlock()
 
@@ -2538,10 +2542,14 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 							log.Printf("[MuMu] 巡回: Ch%d 発行前追加待ちタイムアウト (%d/%d台) → 進行", ch, got, need)
 							break extraWait
 						case msg := <-sig:
-							if msg.t.After(switchStartAt) && !respondedSet[msg.label] {
+							if msg.t.After(switchStartAt) &&
+								(msg.lineID == 0 || msg.lineID == ch) &&
+								!respondedSet[msg.label] {
 								got++
 								respondedSet[msg.label] = true
 								log.Printf("[MuMu] 巡回: Ch%d [lineID+delay] %s (%d/%d台) ← 発行前", ch, msg.label, got, need)
+							} else if msg.t.After(switchStartAt) && msg.lineID != 0 && msg.lineID != ch {
+								debuglog.Vlogf("巡回", "  → stale lineID=%d skipped (target=%d, serial=%s)", msg.lineID, ch, msg.label)
 							}
 						}
 					}

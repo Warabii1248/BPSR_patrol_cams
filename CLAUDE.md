@@ -93,7 +93,7 @@ go vet ./...           # 静的解析
 8. **`labelToSerial` は `serialToLabel` の逆引きで常に同期更新**: `notifyMoveSignal` が serial で送るため（No.30）
 9. **`excludeUIDs`**: 本物クライアントの UID を probe マッチから除外する。永続化（config.json `exclude_uids`）（No.33）
 10. **`MatchLineChange` は `notifyMoveSignal` を発火しない**: 完了シグナルは `NotifyPostLoadReady`（0x2E UUID 受信時）が担当。MatchLineChange は ActualCh 更新のみ（No.39）
-11. **`moveSignalMsg` は `lineID` を必須携帯**: wait loop（3箇所）は `msg.lineID == 0 || msg.lineID == targetCh` かつ `!respondedSet[msg.label]` を `got++` 前にガード。stale lineID 流用と同一 serial 重複カウントを防止（No.41）
+11. **`moveSignalMsg` は `lineID` を必須携帯**: wait loop（4箇所: buffered drain / フェーズ1 / フェーズ2 / 発行前追加待ち）は `msg.lineID == 0 || msg.lineID == targetCh` かつ `!respondedSet[msg.label]` を `got++` 前にガード。stale lineID 流用と同一 serial 重複カウントを防止（No.41）
 12. **`NotifyPostLoadReady` は同 lineID 内 1 回のみ発火**: session に `postLoadFiredForLineID` を保持し、lineID 変化時にのみ再発火可能。戦闘中などで 0x2E が連射されても channel をスパムしない（No.41）
 
 ### 4-3. 設定（appconfig/config.go）
@@ -111,7 +111,6 @@ go vet ./...           # 静的解析
 1. **`extractInstanceLabel`** は Go 標準ロガーのタイムスタンプ付き行に対応必須。`line[0]=='['` を前提にしない（`strings.Index(line, "[Instance-")` を使う・No.12）
 2. **`guiWriter.Write` の `NotifyChMovePacket` 呼び出しに `!HasBinding()` ガードを付けてはいけない**（No.12 で削除済み、再導入禁止）
 3. **チャット SSE dedup キー**: JS 側 `dedupeChatEvents()` のキーは `ch + sender + msg`（label/IP を含めない）。同一内容を 1 件に集約し `recv_count` バッジで台数表示（No.48）。label を含めると label 確定後に重複するため除外した。
-4. **`btn-ch-save` 等の DOM 参照**: `null` 安全化必須。`_setChSaveBtnDisabled()` ヘルパーに集約済み（No.14）
 
 ### 4-5. 別バイナリ（cmd/chat-reporter）
 
