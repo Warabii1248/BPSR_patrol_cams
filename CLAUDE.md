@@ -14,7 +14,8 @@ Windows / Go 1.23+ / CGO (Npcap)。
 - ncap/ pb/ mumu/ MatchLineChange / processSyncContainerData / processSyncToMeDeltaInfo を変更する場合は **必ず先にユーザー確認**、変更は **§11 実装ワークフロー** に従う
 - mumu/ ncap/ の変更は実機前に **§10 sim 検証**（`run_all.ps1` / `pcap-replay`）を通す
 - config/ のキー名・スキーマ変更は **後方互換性の影響を必ず指摘**
-- 変更時は `changelog.txt` に追記必須（連番 No.NN・`yyyy/mm/dd hh:mm`）
+- `changelog.txt` への追記は **バグ修正・仕様変更・機能追加など実質的な変更のみ**（連番 No.NN・`yyyy/mm/dd hh:mm`）。誤字修正・環境整備・リポジトリ保守・コメント修正・ドキュメント微修正では追記しない
+- **コミット前 secret チェック必須**: changelog 追記内容・コミットメッセージ・`git diff --cached` の全 staged 内容に非公開情報（メールアドレス・アカウント名・webhook URL・実サーバIP・実プレイヤー名・個人名・社名）が含まれていないか確認。発見したらコミット中止して報告
 
 ---
 
@@ -161,7 +162,8 @@ ncap/ または mumu/ を変更する場合、コミット前に以下を確認:
 - [ ] **§5 過去罠リスト** で類似ケースが過去にないか changelog 検索
 - [ ] **mumu/ 変更時**: `.\run_all.ps1` 全7シナリオ PASS（§10。FAIL したらまず1回再実行 = flake 切り分け）
 - [ ] **ncap/ 変更時**: golden があれば `pcap-replay -golden` で回帰比較（§10）
-- [ ] `changelog.txt` に追記（背景・原因・変更・効果・影響範囲を含む）
+- [ ] changelog 追記要否を判定（バグ修正/仕様変更/機能追加のみ追記。誤字・環境整備・保守は不要）。追記する場合は背景・原因・変更・効果・影響範囲を含む
+- [ ] **secret チェック**: changelog 追記内容・コミットメッセージ・`git diff --cached` 全文に非公開情報（メール・アカウント名・webhook・実サーバIP・実プレイヤー名・個人名・社名）が無いか確認
 - [ ] 既存 config.json が無変更で動作するか（後方互換）
 
 GUI のみの変更:
@@ -195,6 +197,9 @@ GUI のみの変更:
 ```
 
 連番は最新 No.NN の続き。日時はコミット日時。
+
+**追記条件**: バグ修正・仕様変更・機能追加など実質的な変更のみ。誤字修正・環境整備・リポジトリ保守・コメント修正は追記しない。
+**禁止事項**: メールアドレス・アカウント名・webhook URL・実サーバIP・実プレイヤー名・個人名・社名などの非公開情報は changelog に書かない（changelog 自体が tracked のため履歴に残る）。必要な場合は抽象表現（「別アドレス」「外部アカウント」等）で記述する。
 
 ---
 
