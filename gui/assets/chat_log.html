@@ -6,12 +6,16 @@
 <title>チャットログ - BPSR Patrol Cams</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--bg0:#0f1117;--bg1:#161b27;--bg2:#1e2535;--bg3:#252d40;--accent:#4f8ef7;--warn:#f5a623;--text1:#e8eaf0;--text2:#9aa3b8;--text3:#5c6680;--border:#2a3348;}
+:root{--bg0:#0d1117;--bg1:#161b22;--bg2:#1c2128;--bg3:#262d3a;--accent:#58a6ff;--warn:#d29922;--text1:#e6edf3;--text2:#8b949e;--text3:#6e7781;--border:#30363d;}
+/* 本体GUIのテーマ(localStorage uiTheme)に追従。色値は styles.css と同一 */
+[data-theme="black"]{--bg0:#000;--bg1:#0c0c0c;--bg2:#181818;--bg3:#242424;--accent:#00e5ff;--warn:#ffca28;--text1:#fff;--text2:#ccc;--text3:#888;--border:#3e3e3e}
+[data-theme="light"]{--bg0:#f6f8fa;--bg1:#fff;--bg2:#f0f2f5;--bg3:#e1e4e8;--accent:#0969da;--warn:#7a4500;--text1:#1f2328;--text2:#57606a;--text3:#6e7781;--border:#d0d7de}
+[data-theme="warm"]{--bg0:#000;--bg1:#0d0b00;--bg2:#1a1600;--bg3:#262000;--accent:#ffd700;--warn:#ffa000;--text1:#fff;--text2:#d4bc6a;--text3:#8a7538;--border:#644e00}
 body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',sans-serif;font-size:13px;display:flex;flex-direction:column;height:100vh}
 h1{font-size:13px;padding:0 16px;height:44px;background:var(--bg1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;font-weight:500}
 #toolbar{padding:5px 12px;background:var(--bg1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;font-size:0.85em}
 #toolbar input[type=text]{background:var(--bg2);border:1px solid var(--border);color:var(--text1);padding:3px 8px;border-radius:6px;width:180px;outline:none}
-#toolbar input[type=text]:focus{border-color:rgba(79,142,247,.5);box-shadow:0 0 0 2px rgba(79,142,247,.12)}
+#toolbar input[type=text]:focus{border-color:var(--accent)}
 #container{flex:1;overflow-y:auto;padding:0}
 .msg{padding:5px 12px;border-bottom:1px solid var(--border);line-height:1.5;transition:background .15s}
 .msg:hover{background:var(--bg2)}
@@ -34,6 +38,12 @@ h1{font-size:13px;padding:0 16px;height:44px;background:var(--bg1);border-bottom
 </div>
 <div id="container"><div class="no-data">読み込み中...</div></div>
 <script>
+// 本体GUIのテーマに追従（同一オリジンの localStorage を共有・storage イベントでライブ更新）
+(function(){
+  function applyTheme(){document.body.setAttribute('data-theme',localStorage.getItem('uiTheme')||'dark-blue');}
+  applyTheme();
+  window.addEventListener('storage',e=>{if(e.key==='uiTheme')applyTheme();});
+})();
 let all=[],userScrolled=false;
 function escH(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function isAtBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<50;}

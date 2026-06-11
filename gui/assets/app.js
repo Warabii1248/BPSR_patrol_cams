@@ -51,8 +51,8 @@ function deleteSerialUID(serial){
   fetch('/api/serial_uid/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial:serial})})
     .then(r=>r.json()).then(d=>{
       if(d.ok)loadDeviceMemory();
-      else alert('削除失敗: '+(d.error||''));
-    }).catch(e=>alert('削除エラー: '+e.message));
+      else toast('削除失敗: '+(d.error||''),'error');
+    }).catch(e=>toast('削除エラー: '+e.message,'error'));
 }
 // ===== データ管理 / chマッピング =====
 function loadPortMapEntries() {
@@ -205,18 +205,16 @@ function updateStartChDropdown() {
     (data.channels||[]).forEach(function(ch){
       sel.innerHTML += '<option value="'+ch+'">'+ch+'</option>';
     });
-    // 入力値と同期
-    var inp = document.getElementById('dash-patrol-start-ch');
-    sel.value = inp.value;
+    // 巡回ビューの開始Ch入力値と同期（リスト外の値は手動optionとして注入）
+    var inp = document.getElementById('patrol-start-ch');
+    if(inp)_ensureStartChOption(sel, inp.value||'0');
   }).catch(()=>{});
 }
 document.addEventListener('DOMContentLoaded',function(){
   updateStartChDropdown();
   var sel = document.getElementById('dash-patrol-start-ch-select');
-  var inp = document.getElementById('dash-patrol-start-ch');
-  if(sel&&inp){
+  if(sel){
     sel.addEventListener('change',function(){syncPatrolStartCh(sel.value);});
-    inp.addEventListener('input',function(){syncPatrolStartCh(inp.value);});
   }
   applyDMSectionState('portmap');
   applyDMSectionState('devmem');
@@ -533,6 +531,16 @@ function toggleCat(id){
 // ── Escape ──
 function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function escAttrJs(s){return JSON.stringify(String(s)).replace(/"/g,'&quot;');}
+// ── Toast 通知（右下スタック・4秒自動消滅） ──
+function toast(msg,type){
+  let box=document.getElementById('toast-box');
+  if(!box){box=document.createElement('div');box.id='toast-box';document.body.appendChild(box);}
+  const t=document.createElement('div');
+  t.className='toast'+(type==='error'?' error':'');
+  t.textContent=msg;
+  box.appendChild(t);
+  setTimeout(()=>{t.classList.add('out');setTimeout(()=>t.remove(),300);},4000);
+}
 // ── Log / SSE ──
 (function(){
   const la=document.getElementById('log-area');let userScrolling=false;
@@ -630,7 +638,7 @@ async function removeGoldHistory(timestamp){
     });
     if(!res.ok) throw new Error('delete failed');
     await loadGoldHistory();
-  }catch(_){ alert('履歴の削除に失敗しました'); }
+  }catch(_){ toast('履歴の削除に失敗しました','error'); }
 }
 async function clearAllGoldHistory(){
 	if(!confirm('検知履歴を全件削除しますか？'))return;
@@ -640,7 +648,7 @@ async function clearAllGoldHistory(){
 		});
 		if(!res.ok) throw new Error('clear failed');
 		await loadGoldHistory();
-	}catch(_){ alert('履歴のクリアに失敗しました'); }
+	}catch(_){ toast('履歴のクリアに失敗しました','error'); }
 }
 async function loadGoldHistory(){
   try{
@@ -837,6 +845,7 @@ async function scanDevices(){
   setTimeout(()=>{if(st)st.textContent='';},3000);
 }
 async function runIdentify(){
+  if(window._patrolRunning){toast('巡回中は実行できません。巡回を停止してください','error');return;}
   const btn=document.getElementById('btn-identify');
   const st=document.getElementById('adb-op-status');
   if(btn){btn.disabled=true;btn.textContent='🔎 識別中...';}
@@ -1175,10 +1184,16 @@ function chatMatchFilter(ev){
   if(q&&!(ev.sender.toLowerCase().includes(q)||ev.message.toLowerCase().includes(q)))return false;
   return true;
 }
+// dash チャットの自動スクロール: ユーザーが上にスクロール中は追従しない（log-area と同パターン）
+(function(){
+  const el=document.getElementById('dash-chat-area');
+  if(el)el.addEventListener('scroll',()=>{window._dashChatUserScrolling=(el.scrollHeight-el.scrollTop-el.clientHeight)>50;});
+})();
 function renderDashChat(evs){
   const el=document.getElementById('dash-chat-area');if(!el)return;
   if(!evs||!evs.length){el.innerHTML='<div style="color:var(--text3);padding:8px;font-size:.82em">チャットなし</div>';return;}
-	el.innerHTML=evs.map(ev=>chatMsgHtml(ev,{withActions:false})).join('');el.scrollTop=el.scrollHeight;
+	el.innerHTML=evs.map(ev=>chatMsgHtml(ev,{withActions:false})).join('');
+	if(!window._dashChatUserScrolling)el.scrollTop=el.scrollHeight;
 }
 function renderChatCandidatePanels(source){
 	const picked=getPickedChatEvents(source||chatEvents);
@@ -1263,6 +1278,7 @@ async function initChat(){
   es.onmessage=e=>{try{appendChatToPanel(JSON.parse(e.data));}catch(_){}};
 }
 async function switchAll(){
+  if(window._patrolRunning){toast('巡回中は実行できません。巡回を停止してください','error');return;}
   const ch=document.getElementById('allch').value;
   const bar=document.getElementById('status-bar');if(bar)bar.textContent='切替中...';
   const serials=selectedSerials();
@@ -1273,6 +1289,7 @@ async function switchAll(){
   setTimeout(()=>{if(bar)bar.textContent='';},3000);
 }
 async function switchOne(serial){
+  if(window._patrolRunning){toast('巡回中は実行できません。巡回を停止してください','error');return;}
   const ch=parseInt(document.getElementById('ch-'+encodeURIComponent(serial)).value);
   const bar=document.getElementById('status-bar');if(bar)bar.textContent='切替中...';
   const r=await fetch('/api/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:ch,serial})});
@@ -1352,7 +1369,7 @@ async function loadPatrolChannels(){
   const d=await fetch('/api/patrol/channels').then(r=>r.json());
   patrolChannels=d.channels||[];renderPatrolChSelector();
   const sel=document.getElementById('dash-patrol-start-ch-select');
-  if(sel){const cur=sel.value;sel.innerHTML='<option value="0">(前回位置)</option>'+patrolChannels.map(ch=>'<option value="'+ch+'">'+ch+'</option>').join('');sel.value=cur;}
+  if(sel){const cur=sel.value;sel.innerHTML='<option value="0">(前回位置)</option>'+patrolChannels.map(ch=>'<option value="'+ch+'">'+ch+'</option>').join('');_ensureStartChOption(sel,cur||'0');}
   if(typeof renderChannelMatrix==='function')renderChannelMatrix();
 }
 function renderPatrolChSelector(){
@@ -1413,24 +1430,38 @@ function _autoSaveChannels(){
 }
 function toggleReversed(){patrolReversed=!patrolReversed;localStorage.setItem('patrolReversed',patrolReversed);applyReversedUI();}
 function toggleLoop(){patrolLoopMode=!patrolLoopMode;localStorage.setItem('patrolLoopMode',patrolLoopMode);applyLoopUI();}
-function syncPatrolStartCh(v){['patrol-start-ch','dash-patrol-start-ch'].forEach(id=>{const el=document.getElementById(id);if(el&&el.value!==String(v))el.value=v;});const sel=document.getElementById('dash-patrol-start-ch-select');if(sel&&sel.value!==String(v))sel.value=v;}
+// select に該当 option がない値（巡回chリスト外の手動値）は「(手動: N)」option を動的追加して選択する
+function _ensureStartChOption(sel,v){
+  const sv=String(v);
+  if(![...sel.options].some(o=>o.value===sv)){
+    const o=document.createElement('option');o.value=sv;o.textContent='(手動: '+sv+')';o.dataset.manual='1';
+    sel.appendChild(o);
+  }
+  sel.value=sv;
+}
+function syncPatrolStartCh(v){
+  const el=document.getElementById('patrol-start-ch');
+  if(el&&el.value!==String(v))el.value=v;
+  const sel=document.getElementById('dash-patrol-start-ch-select');
+  if(sel&&sel.value!==String(v))_ensureStartChOption(sel,v);
+}
 async function patrolStart(){
   const chs=patrolChannels.length>0?patrolChannels:[];
-  const startChEl=document.getElementById('patrol-start-ch')||document.getElementById('dash-patrol-start-ch');
+  const startChEl=document.getElementById('patrol-start-ch');
   const body={serials:selectedSerials(),reversed:patrolReversed,loop_mode:patrolLoopMode,start_channel:parseInt(startChEl?.value)||0};
   if(chs.length>0)body.channels=chs;
   const r=await fetch('/api/patrol/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const d=await r.json();if(!d.ok)alert('巡回開始失敗: '+(d.error||''));
+  const d=await r.json();if(!d.ok)toast('巡回開始失敗: '+(d.error||''),'error');
 }
 async function patrolStop(){await fetch('/api/patrol/stop',{method:'POST'});}
 async function patrolAllOnce(){
   const startCh=parseInt(document.getElementById('patrol-all-start-ch')?.value)||1;
   const endCh=parseInt(document.getElementById('patrol-all-end-ch')?.value)||100;
-  if(startCh>endCh){alert('開始chが終了chより大きいです');return;}
+  if(startCh>endCh){toast('開始chが終了chより大きいです','error');return;}
   const channels=[];for(let i=startCh;i<=endCh;i++)channels.push(i);
   const body={serials:selectedSerials(),reversed:false,loop_mode:false,channels};
   const r=await fetch('/api/patrol/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const d=await r.json();if(!d.ok)alert('巡回開始失敗: '+(d.error||''));
+  const d=await r.json();if(!d.ok)toast('巡回開始失敗: '+(d.error||''),'error');
 }
 async function clearMoveFailedChannels(){await fetch('/api/patrol/clear-move-failed',{method:'POST'});}
 const patrolCycleStats={lastMoveStartAt:0,lastMoveIndex:-1,cycleMsHistory:[],avgCycleMs:0};
@@ -1504,14 +1535,21 @@ function updatePatrolCycleStats(d,currentPhase){
 	renderPatrolCycleStats(true);
 }
 function updatePatrolUI(running){
+  window._patrolRunning=running;
   ['btn-patrol-start','dash-btn-patrol-start'].forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=running;});
   ['btn-patrol-stop','dash-btn-patrol-stop'].forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=!running;});
+  const idb=document.getElementById('btn-identify');
+  if(idb){idb.disabled=running;idb.title=running?'巡回中は実行できません。巡回を停止してください':'デバイスとUID(インスタンス番号)を紐付けます。巡回停止中に実行してください';}
   const bar=document.getElementById('hdr-bar');
   if(bar){bar.className=running?'titlebar running':'titlebar';}
 }
+let _pollFailCount=0;
+window._backendDisconnected=false;
 async function pollPatrolStatus(){
   try{
     const d=await fetch('/api/patrol/status').then(r=>r.json());
+    _pollFailCount=0;
+    window._backendDisconnected=false;
     _uptimePatrolling=!!d.running;
     const els=(id)=>document.getElementById(id);
     if(d.running){
@@ -1612,7 +1650,18 @@ async function pollPatrolStatus(){
       const ds=await fetch('/api/patrol/device-statuses').then(r=>r.json());
       renderDeviceStatuses(ds);
     }catch(e){}
-  }catch(e){console.warn('patrol status error:',e);}
+  }catch(e){
+    console.warn('patrol status error:',e);
+    _pollFailCount++;
+    // 3回連続失敗 = バックエンド接続断とみなし hero に表示（成功で自動復帰）
+    if(_pollFailCount>=3&&!window._backendDisconnected){
+      window._backendDisconnected=true;
+      const e1=document.getElementById('dash-ps-state');if(e1)e1.textContent='接続断';
+      const h=document.getElementById('dash-hero');if(h){h.classList.remove('is-stopped');h.classList.add('is-warn');}
+      const ps=document.getElementById('ps-state');if(ps){ps.className='stopped';ps.textContent='⚠ 接続断';}
+      ['dash-patrol-label','ps-patrol-label'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent='バックエンド応答なし';});
+    }
+  }
   finally{setTimeout(pollPatrolStatus,1000);}
 }
 function renderDeviceStatuses(statuses){
@@ -1660,7 +1709,7 @@ function updateDashDeviceCh(statuses){
 async function recoverDevice(serial){
   const r=await fetch('/api/patrol/recover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial})});
   const d=await r.json();
-  if(!d.ok)alert('復帰失敗: '+(d.error||''));
+  if(!d.ok)toast('復帰失敗: '+(d.error||''),'error');
 }
 // ── Config ──
 const CHAT_FILTER_FIELDS=[
@@ -2566,7 +2615,8 @@ syncLayoutEditState();
     if(dot)dot.classList.toggle('running',running);
     if(txt){
       const psState=document.getElementById('ps-state')||document.getElementById('dash-ps-state');
-      if(running&&psState)txt.textContent='巡回中';
+      if(window._backendDisconnected)txt.textContent='接続断';
+      else if(running&&psState)txt.textContent='巡回中';
       else if(running)txt.textContent='稼働中';
       else txt.textContent='待機中';
     }

@@ -123,8 +123,7 @@
         <span id="dash-ps-move-failed-wrap" style="display:none"><span>移動失敗</span> <b id="dash-ps-move-failed" style="color:var(--danger)"></b> <button id="btn-dash-clear-move-failed" class="btn2 ghost sm" onclick="clearMoveFailedChannels()" title="移動失敗リストをクリア" aria-label="移動失敗リストをクリア"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></span>
         <span style="margin-left:auto">
           <label style="font-size:var(--fs-xs);color:var(--text3);margin-right:6px">開始Ch:</label>
-          <select id="dash-patrol-start-ch-select" style="width:80px;height:22px;font-size:var(--fs-xs);padding:0 4px"></select>
-          <input type="number" id="dash-patrol-start-ch" min="0" max="9999" value="0" style="width:60px;height:22px;font-size:var(--fs-xs);padding:0 6px;margin-left:4px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
+          <select id="dash-patrol-start-ch-select" style="width:110px;height:22px;font-size:var(--fs-xs);padding:0 4px" title="任意のchから開始する場合はチャンネル巡回ビューの開始Ch入力を使用"></select>
         </span>
       </div>
     </div>
@@ -305,12 +304,15 @@
     <div class="card-title" style="margin-bottom:6px"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h8M2 12h10" stroke-linecap="round"/></svg>検知ログ</div>
     <div class="chip-row" id="log-filter-bar"></div>
     <div class="log-area full" id="log-area" style="flex:1;max-height:calc(100vh - 200px)"></div>
-    <div style="display:flex;gap:6px;margin-top:8px">
+    <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
       <button class="btn" onclick="document.getElementById('log-area').innerHTML=''">クリア</button>
-      <button class="btn primary" onclick="testDetect()">🔔 テスト通知</button>
-      <button class="btn" onclick="testDetect('ウリボ・ゴールド')">🔔 ウリボ・ゴールド</button>
-      <button class="btn" onclick="testDetect('金ナッポ')">🔔 金ナッポ</button>
-      <button class="btn" onclick="testDetect('銀ナッポ')">🔔 銀ナッポ</button>
+      <button class="btn" id="btn-test-toggle" title="Discord へ実送信されるテスト通知（誤クリック防止のため折りたたみ）" onclick="const s=document.getElementById('test-detect-btns');const open=s.style.display!=='none';s.style.display=open?'none':'inline-flex';this.classList.toggle('active',!open)">🔔 テスト通知 ▾</button>
+      <span id="test-detect-btns" style="display:none;gap:6px;align-items:center">
+        <button class="btn primary" onclick="testDetect()">テスト通知</button>
+        <button class="btn" onclick="testDetect('ウリボ・ゴールド')">ウリボ・ゴールド</button>
+        <button class="btn" onclick="testDetect('金ナッポ')">金ナッポ</button>
+        <button class="btn" onclick="testDetect('銀ナッポ')">銀ナッポ</button>
+      </span>
       <button class="btn" style="margin-left:auto" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉ 別ウィンドウ</button>
     </div>
   </div>

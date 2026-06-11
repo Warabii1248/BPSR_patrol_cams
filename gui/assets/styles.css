@@ -49,7 +49,7 @@
 [data-fs="2x"]{--fs-base:20px;--fs-xs:14px;--fs-sm:16px;--fs-md:20px;--fs-lg:23px;--fs-xl:26px;--fs-2xl:29px}
 [data-fs="3x"]{--fs-base:23px;--fs-xs:17px;--fs-sm:19px;--fs-md:23px;--fs-lg:26px;--fs-xl:29px;--fs-2xl:32px}
 
-body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',system-ui,sans-serif;font-size:var(--fs-base);line-height:1.5;height:100vh;overflow:hidden}
+body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',system-ui,sans-serif;font-size:var(--fs-base);line-height:1.5;height:100vh;overflow:hidden;font-variant-numeric:tabular-nums}
 .app{display:grid;grid-template-rows:3px 1fr;grid-template-columns:220px 1fr;height:100vh}
 
 /* ── Titlebar ── */
@@ -308,6 +308,13 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .chat-report-empty{color:var(--text3);padding:10px;font-size:.82em}
 .chat-report-summary{color:var(--text3);font-size:.76em;line-height:1.5;margin-bottom:8px}
 .chat-report-score{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.2);color:var(--warn);font-size:var(--fs-xs);vertical-align:middle}
+
+/* Toast 通知（右下スタック） */
+#toast-box{position:fixed;right:14px;bottom:14px;z-index:10000;display:flex;flex-direction:column;gap:8px;align-items:flex-end}
+.toast{background:var(--bg1);border:1px solid var(--accent-border);color:var(--text1);border-radius:var(--radius);padding:8px 14px;font-size:var(--fs-sm);box-shadow:0 4px 16px rgba(0,0,0,.4);max-width:340px;word-break:break-word;animation:toast-in .2s ease}
+.toast.error{border-color:var(--danger-border);color:var(--danger)}
+.toast.out{opacity:0;transform:translateY(6px);transition:opacity .3s,transform .3s}
+@keyframes toast-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
 /* Crash warning */
 .crash-warning{display:none;background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.22);border-radius:var(--radius);padding:6px 10px;font-size:.8em;color:var(--danger);margin-bottom:6px}

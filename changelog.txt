@@ -1,4 +1,62 @@
 ﻿====--------------------------------------------------------------------------------
+[No.68] 2026/06/11 21:00 — GUI UI/UX レビュー修正 Phase 2（Toast通知・接続断表示・巡回中操作ガード・ポップアップテーマ追従ほか9項目）
+
+【背景 / 原因】
+  No.67（Phase 1）の続き。レビューで指摘された機能/挙動系の残項目を実装。
+  エラー提示が alert()/インライン/無音と不統一、バックエンド停止時に GUI が古い表示の
+  まま固まる、巡回中に「デバイス認識」「全切替」等の衝突する操作を発行できる、
+  別ウィンドウ（チャットログ/出現ログ）が本体テーマに追従しない、等。
+  また「巡回設定を即時反映: マージ待ち=0s」ログは MergeTimeout 0 = 初回待ち流用の
+  仕様（mumu.Config）の生値表示であり、設定が壊れたと誤認される問題があった
+  （発生源は mumu/ ではなく gui/handlers.go）。
+
+【変更内容】
+  gui/assets/app.js:
+    - toast(msg,type) 新設（右下スタック・info/error・4秒自動消滅）。alert() 8箇所を置換
+      （confirm は維持）: deleteSerialUID 失敗 / gold履歴削除・クリア失敗 / 巡回開始失敗×2 /
+      開始ch>終了ch / 復帰失敗
+    - バックエンド接続断表示: /api/patrol/status ポーリング3回連続失敗で hero を
+      is-warn +「接続断」+ brand-status「接続断」に切替。成功で自動復帰
+    - 巡回中の破壊的操作ガード: updatePatrolUI で _patrolRunning を記録し btn-identify を
+      disabled 化。runIdentify / switchAll / switchOne は巡回中 toast でブロック
+      （killADB は緊急手段として confirm のまま温存）
+    - 開始Ch入力の統合: syncPatrolStartCh から dash number input を除去し、select に
+      リスト外の値は「(手動: N)」option を動的注入（_ensureStartChOption。
+      loadPatrolChannels / updateStartChDropdown の select 再構築でも手動値を保持）
+    - renderDashChat の自動スクロール抑制: ユーザーが上にスクロール中は追従しない
+  gui/assets/index.html:
+    - ダッシュボードの開始Ch number input を削除し select 単独に（巡回ビューの
+      number input が任意値の受け皿・双方向同期は維持）
+    - 検知ログのテスト通知ボタン4個を「🔔 テスト通知 ▾」トグルで折りたたみ
+      （Discord 実送信のため誤クリック防止）
+  gui/assets/styles.css:
+    - #toast-box / .toast / .toast.error の追加
+    - body に font-variant-numeric:tabular-nums（数字の桁揃え・フォントは不変）
+  gui/assets/chat_log.html, spawn_log.html:
+    - 本体テーマ（localStorage uiTheme）に追従: 4テーマの palette override を追加し、
+      起動時適用 + storage イベントでライブ追従。:root は本体 dark-blue と同色に統一
+    - ハードコード色（silver #b8b8b8 等）を変数化（light テーマ対応）
+    - spawn_log のポーリングを 5s→30s（SSE 即時反映は維持・本体の 30s と整合）
+  gui/handlers.go:
+    - 即時反映ログ: PatrolMergeTimeoutSecs==0 のとき「マージ待ち=初回待ちと同値」と表記
+      （「滞在=%.0fs」書式は不変・sim config_reflect の require パターン互換）
+
+【効果】
+  - エラーが右下トーストに統一され、モーダル alert の作業中断がなくなる
+  - バックエンド停止が画面上で即座に分かる（従来は古い表示のまま固まる）
+  - 巡回とぶつかる手動操作を誤発行できなくなる
+  - 別ウィンドウが light 等のテーマでも本体と同じ見た目になる
+  - マージ待ち=0 設定時のログが実効挙動を示し誤認を防ぐ
+
+【影響範囲】
+  - 変更ファイル: gui/assets/app.js, index.html, styles.css, chat_log.html,
+    spawn_log.html, gui/handlers.go
+  - config スキーマ・API 形状無変更（後方互換）。ログ書式変更は sim require パターンに
+    影響しない範囲
+  - 検証: go build/vet 警告ゼロ、run_all.ps1 全7+3シナリオ PASS、
+    playwright によるブラウザ機能テスト（toast/ガード/手動option/テーマ追従/接続断）PASS
+
+====--------------------------------------------------------------------------------
 [No.67] 2026/06/11 20:15 — GUI UI/UX 全面レビュー指摘の修正 Phase 1（検知ログ表示不能バグ + コントラスト + 操作安全性ほか計21項目）
 
 【背景 / 原因】

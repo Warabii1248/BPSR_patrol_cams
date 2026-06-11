@@ -525,8 +525,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 					s.UpdatePatrollerCfg(newCfg)
 					s.SetExcludeUIDs(appCfg.ExcludeUIDs)
 					debuglog.Verbose = appCfg.DebugVerbose
-					log.Printf("[GUI] 巡回設定を即時反映: 滞在=%.0fs, 初回待ち=%.0fs, マージ待ち=%.0fs, グループ間=%.0fs, 並列=%d, デバッグ=%v",
-						appCfg.PatrolDwellSecs, appCfg.PatrolMoveTimeoutSecs, appCfg.PatrolMergeTimeoutSecs,
+					// マージ待ち 0 は「初回待ちを流用」の意味（mumu.Config.MergeTimeout 参照）。
+					// 生値 0s を出すと設定が壊れたと誤認されるため実効挙動を表記する
+					mergeStr := fmt.Sprintf("%.0fs", appCfg.PatrolMergeTimeoutSecs)
+					if appCfg.PatrolMergeTimeoutSecs == 0 {
+						mergeStr = "初回待ちと同値"
+					}
+					log.Printf("[GUI] 巡回設定を即時反映: 滞在=%.0fs, 初回待ち=%.0fs, マージ待ち=%s, グループ間=%.0fs, 並列=%d, デバッグ=%v",
+						appCfg.PatrolDwellSecs, appCfg.PatrolMoveTimeoutSecs, mergeStr,
 						appCfg.ParallelGroupDelaySecs, appCfg.ParallelLimit, appCfg.DebugVerbose)
 				}
 			}
