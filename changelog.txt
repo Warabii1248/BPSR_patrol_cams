@@ -1,4 +1,57 @@
 ﻿====--------------------------------------------------------------------------------
+[No.69] 2026/06/11 22:00 — GUI UI/UX レビュー修正 Phase 3（v1→v2 デザイン統一 + 巡回制御UI重複整理）
+
+【背景 / 原因】
+  No.67/68 に続く最終フェーズ。レビュー最大の構造課題
+  「ダッシュボード=v2（SVG/btn2/card2）とその他ビュー=v1（絵文字ボタン/.btn/.card）で
+  デザイン言語が分裂し別アプリのように見える」と「巡回制御UIがダッシュボード hero と
+  巡回ビューで二重実装（ps-*/dash-ps-* を毎秒二重更新）」を解消する。
+  方式はユーザー決定により CSS リスタイル（.btn クラス自体の v2 トークン化）とし、
+  btn2 への全面クラス移行は行わない。巡回制御カードは開始/停止のみ残すスリム化。
+
+【変更内容】
+  gui/assets/styles.css:
+    - .btn primary/success/danger/active・.chip.active を v2 トークン
+      （--accent-bg/--ok-bg/--danger-bg 系）参照に変更。テーマ別解決になるため
+      light テーマの .btn/.chip 個別 override を削除
+    - .btn 内 svg の寸法定義（14px・v2 .btn2 svg と同寸）を追加
+    - .card-title / .cfg-card-title のタイポグラフィを v2 .card2-head .ct 相当
+      （fs-md・text1・uppercase 廃止）に変更
+  gui/assets/index.html:
+    - ボタン絵文字 約20箇所を撤去し、主要アクションは SVG アイコン化
+      （再スキャン/ADB再起動/デバイス認識/ADB停止/全切替/開始/停止/巡回開始/
+      全Ch1巡/別ウィンドウ×3/一括クリア/保存・反映/レアエネミー見出し星）。
+      記号系（☑☐＋⚡📌）はテキストのみ化。
+      例外: notify-sound-toggle の 🔔（状態表示兼用）・状態バッジ絵文字は維持
+    - 巡回制御カードのスリム化: 進捗バー・サイクル統計・正順/ループ・開始Ch入力・
+      移動失敗表示・crash-warning・並列/進捗表示を撤去（ダッシュボード hero に集約）。
+      残置: 状態1行（ps-state/ps-ch）・開始/停止・全Ch1巡・GAS連携。
+      カードを panel-size-1x2→1x1 に縮小、案内文を追加
+  gui/assets/app.js:
+    - runIdentify のラベル切替を textContent 直書きから _setBtnLabel（SVG保持）に変更
+    - JS生成ボタンの絵文字撤去（📨テスト送信/📐監視矩形）
+    - 開始Ch: 巡回ビューの number input 撤去に伴い、dash select に「(手動入力…)」
+      option を追加（選択時 prompt → _ensureStartChOption で「(手動: N)」注入）。
+      patrolStart の start_channel 読み出しを dash select に変更。
+      select 再構築（loadPatrolChannels/updateStartChDropdown）でも手動値を保持
+    - 撤去IDへの参照（ps-progress系/ps-cycle系/btn-reversed/btn-loop 等）は
+      全て既存の null 安全パターンで動作することを確認（変更不要）
+
+【効果】
+  - 全7ビューのボタン・見出しがダッシュボードと同一のデザイン言語になり
+    「別アプリ感」が解消。JS生成ボタンにも自動適用
+  - 巡回ビューが「チャンネル編集・デバイス監視」に集中し、重複表示が消える
+  - 巡回chリスト外の任意chからの開始手段は手動入力 option として維持
+
+【影響範囲】
+  - 変更ファイル: gui/assets/styles.css, index.html, app.js
+  - Go コード・config・API 無変更（後方互換）。patrolLayout 保存済みユーザーは
+    保存値が優先されるため旧サイズのまま（実害なし）
+  - 検証: go build/vet 警告ゼロ、run_all.ps1 全10シナリオ PASS、
+    playwright 機能テスト（撤去ID全数確認/SVGラベル切替/手動option/全ビュー
+    pageerror ゼロ）PASS、全ビュー+4テーマのスクリーンショット目視確認
+
+====--------------------------------------------------------------------------------
 [No.68] 2026/06/11 21:00 — GUI UI/UX レビュー修正 Phase 2（Toast通知・接続断表示・巡回中操作ガード・ポップアップテーマ追従ほか9項目）
 
 【背景 / 原因】

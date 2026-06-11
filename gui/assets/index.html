@@ -313,7 +313,7 @@
         <button class="btn" onclick="testDetect('金ナッポ')">金ナッポ</button>
         <button class="btn" onclick="testDetect('銀ナッポ')">銀ナッポ</button>
       </span>
-      <button class="btn" style="margin-left:auto" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉ 別ウィンドウ</button>
+      <button class="btn" style="margin-left:auto" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h5v5"/><path d="M14 2L8 8"/><path d="M13 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h4"/></svg> 別ウィンドウ</button>
     </div>
   </div>
 </div>
@@ -326,7 +326,7 @@
 				<span style="font-weight:500;color:var(--text2);text-transform:uppercase;font-size:var(--fs-xs);letter-spacing:.6px">チャットログ</span>
 				<select id="chat-device-select" onchange="renderChatPanel()" style="font-size:var(--fs-sm);padding:2px 6px;max-width:140px"><option value="">すべて</option></select>
 				<input type="text" id="chat-search" placeholder="キーワード検索..." style="width:130px;font-size:var(--fs-sm)" oninput="renderChatPanel()">
-				<button class="btn" style="margin-left:auto" onclick="window.open('/chat-log','chat-log','width=700,height=500')">⧉ 別ウィンドウ</button>
+				<button class="btn" style="margin-left:auto" onclick="window.open('/chat-log','chat-log','width=700,height=500')"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h5v5"/><path d="M14 2L8 8"/><path d="M13 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h4"/></svg> 別ウィンドウ</button>
 				<button class="btn" onclick="clearChatPanel()">クリア</button>
 			</div>
 			<div class="log-area full" id="chat-area" style="flex:1;border-radius:0;border:none;border-top:1px solid var(--border)"></div>
@@ -344,28 +344,28 @@
   <div class="card" style="margin-bottom:10px">
     <div class="card-title">デバイス操作</div>
     <div class="flex-row" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">
-      <button class="btn primary" id="btn-adb-scan" onclick="scanDevices()">🔍 再スキャン</button>
-      <button class="btn" id="btn-adb-restart" onclick="restartADB()">🔄 ADB再起動</button>
-      <button class="btn" id="btn-identify" onclick="runIdentify()" title="デバイスとUID(インスタンス番号)を紐付けます。巡回停止中に実行してください">🔎 デバイス認識</button>
-      <button class="btn danger" id="btn-adb-kill" onclick="killADB()" style="margin-left:auto">⏹ ADB停止</button>
+      <button class="btn primary" id="btn-adb-scan" onclick="scanDevices()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M14 3v4h-4"/><path d="M14 7A6 6 0 1 0 9 14"/></svg> 再スキャン</button>
+      <button class="btn" id="btn-adb-restart" onclick="restartADB()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M14 3v4h-4"/><path d="M14 7A6 6 0 1 0 9 14"/></svg> ADB再起動</button>
+      <button class="btn" id="btn-identify" onclick="runIdentify()" title="デバイスとUID(インスタンス番号)を紐付けます。巡回停止中に実行してください"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg> デバイス認識</button>
+      <button class="btn danger" id="btn-adb-kill" onclick="killADB()" style="margin-left:auto"><svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg> ADB停止</button>
     </div>
     <div class="flex-row" style="gap:6px">
       <input type="text" id="adb-add-serial" placeholder="host:port を入力（例: 127.0.0.1:16384）" style="flex:1;font-size:.85em">
-      <button class="btn" onclick="addADBDevice()" style="white-space:nowrap">＋ 追加接続</button>
+      <button class="btn" onclick="addADBDevice()" style="white-space:nowrap">追加接続</button>
     </div>
     <div id="adb-op-status" style="font-size:.82em;color:var(--accent2);margin-top:6px;min-height:1.2em"></div>
   </div>
   <div class="card">
     <div class="card-title">接続デバイス一覧</div>
     <div class="flex-row" style="margin-bottom:6px">
-      <button class="btn" onclick="selectAllDevices()">☑ 全選択</button>
-      <button class="btn" onclick="deselectAllDevices()">☐ 全解除</button>
-      <button class="btn" style="margin-left:auto" onclick="scanDevices()">🔍 再スキャン</button>
+      <button class="btn" onclick="selectAllDevices()">全選択</button>
+      <button class="btn" onclick="deselectAllDevices()">全解除</button>
+      <button class="btn" style="margin-left:auto" onclick="scanDevices()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M14 3v4h-4"/><path d="M14 7A6 6 0 1 0 9 14"/></svg> 再スキャン</button>
     </div>
     <div class="flex-row" style="margin-bottom:10px">
       <label style="font-size:var(--fs-sm);color:var(--text2)">一括 Ch:</label>
       <input type="number" id="allch" min="1" max="999" value="1" style="width:65px">
-      <button class="btn primary" onclick="switchAll()">▶ 全切替</button>
+      <button class="btn primary" onclick="switchAll()"><svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M4 3l9 5-9 5z"/></svg> 全切替</button>
       <span id="status-bar" style="font-size:.82em;color:var(--accent2)"></span>
     </div>
     <div class="device-list" id="device-list"><div class="no-devices">読み込み中...</div></div>
@@ -379,8 +379,8 @@
     </div>
     <p style="font-size:var(--fs-xs);color:var(--text3);margin:0 0 8px">デバイス一覧でチェックしたシリアルが対象（未選択時は全台）</p>
     <div class="flex-row">
-      <button class="btn success" id="btn-tap-start" onclick="tapLoopStart()">▶ 開始</button>
-      <button class="btn danger" id="btn-tap-stop" onclick="tapLoopStop()" disabled>■ 停止</button>
+      <button class="btn success" id="btn-tap-start" onclick="tapLoopStart()"><svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M4 3l9 5-9 5z"/></svg> 開始</button>
+      <button class="btn danger" id="btn-tap-stop" onclick="tapLoopStop()" disabled><svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg> 停止</button>
       <span id="tap-status" style="font-size:.82em;color:var(--text2)"></span>
     </div>
   </div>
@@ -388,46 +388,22 @@
 <!-- ===== チャンネル巡回 ===== -->
 <div class="view" id="view-patrol">
 	<div class="dashboard-grid layout-edit-surface" id="patrol-layout-root">
-		<div class="card panel-size-1x2 panel-col-1" id="card-patrol-control">
+		<div class="card panel-size-1x1 panel-col-1" id="card-patrol-control">
         <div class="card-title">巡回制御</div>
-        <div class="patrol-status"><span class="stopped" id="ps-state">■ 停止中</span><span id="ps-ch"></span><span id="ps-prog"></span><span id="ps-parallel"></span></div>
-        <div class="patrol-progress" id="ps-progress">
-          <div class="progress-line"><div class="progress-fill" id="ps-progress-fill"></div></div>
-          <div class="progress-text"><span id="ps-patrol-label">--</span><span style="display:flex;align-items:center;gap:8px"><span id="ps-patrol-timeout" style="font-family:var(--font-mono);font-weight:600"></span><span id="ps-patrol-percent"></span></span></div>
-        </div>
-        <div id="crash-warning" class="crash-warning">⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。</div>
-        <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">
-          <div id="ps-move-failed" style="font-size:.78em;color:var(--danger);flex:1"></div>
-          <button id="btn-clear-move-failed" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearMoveFailedChannels()">✕ クリア</button>
-        </div>
-        <div class="flex-row" style="margin-bottom:8px">
-          <label style="font-size:var(--fs-sm)">開始Ch:</label>
-          <input type="number" id="patrol-start-ch" min="0" max="9999" value="0" style="width:65px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
-          <button class="btn toggle-btn" id="btn-reversed" onclick="toggleReversed()">⬆ 正順</button>
-          <button class="btn toggle-btn" id="btn-loop" onclick="toggleLoop()">🔁 ループ</button>
-        </div>
+        <div class="patrol-status"><span class="stopped" id="ps-state">■ 停止中</span><span id="ps-ch"></span></div>
         <div class="flex-row">
-          <button class="btn success" id="btn-patrol-start" onclick="patrolStart()">▶ 巡回開始</button>
-          <button class="btn" id="btn-patrol-stop" onclick="patrolStop()" disabled>■ 停止</button>
+          <button class="btn success" id="btn-patrol-start" onclick="patrolStart()"><svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M4 3l9 5-9 5z"/></svg> 巡回開始</button>
+          <button class="btn" id="btn-patrol-stop" onclick="patrolStop()" disabled><svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg> 停止</button>
         </div>
+        <p style="font-size:var(--fs-xs);color:var(--text3);margin:6px 0 0">進捗・正順/ループ・開始Ch・サイクル統計はダッシュボードで操作/確認できます</p>
         <hr style="border:none;border-top:1px solid var(--border);margin:10px 0 8px">
         <div class="flex-row" style="margin-bottom:6px;flex-wrap:wrap;gap:6px">
           <label style="font-size:var(--fs-sm)">開始ch:</label>
           <input type="number" id="patrol-all-start-ch" min="1" max="999" value="1" style="width:58px">
           <label style="font-size:var(--fs-sm)">終了ch:</label>
           <input type="number" id="patrol-all-end-ch" min="1" max="999" value="100" style="width:58px">
-          <button class="btn primary" onclick="patrolAllOnce()">⏵ 全Ch1巡</button>
+          <button class="btn primary" onclick="patrolAllOnce()"><svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M4 3l9 5-9 5z"/></svg> 全Ch1巡</button>
         </div>
-				<div class="status-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-top:10px">
-					<div class="stat">
-						<div class="stat-label">1サイクル時間</div>
-						<div class="stat-value" id="ps-cycle-time">--</div>
-					</div>
-					<div class="stat">
-						<div class="stat-label">巡回速度</div>
-						<div class="stat-value ok" id="ps-cycle-rate">--</div>
-					</div>
-				</div>
 				<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
 					<label class="cfg-bool-label" style="margin:0;cursor:pointer">
 						<input type="checkbox" id="cfg-gas_enable">
@@ -459,7 +435,7 @@
         <div class="ch-sel-grid" id="ch-sel-grid"></div>
       </div>
 		<div class="card panel-size-1x2 panel-col-2" id="card-patrol-gold">
-		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:var(--fs-xs)" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')" title="別ウィンドウで開く" aria-label="検知履歴を別ウィンドウで開く">⧉</button></div>
+		<div class="card-title"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" style="color:var(--warn)"><path d="M8 1.5l1.8 4.1 4.5.4-3.4 2.9 1 4.4L8 11l-3.9 2.3 1-4.4-3.4-2.9 4.5-.4z"/></svg> レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="clearAllGoldHistory()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg> 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:var(--fs-xs)" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')" title="別ウィンドウで開く" aria-label="検知履歴を別ウィンドウで開く"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h5v5"/><path d="M14 2L8 8"/><path d="M13 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h4"/></svg></button></div>
         <div class="gold-filter-bar" id="gold-filter-bar-patrol">
           <button class="btn-gf active" data-filter="all" onclick="setGoldFilter('all',this,'patrol')">すべて</button>
           <button class="btn-gf" data-filter="金ウリボ" onclick="setGoldFilter('金ウリボ',this,'patrol')">金ウリボ</button>
@@ -507,7 +483,7 @@
 		</div>
 		<div class="card cfg-card" style="padding:10px 12px">
 			<div class="cfg-save-bar" style="margin-top:0">
-				<button class="btn primary" onclick="saveConfig()">💾 保存・反映</button>
+				<button class="btn primary" onclick="saveConfig()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg> 保存・反映</button>
 				<span id="cfg-status" style="font-size:.82em;color:var(--text2)"></span>
 			</div>
 			<p class="cfg-note" style="margin-top:6px">* 滞在時間・タイムアウト・並列設定・通知エネミー・Webhook・デバウンス・チャットフィルターは保存後すぐ反映されます。NIC・GUIポート・ロケーションファイルは再起動が必要です。</p>
@@ -534,7 +510,7 @@
         <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
           <div>
             <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:4px">全chマッピング（現在セッションのLineIDを自動登録）</div>
-            <button class="btn primary" onclick="portmapMapAll()">⚡ 全chマッピング</button>
+            <button class="btn primary" onclick="portmapMapAll()">全chマッピング</button>
           </div>
           <div style="border-left:1px solid var(--border);padding-left:12px">
             <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:4px">手動マッピング</div>
@@ -542,7 +518,7 @@
               <label style="font-size:var(--fs-sm)">Ch:<input type="number" id="manual-ch" min="1" max="9999" placeholder="例: 40" style="width:72px;margin-left:4px"></label>
               <label style="font-size:var(--fs-sm)">IP:<input type="text" id="manual-ip" placeholder="43.167.183.39" style="width:130px;margin-left:4px"></label>
               <label style="font-size:var(--fs-sm)">ポート:<input type="number" id="manual-port" min="1" max="65535" placeholder="10194" style="width:80px;margin-left:4px"></label>
-              <button class="btn success" onclick="portmapManualUpdate()">📌 更新</button>
+              <button class="btn success" onclick="portmapManualUpdate()">更新</button>
             </div>
           </div>
         </div>

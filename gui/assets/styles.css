@@ -122,7 +122,7 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',system-ui,s
 
 /* Card */
 .card{background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px;position:relative}
-.card-title{font-size:var(--fs-xs);font-weight:600;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:7px;padding-bottom:8px;border-bottom:1px solid var(--border);cursor:default}
+.card-title{font-size:var(--fs-md);font-weight:600;color:var(--text1);letter-spacing:0;margin-bottom:12px;display:flex;align-items:center;gap:7px;padding-bottom:8px;border-bottom:1px solid var(--border);cursor:default}
 .card.dragging{opacity:.5;transform:scale(.98);box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .card-placeholder{border-color:rgba(88,166,255,.4);background:rgba(88,166,255,.05)}
 .card-title .title-actions{display:flex;gap:6px;align-items:center;margin-left:auto}
@@ -163,16 +163,18 @@ body{background:var(--bg0);color:var(--text1);font-family:'Segoe UI',system-ui,s
 
 /* Buttons */
 button,.btn{background:var(--bg2);border:1px solid var(--border);color:var(--text1);border-radius:var(--radius);padding:5px 11px;font-size:var(--fs-sm);cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:background .12s,border-color .12s,color .12s;white-space:nowrap;font-family:inherit;font-weight:450;line-height:1.4}
-button:hover,.btn:hover{background:var(--bg3);border-color:var(--text3);color:var(--text1)}
+button:hover,.btn:hover{background:var(--bg3);border-color:var(--border-strong);color:var(--text1)}
 button:disabled,.btn:disabled{opacity:.3;cursor:default}
-button.green,.btn.success{background:rgba(63,185,80,.08);border-color:rgba(63,185,80,.25);color:var(--accent2)}
-button.green:hover,.btn.success:hover{background:rgba(63,185,80,.16);border-color:rgba(63,185,80,.4)}
-.btn.primary{background:rgba(88,166,255,.08);border-color:rgba(88,166,255,.3);color:var(--accent)}
-.btn.primary:hover{background:rgba(88,166,255,.16);border-color:rgba(88,166,255,.5)}
-.btn.danger{background:rgba(248,81,73,.06);border-color:rgba(248,81,73,.22);color:var(--danger)}
-.btn.danger:hover{background:rgba(248,81,73,.14)}
+button.green,.btn.success{background:var(--ok-bg);border-color:var(--ok-border);color:var(--accent2)}
+button.green:hover,.btn.success:hover{background:var(--ok-bg-strong);border-color:var(--accent2)}
+.btn.primary{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.btn.primary:hover{background:var(--accent-bg-strong);border-color:var(--accent)}
+.btn.danger{background:var(--danger-bg);border-color:var(--danger-border);color:var(--danger)}
+.btn.danger:hover{background:rgba(248,81,73,.14);border-color:var(--danger)}
 button.toggle-btn,.btn.toggle-btn{padding:4px 10px;font-size:var(--fs-sm)}
-button.toggle-btn.active,.btn.toggle-btn.active,.btn.active{background:rgba(88,166,255,.1);border-color:rgba(88,166,255,.35);color:var(--accent)}
+button.toggle-btn.active,.btn.toggle-btn.active,.btn.active{background:var(--accent-bg-strong);border-color:var(--accent-border);color:var(--accent)}
+/* v1 .btn 内の SVG アイコン（v2 .btn2 svg と同寸） */
+.btn svg,button svg{width:14px;height:14px;flex-shrink:0}
 .btn-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 input[type=text],input[type=number],textarea,select{background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;font-size:var(--fs-sm);font-family:inherit;outline:none;transition:border-color .12s,box-shadow .12s}
 input[type=text]:focus,input[type=number]:focus,textarea:focus,select:focus{border-color:rgba(88,166,255,.5);box-shadow:0 0 0 2px rgba(88,166,255,.1)}
@@ -195,7 +197,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 /* Chips */
 .chip-row{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
 .chip{background:var(--bg2);border:1px solid var(--border);border-radius:99px;padding:3px 10px;font-size:var(--fs-xs);color:var(--text2);cursor:pointer;transition:all .12s}
-.chip.active{background:rgba(88,166,255,.1);border-color:rgba(88,166,255,.35);color:var(--accent)}
+.chip.active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
 .chip:hover{color:var(--text1);border-color:var(--text3)}
 
 /* Patrol */
@@ -277,7 +279,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 .cfg-bool-label{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82em;font-weight:500;color:var(--text1)}
 .cfg-bool-label input[type=checkbox]{width:auto;margin:0;flex-shrink:0}
 .section-title{font-size:.78em;color:var(--accent);font-weight:500;margin:10px 0 5px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:4px}
-.cfg-card-title{font-size:.86em;color:var(--text1);font-weight:600;margin-bottom:10px}
+.cfg-card-title{font-size:var(--fs-md);color:var(--text1);font-weight:600;margin-bottom:10px}
 .cfg-card-title-collapsible{display:flex;align-items:center;gap:8px}
 .cfg-card-title-collapsible .btn{margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)}
 .chat-filter-card.minimized #chat-filter-content{display:none}
@@ -410,12 +412,8 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
 [data-theme="light"] .device-entry:hover{border-color:#8c959f}
 [data-theme="light"] .card{box-shadow:0 1px 3px rgba(0,0,0,.08)}
 [data-theme="light"] .titlebar{background:rgba(208,215,222,1)}
-[data-theme="light"] button:hover,[data-theme="light"] .btn:hover{background:rgba(0,0,0,.06);border-color:#8c959f}
+[data-theme="light"] button:hover,[data-theme="light"] .btn:hover{background:rgba(0,0,0,.06)}
 [data-theme="light"] .brand-icon{background:#e1e4e8;color:#0969da}
-[data-theme="light"] .btn.success{background:rgba(26,127,55,.08);border-color:rgba(26,127,55,.25);color:#1a7f37}
-[data-theme="light"] .btn.primary{background:rgba(9,105,218,.08);border-color:rgba(9,105,218,.25);color:#0969da}
-[data-theme="light"] .btn.danger{background:rgba(207,34,46,.06);border-color:rgba(207,34,46,.22);color:#cf222e}
-[data-theme="light"] .chip.active{background:rgba(9,105,218,.1);border-color:rgba(9,105,218,.35);color:#0969da}
 [data-theme="light"] .nav-item.layout-edit-active{background:rgba(122,69,0,.08);color:#7a4500;border-left-color:#7a4500}
 /* ============================================================
    === BPSR Design Refresh v2 — Option B (Status Hero) tokens ===

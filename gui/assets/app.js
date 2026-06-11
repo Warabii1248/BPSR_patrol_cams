@@ -201,20 +201,31 @@ function updateStartChDropdown() {
   fetch('/api/patrol/channels').then(r=>r.json()).then(data=>{
     const sel = document.getElementById('dash-patrol-start-ch-select');
     if (!sel) return;
+    const cur = sel.value || '0';
     sel.innerHTML = '<option value="0">(前回位置)</option>';
     (data.channels||[]).forEach(function(ch){
       sel.innerHTML += '<option value="'+ch+'">'+ch+'</option>';
     });
-    // 巡回ビューの開始Ch入力値と同期（リスト外の値は手動optionとして注入）
-    var inp = document.getElementById('patrol-start-ch');
-    if(inp)_ensureStartChOption(sel, inp.value||'0');
+    sel.innerHTML += '<option value="__manual__">(手動入力…)</option>';
+    _ensureStartChOption(sel, cur);
   }).catch(()=>{});
 }
 document.addEventListener('DOMContentLoaded',function(){
   updateStartChDropdown();
   var sel = document.getElementById('dash-patrol-start-ch-select');
   if(sel){
-    sel.addEventListener('change',function(){syncPatrolStartCh(sel.value);});
+    sel.addEventListener('change',function(){
+      if(sel.value==='__manual__'){
+        // 巡回chリスト外の任意chから開始したい場合の入力経路
+        const v=prompt('開始Chを入力してください (0=前回位置から再開)');
+        const n=parseInt(v,10);
+        if(v===null||isNaN(n)||n<0){sel.value='0';syncPatrolStartCh(0);return;}
+        _ensureStartChOption(sel,n);
+        syncPatrolStartCh(n);
+        return;
+      }
+      syncPatrolStartCh(sel.value);
+    });
   }
   applyDMSectionState('portmap');
   applyDMSectionState('devmem');
@@ -848,13 +859,13 @@ async function runIdentify(){
   if(window._patrolRunning){toast('巡回中は実行できません。巡回を停止してください','error');return;}
   const btn=document.getElementById('btn-identify');
   const st=document.getElementById('adb-op-status');
-  if(btn){btn.disabled=true;btn.textContent='🔎 識別中...';}
+  if(btn){btn.disabled=true;_setBtnLabel(btn,'識別中...');}
   if(st)st.textContent='デバイス識別フェーズ実行中（完了まで最大30s）...';
   try{
     const res=await fetch('/api/patrol/identify',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json()).catch(()=>({ok:false}));
     if(st){st.textContent=res.ok?'✓ 識別開始（バックグラウンド実行中）':'✗ '+(res.error||'識別失敗');setTimeout(()=>st.textContent='',6000);}
   }finally{
-    if(btn){btn.disabled=false;btn.textContent='🔎 デバイス認識';}
+    if(btn){btn.disabled=false;_setBtnLabel(btn,'デバイス認識');}
   }
 }
 async function restartADB(){
@@ -1369,7 +1380,7 @@ async function loadPatrolChannels(){
   const d=await fetch('/api/patrol/channels').then(r=>r.json());
   patrolChannels=d.channels||[];renderPatrolChSelector();
   const sel=document.getElementById('dash-patrol-start-ch-select');
-  if(sel){const cur=sel.value;sel.innerHTML='<option value="0">(前回位置)</option>'+patrolChannels.map(ch=>'<option value="'+ch+'">'+ch+'</option>').join('');_ensureStartChOption(sel,cur||'0');}
+  if(sel){const cur=sel.value;sel.innerHTML='<option value="0">(前回位置)</option>'+patrolChannels.map(ch=>'<option value="'+ch+'">'+ch+'</option>').join('')+'<option value="__manual__">(手動入力…)</option>';_ensureStartChOption(sel,(cur&&cur!=='__manual__')?cur:'0');}
   if(typeof renderChannelMatrix==='function')renderChannelMatrix();
 }
 function renderPatrolChSelector(){
@@ -1435,7 +1446,8 @@ function _ensureStartChOption(sel,v){
   const sv=String(v);
   if(![...sel.options].some(o=>o.value===sv)){
     const o=document.createElement('option');o.value=sv;o.textContent='(手動: '+sv+')';o.dataset.manual='1';
-    sel.appendChild(o);
+    const m=[...sel.options].find(x=>x.value==='__manual__');
+    if(m)sel.insertBefore(o,m);else sel.appendChild(o);
   }
   sel.value=sv;
 }
@@ -1447,8 +1459,8 @@ function syncPatrolStartCh(v){
 }
 async function patrolStart(){
   const chs=patrolChannels.length>0?patrolChannels:[];
-  const startChEl=document.getElementById('patrol-start-ch');
-  const body={serials:selectedSerials(),reversed:patrolReversed,loop_mode:patrolLoopMode,start_channel:parseInt(startChEl?.value)||0};
+  const startChSel=document.getElementById('dash-patrol-start-ch-select');
+  const body={serials:selectedSerials(),reversed:patrolReversed,loop_mode:patrolLoopMode,start_channel:parseInt(startChSel?.value)||0};
   if(chs.length>0)body.channels=chs;
   const r=await fetch('/api/patrol/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json();if(!d.ok)toast('巡回開始失敗: '+(d.error||''),'error');
@@ -1805,10 +1817,10 @@ function renderConfigFields(containerId, fields){
 			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><select id="cfg-'+f.k+'">'+opts+'</select>'+noteHtml+'</div>';
 		}
 		if(f.type==='region-picker-btn'){
-			return '<div class="cfg-field"><button type="button" class="btn btn-region-picker" onclick="openScreenshotPicker()">📐 監視矩形をドラッグで選択...</button></div>';
+			return '<div class="cfg-field"><button type="button" class="btn btn-region-picker" onclick="openScreenshotPicker()">監視矩形をドラッグで選択...</button></div>';
 		}
 		var inputType=(f.type==='csv'||f.type==='csv-num')?'text':f.type;
-		var testBtnHtml=f.testBtn?('<div style="margin-top:4px"><button type="button" class="btn" onclick="testWebhook(\'cfg-'+f.k+'\')">📨 テスト送信</button><span id="cfg-'+f.k+'-test-result" style="margin-left:8px;font-size:var(--fs-sm);opacity:.8"></span></div>'):'';
+		var testBtnHtml=f.testBtn?('<div style="margin-top:4px"><button type="button" class="btn" onclick="testWebhook(\'cfg-'+f.k+'\')">テスト送信</button><span id="cfg-'+f.k+'-test-result" style="margin-left:8px;font-size:var(--fs-sm);opacity:.8"></span></div>'):'';
 		return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><input type="'+inputType+'" id="cfg-'+f.k+'" value="'+escHtml(String(val))+'" placeholder="'+escHtml(f.desc||'')+'">'+noteHtml+testBtnHtml+'</div>';
 	}).join('');
 }
