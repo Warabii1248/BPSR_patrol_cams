@@ -26,7 +26,9 @@ https://github.com/yukkuman/bpsr-loyal-emu をベースに改変・拡張した�
    - [filter.json](#filterjson)
    - [channels.txt](#channelstxt)
    - [port_ch_map.json](#port_ch_mapjson)
+   - [gold_history.json](#gold_historyjson)
 5. [ビルド方法（開発者向け）](#ビルド方法開発者向け)
+   - [release フォルダの構成](#release-フォルダの構成)
 6. [ライセンス](#ライセンス)
 
 ---
@@ -111,10 +113,25 @@ MuMu Player は負荷軽減のため 1280x720 解像度での運用を前提（�
 
 ### GAS 連携（Chrome 拡張プッシュ）
 
+GASの討伐タイマーページを Chrome / Edge で開いておくだけで、湧き間近のチャンネルを
+巡回リストへ自動送信する Chrome 拡張（`gas_extension/`）を同梱しています。
+
+**仕組み（サーバ側）**
+
 - Chrome 拡張から POST `/api/patrol/channels/gas` でチャンネルリストを受信するプッシュ型
 - `gas_target_enemy` で対象モンスター名を指定（部分一致、例: `金ウリボ` / `金ナッポ`）
 - `gas_enable=false` にすると 403 を返してプッシュを拒否
 - 受信したチャンネルは既存の巡回リストとマージされ、クールダウン処理を経て反映
+
+**拡張機能の導入手順（かんたん）**
+
+1. Chrome のアドレスバーに `chrome://extensions`（Edge は `edge://extensions`）を入力して開く
+2. 右上の **「デベロッパーモード」** を **ON** にする
+3. **「パッケージ化されていない拡張機能を読み込む」** をクリックし、`gas_extension/` フォルダ（`manifest.json` が入っているフォルダ）を選択
+4. 一覧に **「BPSR patrol cams GAS Sync」** が出れば完了
+5. 本体を起動した状態で GAS の討伐タイマーページを開くと、自動で巡回リストへ送信される（成功時はページ右下に緑バッジ表示）
+
+> 詳しい手順・トラブルシュートは [`gas_extension/INSTALL.md`](gas_extension/INSTALL.md)（配布 zip にも同梱）を参照。
 
 ---
 
@@ -126,7 +143,7 @@ MuMu Player は負荷軽減のため 1280x720 解像度での運用を前提（�
 |---|---|
 | **ダッシュボード** | 巡回ステータス・サイクル KPI・接続デバイス概要 |
 | **巡回制御** | 巡回の開始・停止・再開、巡回チャンネル編集（カンマ区切り入力対応）、ch マトリクス表示、満員/失敗リストのクリア |
-| **デバイス管理** | 接続中の各エミュレータインスタンスの状態（チャンネル、接続先 IP、セッション数、UID バインド）をリアルタイム表示 |
+| **デバイス管理** | 接続中の各エミュレータインスタンスの状態（チャンネル、接続先 IP、セッション数、UID バインド）をリアルタイム表示。ADB再起動・デバイス認識・指定座標への定期タップ（タップループ）も操作可能 |
 | **レアエネミー検知履歴** | 過去の検知イベントを一覧表示、個別削除・全削除が可能 |
 | **チャットログ** | キャプチャしたワールドチャットを新着順で表示（ポップアウト・カテゴリ chip フィルタ対応） |
 | **ログ** | アプリケーションログをリアルタイムで表示（カテゴリ chip でフィルタ可） |
@@ -166,6 +183,8 @@ MuMu Player は負荷軽減のため 1280x720 解像度での運用を前提（�
 | `mumu_pre_keycode` | string | チャンネル入力前に送るキーコード（例: `KEYCODE_P`） |
 | `mumu_delay_ms` | int | ADB 操作間のディレイ（ミリ秒、デフォルト: 1200） |
 | `serial_to_label` | map | ADB シリアル → 表示ラベルの手動マッピング |
+| `tap_loop_x` / `tap_loop_y` | int | タップループ（定期タップ）の座標。GUI から設定・保存 |
+| `tap_loop_interval_ms` | int | タップループの実行間隔（ミリ秒、デフォルト: 1000） |
 | `show_no_device_dialog` | bool | 起動時にデバイスが見つからない場合にダイアログを出すか（デフォルト: true） |
 
 #### 巡回制御
@@ -254,6 +273,12 @@ GAS 連携や GUI 上の編集でも更新されます。
 PortMap システムが管理するポート番号→チャンネル番号のマッピングファイルです。
 通常は自動で更新されます。手動編集は GUI の PortMap 確認モーダルから行うことを推奨します。
 
+### gold_history.json
+
+レアモンスター検知時の時刻・チャンネル・場所・モンスター名を記録する履歴ファイルです。
+GUI の「レアエネミー検知履歴」パネルに表示され、個別削除・全削除が可能です。
+最大50件（超過分は古い順に切り捨て）。初回検知まではファイルが存在しません（自動生成）。
+
 ---
 
 ## ビルド方法（開発者向け）
@@ -275,6 +300,31 @@ PortMap システムが管理するポート番号→チャンネル番号のマ
 
 `release\` フォルダにビルド済みファイルが出力され、実行ファイル名は `BPSR_patrol_cams.exe` です。
 `winres\winres.json` と `winres\icon.ico` を置いておくと EXE にアイコンが自動埋め込みされます（`go-winres` 未インストール時は自動インストール）。
+さらに `BPSR_patrol_cams-v<バージョン>-windows-amd64.zip` として `release\` の中身一式が zip 化されます。
+
+### release フォルダの構成
+
+`build.ps1` 実行後の `release\` は以下の構成になります（配布 zip も同じ中身）。
+
+```
+release/
+├── BPSR_patrol_cams.exe   # 本体（ビルド成果物）
+├── README.txt             # 配布用の簡易説明（実行手順・必要ソフト）
+├── config/
+│   ├── config.json       # 設定ファイル（リポジトリの config/config.json があれば同梱）
+│   ├── channels.txt      # 巡回チャンネルリスト（同上）
+│   ├── filter.json       # チャット検知フィルタ設定（同上）
+│   └── port_ch_map.json  # PortMap 永続化ファイル（同上）
+├── data/
+│   └── locations.json    # 場所名マスタ
+├── gas_extension/         # GAS 連携用 Chrome 拡張一式（manifest.json / content.js / INSTALL.md）
+└── logs/                  # 空フォルダ（実行時に log.txt が生成される）
+```
+
+- `config/` 配下のファイルはビルド時にリポジトリの `config/` からコピーされる「初期値」で、存在しない場合はそのファイルだけ同梱されません（初回起動時に `appconfig.Load` がデフォルト値で新規生成）
+- `config/gold_history.json` と `config/serial_to_uid`（config.json 内のキー）は実行時に検知・バインドが発生してから生成・追記される
+- `logs/log.txt` は実行時に作成されるアプリケーションログ
+- 配布する場合は機微情報（`discord_webhook` / `serial_to_uid` / 実プレイヤー UID 等が書き込まれた `config.json`）を含めないよう注意
 
 ### 手動ビルド
 
