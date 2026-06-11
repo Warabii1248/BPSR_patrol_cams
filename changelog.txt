@@ -1,4 +1,48 @@
 ﻿====--------------------------------------------------------------------------------
+[No.66] 2026/06/11 12:29 — リポジトリ整理: ローカル/実行時生成ファイルの追跡解除 + 漏洩 secret の履歴除去
+
+【背景 / 原因】
+  config/config.json が長期間 git 追跡対象になっており、実 Discord webhook URL
+  （discord_webhook / discord_chat_report_webhook）・実 serial_to_uid・window_state 等の
+  ローカル固有データを含んだまま public リポジトリに push され続けていた（過去21コミット）。
+  あわせて config/gold_history.json・config/port_ch_map.json（実サーバIP）・
+  config/filter.json（実プレイヤー名）・logs/log.txt（実行ログ）・
+  StarResonanceAPI.exe / chat-reporter.exe（ビルド成果物 計43.7MB、.gitignore の *.exe 追加前に
+  追跡開始されていた）も同様にローカル/実行時生成データのまま追跡されていた。
+
+【変更内容】
+  .gitignore:
+    - config/config.json, config/gold_history.json, config/port_ch_map.json,
+      config/filter.json, logs/log.txt, .vscode/ を追加
+  git管理:
+    - 上記5ファイル + StarResonanceAPI.exe + chat-reporter.exe を git rm --cached
+      （ローカルの実ファイルはそのまま保持。config.json/filter.json は README記載の通り
+      初回起動/実行時に自動生成されるため欠損しても動作に影響なし）
+    - git-filter-repo で fresh mirror clone 上から上記7パスを全履歴（main/edit/sub/release共通祖先、
+      116中80コミット）から除去し、public main へ force-push（別途実施・ローカルリポも追従）
+  .claude/settings.json:
+    - 前セッションでの未コミット直接修正（旧パスmlwl1→現パス等）を revert し、
+      tracked側は旧方針通り旧パス温存。同内容は .claude/settings.local.json
+      （git管理外・.git/info/exclude登録済み）に分離配置
+  .claude/settings.json.bak:
+    - 不要バックアップを削除
+
+【効果】
+  - 以後の commit で実 webhook・実サーバ情報・実プレイヤー名・実行ログ・大型バイナリが
+    repo に混入しなくなる
+  - 既存の漏洩 webhook URL は履歴からも除去（ただし実害防止には Discord 側での
+    webhook 再生成が別途必須・本対応とは独立）
+
+【影響範囲】
+  - 変更ファイル: .gitignore, changelog.txt, .claude/settings.json(revert),
+    .claude/settings.local.json(新規・git管理外)
+  - git rm --cached: config/config.json, config/gold_history.json, config/port_ch_map.json,
+    config/filter.json, logs/log.txt, StarResonanceAPI.exe, chat-reporter.exe
+  - 後方互換性: config.json/filter.json は Load/LoadFilter が「ファイルなし→デフォルト/空」を
+    エラーなく処理するため、git管理外化しても挙動変化なし（appconfig/config.go, filter.go 確認済み）
+  - 履歴書き換えは別コミット（force-push）として実施。本コミット自体は通常 push
+
+====--------------------------------------------------------------------------------
 [No.65] 2026/06/11 07:02 — gui-sim Phase B: 設定変更の動的反映 + 外乱×ボタン競合シナリオ
 
 【背景 / 原因】

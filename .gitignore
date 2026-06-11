@@ -3,3 +3,9 @@ release/
 *.exe
 logs/sim/
 logs/sim_run*.log
+.vscode/
+config/config.json
+config/gold_history.json
+config/port_ch_map.json
+config/filter.json
+logs/log.txt
