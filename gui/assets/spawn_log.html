@@ -32,7 +32,7 @@ async function load(){
   const c=document.getElementById('container');
   if(!h||h.length===0){c.innerHTML='<div class="no-data">出現履歴なし</div>';return;}
   c.innerHTML='<table><thead><tr><th>時刻</th><th>名前</th><th>Ch</th><th>場所</th></tr></thead><tbody>'
-    +h.map(e=>{const nm=e.monster_name||'ウリボ・ゴールド';const cls=nm.includes('銀ナッポ')?'monster silver':'monster';return '<tr><td class="time">'+eH(e.time||'')+'</td><td class="'+cls+'">'+eH(nm)+'</td><td class="ch">Ch'+Number(e.channel)+'</td><td>'+eH(e.location||'')+'</td></tr>'}).join('')
+    +h.map(e=>{const nm=e.monster_name||'金ウリボ';const cls=nm.includes('銀ナッポ')?'monster silver':'monster';return '<tr><td class="time">'+eH(e.time||'')+'</td><td class="'+cls+'">'+eH(nm)+'</td><td class="ch">Ch'+Number(e.channel)+'</td><td>'+eH(e.location||'')+'</td></tr>'}).join('')
     +'</tbody></table>';
 }
 load();

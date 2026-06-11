@@ -1,4 +1,76 @@
 ﻿====--------------------------------------------------------------------------------
+[No.67] 2026/06/11 20:15 — GUI UI/UX 全面レビュー指摘の修正 Phase 1（検知ログ表示不能バグ + コントラスト + 操作安全性ほか計21項目）
+
+【背景 / 原因】
+  GUI の全面 UI/UX レビュー（スクリーンショット12枚 + 静的コード + gui-sim 操作ログを
+  マルチモーダルレビュー）で高5・中10・低12件の問題を特定した。うち最重要は
+  「/api/logs がオブジェクト {"logs":[...]} を返すのに JS が配列前提で
+  (lines||[]).forEach するため毎ページロードで JS 例外が発生し、起動前に蓄積された
+  検知ログのバックログが一切表示されない」バグ（スクショ撮影時に pageerror として実証）。
+  本エントリは高5件 + 安全な中8件 + 低5件の修正（Phase 1）。
+  v1→v2 デザイン統一・エラー表示 Toast 統一等の大型項目は次フェーズに見送り。
+
+【変更内容】
+  gui/assets/app.js:
+    - [高] /api/logs レスポンス形状を JS 側で吸収（Array/{"logs":[...]} 両対応）。
+      検知ログのバックログ表示が復旧
+    - [高] 検知履歴の一括クリアに confirm 追加。削除/クリア失敗時の無音 catch を alert に変更
+    - [高] .nav-item / .theme-swatch に tabindex/role/keydown(Enter・Space) を一括付与し
+      キーボード操作を可能に
+    - [中] appendLog: 検知判定から line.includes('金') を廃止（[DETECTION] or 具体
+      モンスター名のみ）。タグ判定順を ok→warn→err に並べ替え（err 最優先）
+    - [中] updateDashDeviceCh: game_crashed/adb_failed で devpill に .offline 付与 +
+      接続デバイス KPI を「⚠ N台異常」表示（従来は無条件「全台接続中」固定）
+    - [低] formatAgo 日本語化（たった今/N分前/N時間前）+ '/hour'→'件/時'・'ch/hour'→'ch/時'
+    - [低] テーマ 'grey'→'light' 移行を savedTheme 読み出し前に実行（初回ロードの
+      未定義テーマ適用バグ修正）
+    - [低] pmRender の old_ip/new_ip に escHtml 適用（パケット由来文字列のエスケープ漏れ）
+    - [低] 完全重複の renderChatRuleTableMarkup を削除し renderChatRuleTable に統合
+    - PATROL_LAYOUT_DEFAULT_COLUMNS（未参照の dead code・初期配置は index.html の
+      静的クラスで決定される）を削除しコメントで明示
+  gui/assets/index.html:
+    - [高] アイコンのみボタン7箇所に aria-label 追加
+    - [中] hero 内 font-size:11px 直書き7箇所 → var(--fs-xs)（文字サイズ設定に追従）。
+      KPI コーナーの ↻ ボタン 13px/14px → var(--fs-sm) に統一
+    - [中] 巡回ビュー: デバイス監視カードを右列 (panel-col-2) に変更し DOM 順を
+      巡回制御直後へ移動（初期表示で右列が空白になり巡回中の最重要情報が
+      スクロール外だった問題の修正）
+    - [中] テストボタン表記 ウリボゴールド → ウリボ・ゴールド（ForceDetect は両表記
+      正規化済みのため挙動不変）
+    - [中] #ps-move-failed の color:#fca5a5 → var(--danger)
+  gui/assets/styles.css:
+    - [高] --on-accent トークン新設（dark-blue/light=#fff、black/warm=#000）。
+      .ch-cell.current / .btn-gf.active の文字色に適用。black/warm テーマで
+      アクセント背景上の白文字がほぼ読めなかった問題（コントラスト比1.4〜1.6:1）を解消
+    - [中] [data-fs="s"] の --fs-xs 7px→9px・--fs-sm 9px→10px（7px は実質不可読）
+    - [中] light テーマ --text3 #8c959f→#6e7781（WCAG AA 対応）
+    - [中] .dev-stat-* バッジ5種をハードコードダーク色から v2 トークンに置換
+      （light テーマで暗い島になっていた）
+    - [低] .ss-toolbar select の未定義 var(--text) → var(--text1)
+  gui/assets/chat_log.html:
+    - [中] dedup 実装: キーは ch+sender+msg（label/IP を含めない・No.48 と同一仕様）。
+      同一内容は1件に集約し「(N台受信)」バッジ表示。escH に引用符エスケープ追加
+      （data-key 属性の破損防止）。SSE 追加時は直近10件から同一キーを探して増分
+  gui/assets/spawn_log.html:
+    - [中] monster_name フォールバック 'ウリボ・ゴールド' → '金ウリボ'（app.js と統一。
+      レコードは normalizeMonsterName で常に正規化済みのためフォールバックのみの差）
+
+【効果】
+  - 検知ログビューが起動時バックログから正常表示（毎ロードの JS 例外解消）
+  - black/warm テーマで現在ch・フィルタ選択が視認可能に
+  - 誤クリック1回での検知履歴全消失を confirm で防止
+  - Tab + Enter/Space での画面遷移・テーマ切替が可能に
+  - 巡回ビュー初期表示でデバイス監視が右列に見える
+  - 複数インスタンス受信チャットが別ウィンドウでも1件に集約表示
+
+【影響範囲】
+  - 変更ファイル: gui/assets/app.js, index.html, styles.css, chat_log.html, spawn_log.html
+  - Go コード・config スキーマ・API レスポンス形状は無変更（後方互換）
+  - localStorage 既存キー互換（patrolLayout 保存済みユーザーのレイアウトは従来通り優先）
+  - 検証: go build/vet 警告ゼロ、gui-sim baseline PASS、全ビュー+4テーマ
+    スクリーンショット再撮影で console error ゼロ、dedup はブラウザ上で機能テスト済み
+
+====--------------------------------------------------------------------------------
 [No.66] 2026/06/11 12:29 — リポジトリ整理: ローカル/実行時生成ファイルの追跡解除 + 漏洩 secret の履歴除去
 
 【背景 / 原因】

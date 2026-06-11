@@ -542,12 +542,12 @@ function escAttrJs(s){return JSON.stringify(String(s)).replace(/"/g,'&quot;');}
 function appendLog(line){
   const la=document.getElementById('log-area');if(!la)return;
   const div=document.createElement('div');
-  const isDetect=line.includes('[DETECTION]')||line.includes('金');
+  const isDetect=line.includes('[DETECTION]')||/金ウリボ|金ナッポ|銀ナッポ|ウリボ・ゴールド/.test(line);
   div.className='log-line'+(isDetect?' detect':'');
   let tagCls='info',tagTxt='INFO';
-  if(line.toLowerCase().includes('error')||line.includes('失敗')||line.toLowerCase().includes('fatal')){tagCls='err';tagTxt='ERR';}
   if(line.includes('完了')||line.includes('確立')||line.includes('起動完了')||line.includes(' ok')||line.includes('[OK]')){tagCls='ok';tagTxt='OK';}
-  if(isDetect||line.toLowerCase().includes('warn')||line.includes('[DETECTION]')){tagCls='warn';tagTxt='WARN';}
+  if(isDetect||line.toLowerCase().includes('warn')){tagCls='warn';tagTxt='WARN';}
+  if(line.toLowerCase().includes('error')||line.includes('失敗')||line.toLowerCase().includes('fatal')){tagCls='err';tagTxt='ERR';}
   const tm=line.match(/\d{4}\/\d{2}\/\d{2} (\d{2}:\d{2}:\d{2})/);
   const timeStr=tm?tm[1]:'';const rest=tm?line.slice(tm[0].length).trim():line;
   div.innerHTML='<span class="log-time">'+escHtml(timeStr)+'</span>'
@@ -572,7 +572,7 @@ async function testDetect(monster){
     if(e.data.includes('[PORTMAP_PENDING]')){pmCheckPending();}
     if(e.data.includes('[NO_DEVICE]')){showNoDeviceDialog();}
   };
-  fetch('/api/logs').then(r=>r.json()).then(lines=>(lines||[]).forEach(appendLog));
+  fetch('/api/logs').then(r=>r.json()).then(d=>(Array.isArray(d)?d:(d&&d.logs)||[]).forEach(appendLog));
 })();
 // ── デバイス未検出ダイアログ ──
 function showNoDeviceDialog(){
@@ -593,10 +593,10 @@ function pmRender(){
   const body=document.getElementById('pm-body');
   if(!body)return;
   body.innerHTML=_pmChanges.map(c=>{
-    const oldPart=c.old_ip?('<span class="pm-ip">'+c.old_ip+'</span><span class="pm-arrow">→</span>'):'<span class="pm-arrow">新規</span>';
+    const oldPart=c.old_ip?('<span class="pm-ip">'+escHtml(c.old_ip)+'</span><span class="pm-arrow">→</span>'):'<span class="pm-arrow">新規</span>';
     return '<div class="pm-change-row">'
-      +'<div><span class="pm-ch">Ch'+c.ch+'</span></div>'
-      +'<div>'+oldPart+'<span class="pm-ip">'+c.new_ip+'</span></div>'
+      +'<div><span class="pm-ch">Ch'+Number(c.ch)+'</span></div>'
+      +'<div>'+oldPart+'<span class="pm-ip">'+escHtml(c.new_ip)+'</span></div>'
       +'<div class="pm-votes">'+c.vote_count+'台が同一ポートを検知</div>'
       +'</div>';
   }).join('');
@@ -615,11 +615,11 @@ async function pmRejectAll(){
 }
 // ── Gold History ──
 function formatAgo(seconds){
-  if(seconds < 60) return 'just now';
+  if(seconds < 60) return 'たった今';
   const mins = Math.floor(seconds / 60);
-  if(mins < 60) return mins + 'min ago';
+  if(mins < 60) return mins + '分前';
   const hrs = Math.floor(mins / 60);
-  return hrs + 'h ago';
+  return hrs + '時間前';
 }
 async function removeGoldHistory(timestamp){
   try{
@@ -630,16 +630,17 @@ async function removeGoldHistory(timestamp){
     });
     if(!res.ok) throw new Error('delete failed');
     await loadGoldHistory();
-  }catch(_){ }
+  }catch(_){ alert('履歴の削除に失敗しました'); }
 }
 async function clearAllGoldHistory(){
+	if(!confirm('検知履歴を全件削除しますか？'))return;
 	try{
 		const res = await fetch('/api/gold-history/clear', {
 			method: 'DELETE'
 		});
 		if(!res.ok) throw new Error('clear failed');
 		await loadGoldHistory();
-	}catch(_){ }
+	}catch(_){ alert('履歴のクリアに失敗しました'); }
 }
 async function loadGoldHistory(){
   try{
@@ -661,7 +662,7 @@ async function loadGoldHistory(){
       }
     }
     if(detEl) detEl.textContent = Array.isArray(h) ? String(h.length) : '0';
-    if(metaEl) metaEl.textContent = String(perHour) + '/hour · ' + latestAgo;
+    if(metaEl) metaEl.textContent = String(perHour) + '件/時 · ' + latestAgo;
     // v2: track detected channels for matrix overlay + update count badge (20h expiry)
     const detSet = new Set();
     const _detNowSec = Math.floor(Date.now()/1000);
@@ -1445,7 +1446,7 @@ function formatPatrolCycleRate(ms){
 	if(!(ms>0))return '--';
 	const perHour=3600000/ms;
 	const rounded=Math.round(perHour*10)/10;
-	return (Number.isInteger(rounded)?String(Math.round(rounded)):rounded.toFixed(1))+'ch/hour';
+	return (Number.isInteger(rounded)?String(Math.round(rounded)):rounded.toFixed(1))+'ch/時';
 }
 function renderPatrolCycleStats(running){
 	const pairs=[
@@ -1641,14 +1642,20 @@ function renderDeviceStatuses(statuses){
 }
 function updateDashDeviceCh(statuses){
   if(!statuses||!statuses.length)return;
+  let abnormal=0;
   statuses.forEach(function(ds){
+    const bad=!!(ds.game_crashed||ds.adb_failed);
+    if(bad)abnormal++;
     const pill=document.querySelector('.devpill[data-serial="'+CSS.escape(ds.serial)+'"]');
     if(!pill)return;
+    pill.classList.toggle('offline',bad);
     const chEl=pill.querySelector('.dp-ch');if(!chEl)return;
     const ch=ds.actual_ch>0?ds.actual_ch:(ds.current_ch>0?ds.current_ch:0);
     chEl.textContent=ch?String(ch):'—';
     if(currentDeviceMap[ds.serial])currentDeviceMap[ds.serial].current_ch=ch;
   });
+  const kpiState=document.getElementById('dash-kpi-dev-state');
+  if(kpiState)kpiState.textContent=abnormal>0?('⚠ '+abnormal+'台異常'):'全台接続中';
 }
 async function recoverDevice(serial){
   const r=await fetch('/api/patrol/recover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial})});
@@ -1757,14 +1764,6 @@ function renderConfigFields(containerId, fields){
 	}).join('');
 }
 function renderChatRuleTable(headers, rows, emptyText){
-	if(!rows.length)return '<div class="cfg-rule-empty">'+escHtml(emptyText)+'</div>';
-	return '<div class="cfg-rule-table-wrap"><table class="cfg-rule-table"><thead><tr>'
-		+headers.map(h=>'<th>'+escHtml(h)+'</th>').join('')
-		+'</tr></thead><tbody>'
-		+rows.join('')
-		+'</tbody></table></div>';
-}
-function renderChatRuleTableMarkup(headers, rows, emptyText){
 	if(!rows.length)return '<div class="cfg-rule-empty">'+escHtml(emptyText)+'</div>';
 	return '<div class="cfg-rule-table-wrap"><table class="cfg-rule-table"><thead><tr>'
 		+headers.map(h=>'<th>'+escHtml(h)+'</th>').join('')
@@ -1885,10 +1884,10 @@ function buildChatRuleWindowHtml(){
 		+'</style></head><body>'
 		+'<div class="cfg-rule-window-section"><div class="cfg-rule-window-title">場所別名ルール一覧</div><div class="cfg-rule-window-note">このウィンドウから追加・削除できます。</div>'
 		+'<div class="cfg-rule-actions"><select id="popup-location-rule-target"><option value="">場所を選択</option>'+locationOptions+'</select><input type="text" id="popup-location-rule-alias" placeholder="別名を入力。例: tnt"><button type="button" class="btn" onclick="addLocationRule()">追加</button></div>'
-		+renderChatRuleTableMarkup(['場所','追加した別名','出現候補',''],locationRows,'追加した場所別名はありません')+'</div>'
+		+renderChatRuleTable(['場所','追加した別名','出現候補',''],locationRows,'追加した場所別名はありません')+'</div>'
 		+'<div class="cfg-rule-window-section"><div class="cfg-rule-window-title">モンスター別名ルール一覧</div>'
 		+'<div class="cfg-rule-actions"><select id="popup-monster-rule-target"><option value="">モンスターを選択</option>'+monsterOptions+'</select><input type="text" id="popup-monster-rule-alias" placeholder="別名を入力。例: 金ウリ"><button type="button" class="btn" onclick="addMonsterRule()">追加</button></div>'
-		+renderChatRuleTableMarkup(['モンスター','追加した別名',''],monsterRows,'追加したモンスター別名はありません')+'</div>'
+		+renderChatRuleTable(['モンスター','追加した別名',''],monsterRows,'追加したモンスター別名はありません')+'</div>'
 		+'<script>'
 		+'function addLocationRule(){var target=document.getElementById("popup-location-rule-target");var input=document.getElementById("popup-location-rule-alias");if(!window.opener||!target||!input)return;window.opener.addChatLocationRuleValue(String(target.value||""),String(input.value||""));}'
 		+'function addMonsterRule(){var target=document.getElementById("popup-monster-rule-target");var input=document.getElementById("popup-monster-rule-alias");if(!window.opener||!target||!input)return;window.opener.addChatMonsterAliasRuleValue(String(target.value||""),String(input.value||""));}'
@@ -1948,7 +1947,7 @@ function renderChatRuleManagers(){
 		+'<input type="text" id="cfg-location-rule-alias" placeholder="別名を入力。例: tnt">'
 		+'<button type="button" class="btn" onclick="addChatLocationRule()">追加</button>'
 		+'</div>'
-		+renderChatRuleTableMarkup(['場所','追加した別名','出現候補',''],locationRows,'追加した場所別名はありません')
+		+renderChatRuleTable(['場所','追加した別名','出現候補',''],locationRows,'追加した場所別名はありません')
 		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_location_rules" rows="10" spellcheck="false" placeholder="地点名|別名|モンスター1,モンスター2">'+escHtml(locationRules)+'</textarea>'
 		+'<span class="cfg-note">追加内容はセル形式で表示しています。保存はこの一覧から行われます。</span>'
 		+'</div>'
@@ -1958,7 +1957,7 @@ function renderChatRuleManagers(){
 		+'<select id="cfg-monster-rule-target"><option value="">モンスターを選択</option>'+monsterOptions+'</select>'
 		+'<input type="text" id="cfg-monster-rule-alias" placeholder="別名を入力。例: 金ウリ"><button type="button" class="btn" onclick="addChatMonsterAliasRule()">追加</button>'
 		+'</div>'
-		+renderChatRuleTableMarkup(['モンスター','追加した別名',''],monsterRows,'追加したモンスター別名はありません')
+		+renderChatRuleTable(['モンスター','追加した別名',''],monsterRows,'追加したモンスター別名はありません')
 		+'<textarea class="cfg-hidden-field" id="cfg-chat_report_monster_alias_rules" rows="10" spellcheck="false" placeholder="モンスター名|別名">'+escHtml(monsterRules)+'</textarea>'
 		+'<span class="cfg-note">追加内容はセル形式で表示しています。保存はこの一覧から行われます。</span>'
 		+'</div>';
@@ -2131,12 +2130,8 @@ setInterval(()=>{
 const DASH_PANEL_IDS=['card-dash-devices','card-dash-patrol','card-dash-gold','card-dash-chat','card-dash-report'];
 const DASH_SIZE_CLASSES=['panel-size-1x1','panel-size-1x2','panel-size-2x1','panel-size-2x2','panel-size-2x3','panel-size-2x4'];
 const PATROL_LAYOUT_CARD_IDS=['card-patrol-control','card-patrol-channels','card-patrol-device-status','card-patrol-gold'];
-const PATROL_LAYOUT_DEFAULT_COLUMNS={
-	'card-patrol-control':'left',
-	'card-patrol-channels':'left',
-	'card-patrol-device-status':'left',
-	'card-patrol-gold':'right',
-};
+// 初期の列配置は index.html の panel-col-1/panel-col-2 静的クラスで決まる
+// （保存済みレイアウトがあれば loadPatrolLayout が上書き）
 const DASH_GRID_ROW_UNIT=8;
 const DASH_GRID_GAP=10;
 const DASH_MIN_PANEL_ROWS=18;
@@ -2541,7 +2536,8 @@ syncLayoutEditState();
   window.setTheme=setTheme;
   window.setFontSize=setFontSize;
   // restore persisted prefs
-  const savedTheme=localStorage.getItem('uiTheme')||'dark-blue'; localStorage.getItem('uiTheme')==='grey'&&localStorage.setItem('uiTheme','light');
+  if(localStorage.getItem('uiTheme')==='grey')localStorage.setItem('uiTheme','light');
+  const savedTheme=localStorage.getItem('uiTheme')||'dark-blue';
 
   // Migrate old font size keys
   (function(){const m={'sm':'s','md':'m','lg':'m'};const v=localStorage.getItem('uiFontSize');if(v&&m[v])localStorage.setItem('uiFontSize',m[v]);})();
@@ -2550,6 +2546,15 @@ syncLayoutEditState();
   document.body.setAttribute('data-fs',savedFs);
   document.querySelectorAll('.theme-swatch').forEach(s=>s.classList.toggle('active',s.dataset.t===savedTheme));
   document.querySelectorAll('.fs-btn').forEach(b=>b.classList.toggle('active',b.dataset.fs===savedFs));
+
+  // keyboard accessibility: nav items / theme swatches を Tab + Enter/Space で操作可能にする
+  document.querySelectorAll('.nav-item,.theme-swatch').forEach(el=>{
+    el.setAttribute('tabindex','0');
+    el.setAttribute('role','button');
+    el.addEventListener('keydown',e=>{
+      if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click();}
+    });
+  });
 
   // brand status sync
   function syncBrandStatus(){

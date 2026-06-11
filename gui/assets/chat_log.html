@@ -20,6 +20,7 @@ h1{font-size:13px;padding:0 16px;height:44px;background:var(--bg1);border-bottom
 .ch{color:var(--accent);font-size:0.85em;margin-right:4px}
 .sender{color:var(--warn);font-weight:600;margin-right:4px}
 .body{color:var(--text1)}
+.recv{color:var(--text3);font-size:0.8em;margin-left:6px}
 .no-data{color:var(--text3);padding:12px}
 #count{color:var(--text2);margin-left:auto;font-size:0.85em}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
@@ -34,18 +35,34 @@ h1{font-size:13px;padding:0 16px;height:44px;background:var(--bg1);border-bottom
 <div id="container"><div class="no-data">読み込み中...</div></div>
 <script>
 let all=[],userScrolled=false;
-function escH(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function escH(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function isAtBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<50;}
+// dedup キーは ch+sender+msg（label/IP を含めない・本体GUIと同一仕様）。
+// 同一内容は1件に集約し recv_count で受信台数を表示する。
+function dedupKey(e){return (e.has_ch?e.channel:'')+'|'+e.sender+'|'+e.message;}
+function dedupe(events){
+  const map=new Map();
+  events.forEach(e=>{
+    const k=dedupKey(e);
+    const cur=map.get(k);
+    if(cur){cur.recv_count++;}
+    else{map.set(k,Object.assign({recv_count:1},e));}
+  });
+  return [...map.values()];
+}
+function msgHTML(e){
+  const ch=e.has_ch?'<span class="ch">Ch'+Number(e.channel)+'</span>':'';
+  const recv=e.recv_count>1?'<span class="recv">('+e.recv_count+'台受信)</span>':'';
+  return '<span class="time">'+escH(e.time||'')+'</span>'+ch+'<span class="sender">'+escH(e.sender)+'</span><span class="body">'+escH(e.message)+'</span>'+recv;
+}
 function render(){
   const q=document.getElementById('search').value.toLowerCase();
-  const filtered=q?all.filter(e=>e.sender.toLowerCase().includes(q)||e.message.toLowerCase().includes(q)):all;
+  const deduped=dedupe(all);
+  const filtered=q?deduped.filter(e=>e.sender.toLowerCase().includes(q)||e.message.toLowerCase().includes(q)):deduped;
   document.getElementById('count').textContent=filtered.length+'件';
   const c=document.getElementById('container');
   if(!filtered.length){c.innerHTML='<div class="no-data">チャットなし</div>';return;}
-  c.innerHTML=filtered.map(e=>{
-    const ch=e.has_ch?'<span class="ch">Ch'+e.channel+'</span>':'';
-    return '<div class="msg"><span class="time">'+e.time+'</span><span class="ip">['+escH(e.client_ip)+']</span>'+ch+'<span class="sender">'+escH(e.sender)+'</span><span class="body">'+escH(e.message)+'</span></div>';
-  }).join('');
+  c.innerHTML=filtered.map(e=>'<div class="msg" data-key="'+escH(dedupKey(e))+'" data-recv="'+e.recv_count+'">'+msgHTML(e)+'</div>').join('');
   userScrolled=false;
   c.scrollTop=c.scrollHeight;
 }
@@ -56,19 +73,30 @@ function appendOne(ev){
   if(q&&!(ev.sender.toLowerCase().includes(q)||ev.message.toLowerCase().includes(q)))return;
   const c=document.getElementById('container');
   if(c.querySelector('.no-data'))c.innerHTML='';
-  const ch=ev.has_ch?'<span class="ch">Ch'+ev.channel+'</span>':'';
+  const k=dedupKey(ev);
+  // 直近10件から同一キーを探して受信台数バッジを増分（複数インスタンス同報の集約）
+  for(let el=c.lastElementChild,i=0;el&&i<10;el=el.previousElementSibling,i++){
+    if(el.dataset&&el.dataset.key===k){
+      const n=(parseInt(el.dataset.recv,10)||1)+1;
+      el.dataset.recv=String(n);
+      el.innerHTML=msgHTML(Object.assign({recv_count:n},ev));
+      return;
+    }
+  }
   const div=document.createElement('div');
   div.className='msg';
-  div.innerHTML='<span class="time">'+ev.time+'</span><span class="ip">['+escH(ev.client_ip)+']</span>'+ch+'<span class="sender">'+escH(ev.sender)+'</span><span class="body">'+escH(ev.message)+'</span>';
+  div.dataset.key=k;
+  div.dataset.recv='1';
+  div.innerHTML=msgHTML(Object.assign({recv_count:1},ev));
   c.appendChild(div);
-  document.getElementById('count').textContent=all.length+'件';
+  document.getElementById('count').textContent=c.children.length+'件';
   if(!userScrolled)c.scrollTop=c.scrollHeight;
 }
 (async function(){
   const c=document.getElementById('container');
   c.addEventListener('scroll',()=>{userScrolled=!isAtBottom(c);});
   const h=await fetch('/api/chat-log').then(r=>r.json()).catch(()=>[]);
-  all=h||[];
+  all=Array.isArray(h)?h:[];
   render();
   const es=new EventSource('/api/chat-events');
   es.onmessage=e=>{try{appendOne(JSON.parse(e.data));}catch(_){}};

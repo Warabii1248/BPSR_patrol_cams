@@ -111,20 +111,20 @@
       <div class="hero-row1">
         <span class="k">現在</span>
         <span class="hero-ch" id="dash-ps-ch">--</span>
-        <span id="dash-ps-prog" style="font-size:11px;color:var(--text3);font-family:var(--font-mono)"></span>
-        <span style="margin-left:auto;font-size:11px;color:var(--text3)">進捗 <b id="dash-patrol-label" style="color:var(--text1)">--</b></span>
-        <span id="dash-patrol-timeout" style="font-size:11px;font-family:var(--font-mono);font-weight:600"></span>
-        <span style="font-size:11px;color:var(--accent2);font-family:var(--font-mono);font-weight:600" id="dash-patrol-percent"></span>
+        <span id="dash-ps-prog" style="font-size:var(--fs-xs);color:var(--text3);font-family:var(--font-mono)"></span>
+        <span style="margin-left:auto;font-size:var(--fs-xs);color:var(--text3)">進捗 <b id="dash-patrol-label" style="color:var(--text1)">--</b></span>
+        <span id="dash-patrol-timeout" style="font-size:var(--fs-xs);font-family:var(--font-mono);font-weight:600"></span>
+        <span style="font-size:var(--fs-xs);color:var(--accent2);font-family:var(--font-mono);font-weight:600" id="dash-patrol-percent"></span>
       </div>
       <div class="hero-progress" id="dash-patrol-progress"><div id="dash-patrol-fill"></div></div>
       <div class="hero-row2">
         <span><span>1サイクル</span> <b id="dash-ps-cycle-time">--</b></span>
         <span><span>速度</span> <b id="dash-ps-cycle-rate" style="color:var(--accent2)">--</b></span>
-        <span id="dash-ps-move-failed-wrap" style="display:none"><span>移動失敗</span> <b id="dash-ps-move-failed" style="color:var(--danger)"></b> <button id="btn-dash-clear-move-failed" class="btn2 ghost sm" onclick="clearMoveFailedChannels()" title="移動失敗リストをクリア"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></span>
+        <span id="dash-ps-move-failed-wrap" style="display:none"><span>移動失敗</span> <b id="dash-ps-move-failed" style="color:var(--danger)"></b> <button id="btn-dash-clear-move-failed" class="btn2 ghost sm" onclick="clearMoveFailedChannels()" title="移動失敗リストをクリア" aria-label="移動失敗リストをクリア"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></span>
         <span style="margin-left:auto">
-          <label style="font-size:11px;color:var(--text3);margin-right:6px">開始Ch:</label>
-          <select id="dash-patrol-start-ch-select" style="width:80px;height:22px;font-size:11px;padding:0 4px"></select>
-          <input type="number" id="dash-patrol-start-ch" min="0" max="9999" value="0" style="width:60px;height:22px;font-size:11px;padding:0 6px;margin-left:4px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
+          <label style="font-size:var(--fs-xs);color:var(--text3);margin-right:6px">開始Ch:</label>
+          <select id="dash-patrol-start-ch-select" style="width:80px;height:22px;font-size:var(--fs-xs);padding:0 4px"></select>
+          <input type="number" id="dash-patrol-start-ch" min="0" max="9999" value="0" style="width:60px;height:22px;font-size:var(--fs-xs);padding:0 6px;margin-left:4px" title="0=前回位置から再開" oninput="syncPatrolStartCh(this.value)">
         </span>
       </div>
     </div>
@@ -159,13 +159,13 @@
         検知イベント
       </div>
       <div class="kv"><span id="dash-detect-count">0</span></div>
-      <div class="ks" id="dash-detect-meta">0/hour · --</div>
+      <div class="ks" id="dash-detect-meta">0件/時 · --</div>
     </div>
     <div class="kpi-tile ok">
       <div class="kl">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.5"/></svg>
         稼働時間
-        <button onclick="resetUptime()" title="リセット" style="margin-left:auto;background:transparent;border:none;color:var(--text3);cursor:pointer;padding:0 2px;font-size:14px;line-height:1">&#8635;</button>
+        <button onclick="resetUptime()" title="リセット" aria-label="稼働時間をリセット" style="margin-left:auto;background:transparent;border:none;color:var(--text3);cursor:pointer;padding:0 2px;font-size:var(--fs-sm);line-height:1">&#8635;</button>
       </div>
       <div class="kv"><span id="dash-uptime">00:00:00</span></div>
     </div>
@@ -181,7 +181,7 @@
       <div class="kl">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 10h4"/></svg>
         接続デバイス
-        <button onclick="scanDevices()" title="再スキャン" style="margin-left:auto;background:transparent;border:none;color:var(--text3);cursor:pointer;padding:0 2px;font-size:13px;line-height:1">&#x21BB;</button>
+        <button onclick="scanDevices()" title="再スキャン" aria-label="デバイスを再スキャン" style="margin-left:auto;background:transparent;border:none;color:var(--text3);cursor:pointer;padding:0 2px;font-size:var(--fs-sm);line-height:1">&#x21BB;</button>
       </div>
       <div class="kv"><span id="dash-kpi-dev">--</span><small id="dash-kpi-dev-sub"></small></div>
       <div class="ks" id="dash-kpi-dev-state">読み込み中</div>
@@ -229,10 +229,10 @@
           <span class="ct">レアエネミー検知履歴</span>
           <span class="cc" id="dash-gold-count">0</span>
           <div class="ca">
-            <button class="btn2 ghost sm" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')" title="別ウィンドウで開く">
+            <button class="btn2 ghost sm" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')" title="別ウィンドウで開く" aria-label="検知履歴を別ウィンドウで開く">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h5v5"/><path d="M14 2L8 8"/><path d="M13 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h4"/></svg>
             </button>
-            <button class="btn2 ghost sm" onclick="clearAllGoldHistory()" title="一括クリア">
+            <button class="btn2 ghost sm" onclick="clearAllGoldHistory()" title="一括クリア" aria-label="検知履歴を一括クリア">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4h10M6.5 4V2.5h3V4M5 4l.5 9.5h5L11 4"/></svg>
             </button>
           </div>
@@ -308,7 +308,7 @@
     <div style="display:flex;gap:6px;margin-top:8px">
       <button class="btn" onclick="document.getElementById('log-area').innerHTML=''">クリア</button>
       <button class="btn primary" onclick="testDetect()">🔔 テスト通知</button>
-      <button class="btn" onclick="testDetect('ウリボゴールド')">🔔 ウリボゴールド</button>
+      <button class="btn" onclick="testDetect('ウリボ・ゴールド')">🔔 ウリボ・ゴールド</button>
       <button class="btn" onclick="testDetect('金ナッポ')">🔔 金ナッポ</button>
       <button class="btn" onclick="testDetect('銀ナッポ')">🔔 銀ナッポ</button>
       <button class="btn" style="margin-left:auto" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉ 別ウィンドウ</button>
@@ -331,7 +331,7 @@
 		</div>
 		<div class="chat-swap-handle" id="chat-swap-handle" onclick="swapChatPanels()" title="上下を入れ替え">⇅ 上下入れ替え</div>
 		<div class="card" id="card-chat-report-col" style="display:flex;flex-direction:column;padding:14px;overflow:hidden;min-height:0">
-			<div class="card-title" style="display:flex;align-items:center;gap:8px"><span>発見報告候補</span><button id="notify-sound-toggle" class="btn" style="margin-left:auto;font-size:var(--fs-sm);padding:2px 8px" onclick="toggleNotifySound()" title="通知音ON/OFF">🔔</button><input type="range" id="notify-sound-volume" min="0" max="1" step="0.05" style="width:70px" title="通知音量" oninput="setNotifyVolume(this.value)"></div>
+			<div class="card-title" style="display:flex;align-items:center;gap:8px"><span>発見報告候補</span><button id="notify-sound-toggle" class="btn" style="margin-left:auto;font-size:var(--fs-sm);padding:2px 8px" onclick="toggleNotifySound()" title="通知音ON/OFF" aria-label="通知音ON/OFF">🔔</button><input type="range" id="notify-sound-volume" min="0" max="1" step="0.05" style="width:70px" title="通知音量" oninput="setNotifyVolume(this.value)"></div>
 			<div class="chat-report-summary" id="chat-report-summary">発見・出現・湧き・チャンネル番号を含む短文を優先して表示します。</div>
 			<div id="chat-report-area" class="chat-report-list"></div>
 		</div>
@@ -395,7 +395,7 @@
         </div>
         <div id="crash-warning" class="crash-warning">⚠ ゲームクライアントがch移動できない状態です（クラッシュの可能性）。ADBサーバーを再起動してください。</div>
         <div style="display:flex;align-items:center;gap:8px;min-height:1.2em;margin-bottom:6px">
-          <div id="ps-move-failed" style="font-size:.78em;color:#fca5a5;flex:1"></div>
+          <div id="ps-move-failed" style="font-size:.78em;color:var(--danger);flex:1"></div>
           <button id="btn-clear-move-failed" class="btn" style="font-size:.75em;padding:2px 8px;display:none" onclick="clearMoveFailedChannels()">✕ クリア</button>
         </div>
         <div class="flex-row" style="margin-bottom:8px">
@@ -434,6 +434,15 @@
 					<span style="font-size:var(--fs-xs);color:var(--text3)">Chrome拡張からのチャンネル情報受信を受け付ける</span>
 				</div>
 				</div>
+			<div class="card panel-size-1x2 panel-col-2" id="card-patrol-device-status">
+			  <div class="card-title">デバイス監視</div>
+			  <div style="overflow-x:auto">
+			    <table class="dev-stat-table">
+			      <thead><tr><th>シリアル</th><th>ラベル</th><th>ch</th><th>ロード(s)</th><th>状態</th><th>操作</th></tr></thead>
+			      <tbody id="device-status-tbody"><tr><td colspan="6" style="color:var(--text3)">--</td></tr></tbody>
+			    </table>
+			  </div>
+			</div>
 			<div class="card panel-size-1x2 panel-col-1" id="card-patrol-channels">
         <div class="card-title">巡回チャンネル <span id="ch-selected-count" style="font-weight:400;color:var(--text3);font-size:.9em"></span></div>
         <div class="flex-row" style="margin-bottom:6px">
@@ -447,17 +456,8 @@
         </div>
         <div class="ch-sel-grid" id="ch-sel-grid"></div>
       </div>
-		<div class="card panel-size-1x2 panel-col-1" id="card-patrol-device-status">
-		  <div class="card-title">デバイス監視</div>
-		  <div style="overflow-x:auto">
-		    <table class="dev-stat-table">
-		      <thead><tr><th>シリアル</th><th>ラベル</th><th>ch</th><th>ロード(s)</th><th>状態</th><th>操作</th></tr></thead>
-		      <tbody id="device-status-tbody"><tr><td colspan="6" style="color:var(--text3)">--</td></tr></tbody>
-		    </table>
-		  </div>
-		</div>
 		<div class="card panel-size-1x2 panel-col-2" id="card-patrol-gold">
-		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:var(--fs-xs)" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')">⧉</button></div>
+		<div class="card-title">🌟 レアエネミー検知履歴<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:var(--fs-xs)" onclick="clearAllGoldHistory()">✕ 一括クリア</button><button class="btn" style="padding:2px 8px;font-size:var(--fs-xs)" onclick="window.open('/spawn-log','spawn-log','width=600,height=400')" title="別ウィンドウで開く" aria-label="検知履歴を別ウィンドウで開く">⧉</button></div>
         <div class="gold-filter-bar" id="gold-filter-bar-patrol">
           <button class="btn-gf active" data-filter="all" onclick="setGoldFilter('all',this,'patrol')">すべて</button>
           <button class="btn-gf" data-filter="金ウリボ" onclick="setGoldFilter('金ウリボ',this,'patrol')">金ウリボ</button>
