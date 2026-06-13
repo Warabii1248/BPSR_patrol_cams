@@ -67,7 +67,6 @@ GUI はブラウザベースのウィンドウ（WebView2）で表示され、�
 - 検知が発生したチャンネルは巡回リストから自動削除し、一定時間クールダウン
 - 巡回方向は昇順・降順を設定可能
 - 指定台数を並列で切り替えてから `parallel_group_delay_secs` 秒待機する並列グループ制御
-- 移動失敗判定: `move_fail_threshold` （0.0-1.0、稼働台数のうち何割が完了シグナルを送れば成功とみなすか）で判定。`consecutive_move_fail_threshold` 回連続失敗でクラッシュとみなす
 - `patrol_adaptive_timeout` を有効にすると、直近 `patrol_adaptive_timeout_window` 件のロード時間から `move_timeout` / `merge_timeout` を自動調整
 - 巡回サイクル KPI（平均サイクル時間・ch/hour）を GUI に表示
 
@@ -193,15 +192,11 @@ GASの討伐タイマーページを Chrome / Edge で開いておくだけで�
 |---|---|---|
 | `patrol_channels_file` | string | 巡回チャンネルリストのパス |
 | `port_map_file` | string | PortMap ファイルのパス |
-| `patrol_serials` | []string | 巡回に使うデバイスシリアル（null で全台） |
 | `patrol_dwell_secs` | float | 各チャンネルでの滞在秒数（最低5秒） |
 | `patrol_move_timeout_secs` | float | 全台シグナル待ちの最大秒数（0で無効、デフォルト: 180） |
 | `patrol_merge_timeout_secs` | float | 1台目受信後、残り台数を待つ最大秒数（デフォルト: 15） |
 | `parallel_limit` | int | 並列ch切替の最大台数（0で全台並列） |
 | `parallel_group_delay_secs` | float | 並列グループ切替後の待機秒数 |
-| `active_device_count` | int | 期待するアクティブデバイス数（0で自動） |
-| `move_fail_threshold` | float | 移動成功判定: 稼働台数のうち何割が完了シグナルを送れば成功とみなすか（0.0-1.0、0=全台） |
-| `consecutive_move_fail_threshold` | int | 連続移動失敗でクラッシュとみなす回数（デフォルト: 3） |
 | `patrol_adaptive_timeout` | bool | 実ロード時間学習で MoveTimeout/MergeTimeout を自動調整（デフォルト: true） |
 | `patrol_adaptive_timeout_window` | int | 学習に使うサンプル数（デフォルト: 10） |
 

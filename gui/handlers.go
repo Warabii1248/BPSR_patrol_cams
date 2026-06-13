@@ -487,6 +487,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 					CrashRecoveryDelaySecs      float64           `json:"crash_recovery_delay_secs"`
 					DebugVerbose                bool              `json:"debug_verbose"`
 					ExcludeUIDs                 []uint64          `json:"exclude_uids"`
+					ShowNoDeviceDialog           bool              `json:"show_no_device_dialog"`
 				}
 				if json.Unmarshal(savedData, &appCfg) == nil {
 					newCfg := mumu.Config{
@@ -524,6 +525,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 					}
 					s.UpdatePatrollerCfg(newCfg)
 					s.SetExcludeUIDs(appCfg.ExcludeUIDs)
+					s.SetShowNoDeviceDialog(appCfg.ShowNoDeviceDialog)
 					debuglog.Verbose = appCfg.DebugVerbose
 					// マージ待ち 0 は「初回待ちを流用」の意味（mumu.Config.MergeTimeout 参照）。
 					// 生値 0s を出すと設定が壊れたと誤認されるため実効挙動を表記する

@@ -1679,6 +1679,7 @@ async function pollPatrolStatus(){
 function renderDeviceStatuses(statuses){
   const tbody=document.getElementById('device-status-tbody');if(!tbody)return;
   if(!statuses||!statuses.length){tbody.innerHTML='<tr><td colspan="6" style="color:var(--text3)">デバイスデータなし</td></tr>';return;}
+  statuses.sort(function(a,b){return a.serial<b.serial?-1:a.serial>b.serial?1:0;});
   tbody.innerHTML=statuses.map(function(d){
     var badge,state;
     if(d.recovering){badge='dev-stat-recover';state='🔄 復帰中';}
@@ -1752,7 +1753,7 @@ const CFG_FIELDS_DISCORD=[
 ];
 const CFG_FIELDS_PATROL=[
   {k:'patrol_dwell_secs',label:'滞在時間 (秒)',type:'number',desc:'ch移動完了後〜次ch移動開始までの待機秒数'},
-  {k:'patrol_move_timeout_secs',label:'初回マージ待ちタイムアウト (秒)',type:'number',desc:'1台目のマージを待つ最大秒数。0=無効 (適応型有効時は下限値として機能)'},
+  {k:'patrol_move_timeout_secs',label:'完了シグナル待ちタイムアウト (秒)',type:'number',desc:'全デバイスの完了シグナル(0x2E)を待つ最大秒数。0=無効 (適応型有効時は下限値として機能)'},
   {k:'patrol_merge_timeout_secs',label:'残りマージ待ちタイムアウト (秒)',type:'number',desc:'1台目受信後、残り台数を待つ最大秒数 (適応型有効時は下限値として機能)'},
   {k:'patrol_adaptive_timeout',label:'適応型タイムアウト',type:'bool',desc:'実ロード時間を学習してタイムアウトを自動延長。ロード中デバイスへの早期切替を防止'},
   {k:'patrol_adaptive_timeout_window',label:'適応型: 学習サンプル数',type:'number',desc:'参照する直近ロード回数（デフォルト: 10）'},

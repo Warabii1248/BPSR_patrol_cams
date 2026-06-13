@@ -157,18 +157,6 @@ type Config struct {
 	// ParallelGroupDelaySecs はグループ間の待機秒数。ParallelLimit>0のとき有効。
 	ParallelGroupDelaySecs float64 `json:"parallel_group_delay_secs"`
 
-	// PatrolSerials は巡回に使うADBシリアル一覧。空の場合は全デバイスを使用。
-	PatrolSerials []string `json:"patrol_serials"`
-
-	// ActiveDeviceCount は稼働台数。0=自動検出。固定値で判定したい場合に設定。
-	ActiveDeviceCount int `json:"active_device_count"`
-
-	// MoveFailThreshold は移動失敗判定閾値。稼働台数の何割が移動完了シグナルを送ったら失敗ではないと判断するか。0.0-1.0。0=従来通り全台。
-	MoveFailThreshold float64 `json:"move_fail_threshold"`
-
-	// ConsecutiveMoveFailThreshold は連続移動失敗スキップの閾値。クラッシュ検知用。0=無効。
-	ConsecutiveMoveFailThreshold int `json:"consecutive_move_fail_threshold"`
-
 	// PatrolAdaptiveTimeout は実ロード時間を学習して MoveTimeout/MergeTimeout を自動調整する（デフォルト: true）
 	PatrolAdaptiveTimeout bool `json:"patrol_adaptive_timeout"`
 	// PatrolAdaptiveTimeoutWindow は学習に使うサンプル数（デフォルト: 10）
@@ -257,9 +245,6 @@ func defaultConfig() *Config {
 		PatrolScreenBlackLuma:       25,
 		PatrolScreenBlackPixelRatio: 0.95,
 		PatrolScreenTimeoutSecs:     12,
-		ActiveDeviceCount:        0,
-		MoveFailThreshold:            0.0, // 0=従来通り全台
-		ConsecutiveMoveFailThreshold: 3,   // 3連続移動失敗でクラッシュ判定
 		PatrolAdaptiveTimeout:       true,
 		PatrolAdaptiveTimeoutWindow: 10,
 		CrashRecoveryDelaySecs:      30,
