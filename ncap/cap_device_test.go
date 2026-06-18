@@ -690,3 +690,87 @@ func TestNo09_SameClientIP_SeparateVotes(t *testing.T) {
 		t.Fatalf("portMap.LookupByPort: got ch=%d ok=%v, want ch=45 ok=true", ch, ok)
 	}
 }
+
+// ──── T-No75: probeMode による lineID 直接確定 ────
+
+// TestProbeMode_DirectSetLineID は probeMode=ON かつ currentChannel>0 のとき、
+// maybeSubmitPortVote が sess.lineID を currentChannel に直接確定することを確認する。
+// probeMode=OFF（通常巡回）では sess.lineID が変化せず、投票経路に入ることを確認する。
+// §2-1（plan_no75）の直接確定ロジックの単体テスト。
+func TestProbeMode_DirectSetLineID(t *testing.T) {
+	now := time.Now()
+
+	t.Run("probeMode_ON_sets_lineID_directly", func(t *testing.T) {
+		cd, _ := newCapDeviceForVoteTest(t)
+		cd.currentChannel = 42
+		cd.probeMode = true
+
+		sess := newSession("10.0.0.1:50001", "10.0.0.1", "Instance-1")
+		sess.serverIP = "203.0.113.1:20042"
+		// lineID==0（再接続直後の未確定状態）
+
+		sess.mu.Lock()
+		cd.maybeSubmitPortVote(sess, "203.0.113.1:20042", now)
+		sess.mu.Unlock()
+
+		if sess.lineID != 42 {
+			t.Errorf("probeMode=ON: sess.lineID = %d, want 42 (direct set)", sess.lineID)
+		}
+
+		// probeMode=ON では投票経路に入らないので portVotes は空のまま
+		time.Sleep(20 * time.Millisecond)
+		cd.portVotesMu.Lock()
+		votes := cd.portVotes["20042"]
+		cd.portVotesMu.Unlock()
+		if len(votes) != 0 {
+			t.Errorf("probeMode=ON: portVotes should be empty, got %d entries", len(votes))
+		}
+	})
+
+	t.Run("probeMode_OFF_does_not_set_lineID", func(t *testing.T) {
+		cd, _ := newCapDeviceForVoteTest(t)
+		cd.currentChannel = 42
+		cd.probeMode = false // 通常巡回
+
+		sess := newSession("10.0.0.1:50002", "10.0.0.1", "Instance-2")
+		sess.serverIP = "203.0.113.1:20042"
+		// lineID==0
+
+		sess.mu.Lock()
+		cd.maybeSubmitPortVote(sess, "203.0.113.1:20042", now)
+		sess.mu.Unlock()
+
+		// probeMode=OFF では lineID を直接セットしない（投票経路のみ）
+		if sess.lineID != 0 {
+			t.Errorf("probeMode=OFF: sess.lineID = %d, want 0 (vote path only, no direct set)", sess.lineID)
+		}
+
+		// 投票は go 経由で非同期に記録される
+		time.Sleep(50 * time.Millisecond)
+		cd.portVotesMu.Lock()
+		votes := cd.portVotes["20042"]
+		cd.portVotesMu.Unlock()
+		if len(votes) != 1 {
+			t.Errorf("probeMode=OFF: portVotes count = %d, want 1 (vote submitted)", len(votes))
+		}
+	})
+
+	t.Run("probeMode_ON_lineID_already_set_is_noop", func(t *testing.T) {
+		cd, _ := newCapDeviceForVoteTest(t)
+		cd.currentChannel = 42
+		cd.probeMode = true
+
+		sess := newSession("10.0.0.1:50003", "10.0.0.1", "Instance-3")
+		sess.serverIP = "203.0.113.1:20042"
+		sess.lineID = 99 // 既に lineID 確定済み
+
+		sess.mu.Lock()
+		cd.maybeSubmitPortVote(sess, "203.0.113.1:20042", now)
+		sess.mu.Unlock()
+
+		// lineID!=0 なので早期 return → 値は変化しない
+		if sess.lineID != 99 {
+			t.Errorf("already-set lineID: got %d, want 99 (unchanged)", sess.lineID)
+		}
+	})
+}

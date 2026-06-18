@@ -53,6 +53,7 @@ type Server struct {
 	testDetectFn       func(string)
 	saveChannelsFn     func([]uint32) error
 	channelNotifyFn    func(uint32) // Patrollerのチャンネル切替時コールバック
+	probeModeNotifyFn  func(bool)   // Identify(runStaggerProbe) 開始/終了時コールバック
 	getConfigFn        func() ([]byte, error)
 	saveConfigFn       func([]byte) error
 	loadWindowStateFn  func() (*appconfig.WindowState, error)
@@ -187,6 +188,15 @@ func NewWithOptions(port int, mumuCfg mumu.Config, patrolChannels []uint32, patr
 			s.mu.RUnlock()
 			if fn != nil {
 				fn(ch)
+			}
+		})
+		// Identify(runStaggerProbe) の probeMode 切替を probeModeNotifyFn に転送する
+		s.patroller.SetOnProbeMode(func(on bool) {
+			s.mu.RLock()
+			fn := s.probeModeNotifyFn
+			s.mu.RUnlock()
+			if fn != nil {
+				fn(on)
 			}
 		})
 	} else {
@@ -359,6 +369,12 @@ func (s *Server) UpdateChannelsFromGAS(chs []uint32) {
 // CapDevice に現在チャンネルを通知するために使用する。
 func (s *Server) SetChannelNotifyFn(fn func(uint32)) {
 	s.channelNotifyFn = fn
+}
+
+// SetProbeModeNotifyFn は Identify(runStaggerProbe) の開始・終了時に呼ばれるコールバックを設定する。
+// CapDevice の probeMode 切替（SetProbeMode）に使用する。true=開始, false=終了。
+func (s *Server) SetProbeModeNotifyFn(fn func(bool)) {
+	s.probeModeNotifyFn = fn
 }
 
 // SetConfigFns は config.json の読み書きコールバックを設定する。

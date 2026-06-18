@@ -323,6 +323,11 @@ func main() {
 		capDevice.SetCurrentChannel(ch)
 	})
 
+	// Identify(runStaggerProbe) の probeMode 切替を capDevice へ通知する（No.75）
+	guiServer.SetProbeModeNotifyFn(func(on bool) {
+		capDevice.SetProbeMode(on)
+	})
+
 	// 0x15/0x16 の LineID 観測を Patroller に通知し per-device CH 追跡を実現する
 	capDevice.SetLineIDObserver(func(uid uint64, lineID uint32, changedAt time.Time) {
 		guiServer.NotifyLineIDChange(uid, lineID, changedAt)

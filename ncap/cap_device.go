@@ -185,6 +185,11 @@ type CapDevice struct {
 	currentChannel   uint32
 	currentChannelMu sync.RWMutex
 
+	// probeMode は Identify(runStaggerProbe) 中のみ true になるフラグ。
+	// true の間は maybeSubmitPortVote が quorum 投票を経ずに sess.lineID を直接確定する。
+	// currentChannelMu で保護する（currentChannel と同じロック）。
+	probeMode bool
+
 	// サーバーポート→ch番号のルックアップテーブル（巡回訪問時に自動更新）
 	portMap *PortMap
 
@@ -372,7 +377,17 @@ func (cd *CapDevice) PortMapEntries() []PortMapEntryInfo {
 func (cd *CapDevice) SetCurrentChannel(ch uint32) {
 	cd.currentChannelMu.Lock()
 	cd.currentChannel = ch
+	probe := cd.probeMode
 	cd.currentChannelMu.Unlock()
+
+	// probeMode（Identify）中は既存セッションへの一括 lineID 設定を行わない（No.75）。
+	// Identify は台ごとに別chへ staggered 送信するため、ここで全 lineID==0 セッションを
+	// 現 probeCh に一括設定すると、遅延再接続した別chの台を誤った ch に確定し誤バインドを
+	// 招く。probeMode 中の lineID 確定は、再接続した当該セッション自身を maybeSubmitPortVote が
+	// ground-truth で直接確定する経路のみに限定する。
+	if probe {
+		return
+	}
 
 	// lineID==0（未割当）のセッションを対象に、lineID の即時設定と portMap 投票を行う。
 	// lineID!=0 のセッションは前 ch のセッションのため対象外。
@@ -395,21 +410,44 @@ func (cd *CapDevice) SetCurrentChannel(ch uint32) {
 	}
 }
 
+// SetProbeMode は Identify(runStaggerProbe) 中のみ true にする。
+// true の間は maybeSubmitPortVote が quorum 投票を経ずに sess.lineID を
+// currentChannel(=probeCh) に直接確定する（ground-truth lineID 解決）。
+// Identify 終了時に false に戻す。currentChannelMu で保護する。
+func (cd *CapDevice) SetProbeMode(on bool) {
+	cd.currentChannelMu.Lock()
+	cd.probeMode = on
+	cd.currentChannelMu.Unlock()
+}
+
 // maybeSubmitPortVote は lineID 未確定セッションの portMap クォーラム投票を非同期で行う。
 // 投票条件: sess.lineID == 0 かつ currentChannel > 0（巡回中）。
 // handleClientToServer（既存/新規）と handleServerToClientFast の3箇所から呼ばれる。
 // sess.mu は呼び出し元で保持している前提。
+//
+// probeMode=true（Identify 中）の場合は quorum 投票を省略し、currentChannel を
+// sess.lineID に直接確定する（ground-truth: 1台ずつ既知chへ送るため一意性が保証される）。
+// probeMode=false（通常巡回）の場合は従来どおり非同期投票のみ（挙動変化ゼロ）。
 func (cd *CapDevice) maybeSubmitPortVote(sess *session, serverAddr string, now time.Time) {
 	if sess.lineID != 0 {
 		return
 	}
 	cd.currentChannelMu.RLock()
 	patrolCh := cd.currentChannel
+	probe := cd.probeMode
 	cd.currentChannelMu.RUnlock()
-	if patrolCh > 0 {
-		label := sess.label
-		go cd.submitPortVote(patrolCh, serverAddr, label, now)
+	if patrolCh == 0 {
+		return
 	}
+	if probe {
+		// ground truth: Identify は1台ずつ既知chへ送るので、再接続セッションの
+		// lineID を currentChannel(=probeCh) に直接確定する（quorum 不要）。
+		// 呼び出し元3箇所すべて sess.mu 保持下（No.72 packet-analyst 確認済）。
+		sess.lineID = patrolCh
+		return
+	}
+	label := sess.label
+	go cd.submitPortVote(patrolCh, serverAddr, label, now)
 }
 
 // submitPortVote は (ch, port) への投票を記録し、クォーラム達成時に portMap を更新する。

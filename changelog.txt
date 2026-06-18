@@ -1,4 +1,44 @@
 ﻿====--------------------------------------------------------------------------------
+[No.75] 2026/06/19 07:11 — デバイス認識(Identify)のバインドを SceneData 無し下で成立させる（ground-truth lineID 解決）
+
+【背景 / 原因】
+  現ゲーム版は 0x15 に SceneData を含まず、lineID(ch) は portMap のみが情報源（No.23）。
+  デバイス認識(runStaggerProbe)は各台を別 ch へ staggered 送信し「probe.targetCh == 観測lineID」
+  の一意照合で serial↔uid を bind するが、probe 先 ch のポートが portMap に無いため lineID が
+  解決せず onLineIDObserved が発火せず、実機で 0/8 バインドになっていた。Identify は currentChannel
+  を立てず、1ch=1台で portMap クォーラム(2台)も組めないため自己構築もできなかった。
+  一方 binding に必要なのは uid のみで、uid は 0x15 charId から SceneData 無しでも観測できている。
+  欠けているのは lineID（どの台かの一意照合キー）だけであり、Identify は ground truth
+  （serial S を ch C へ送った）を持つ。
+
+【変更内容】
+  ncap/cap_device.go:
+    - CapDevice に probeMode フラグ（currentChannelMu で保護）と SetProbeMode(on) を追加
+    - maybeSubmitPortVote: probeMode 中は quorum 投票せず sess.lineID=currentChannel を直接確定
+      （ground-truth。1台ずつ既知 ch へ送る Identify でのみ一意性が保証される）
+    - SetCurrentChannel: probeMode 中は既存セッションへの一括 lineID 設定をスキップ
+      （staggered Identify で別 ch の遅延再接続台を誤設定→誤バインドするのを防ぐ）
+  mumu/mumu.go:
+    - Patroller に onProbeMode + SetOnProbeMode を追加
+    - runStaggerProbe: probe 開始時に probeMode ON（defer で確実に OFF）、各 probe の
+      RecordPatrolMove 直後・SwitchGroup 前に onChannelSwitch(probeCh) を同期呼び（No.74 同原則）
+  gui/gui.go, main.go:
+    - 既存 onChannelSwitch と同一パターンで probeMode 切替を CapDevice.SetProbeMode へ配線
+
+【効果】
+  - SceneData 無し下でも Identify が ground-truth で lineID を確定し、既存の一意 probe 照合
+    binding（無変更）が成立する。0/8 → 全台バインドを期待
+  - native は MatchLineChange の excludeUIDs で従来どおり除外（誤バインドしない）
+
+【影響範囲】
+  - ncap/cap_device.go, ncap/cap_device_test.go, mumu/mumu.go, gui/gui.go, main.go,
+    docs/plan_no75_identify_bind.md（仕様書）
+  - probeMode は Identify 中のみ ON → 通常巡回の quorum 投票経路は完全無変更
+    （packet-analyst / patrol-flow-reviewer 両 SAFE・run_all 全10シナリオ PASS）
+  - binding 本体・0x2E dedup・completion・mergeSessionIfDuplicate は無変更
+  - 後方互換性: config スキーマ変更なし
+
+====--------------------------------------------------------------------------------
 [No.74] 2026/06/19 00:10 — 巡回中 portMap 投票の off-by-one 修正（currentChannel 通知を SwitchGroup 前へ）
 
 【背景 / 原因】

@@ -900,6 +900,7 @@ type Patroller struct {
 	lastChannel      uint32             // 最後に巡回したチャンネル（再開位置の計算に使用）
 	moveSignal       chan moveSignalMsg // [0x2E]パケット受信シグナル（UID付き）
 	onChannelSwitch  func(uint32)       // チャンネル切替完了時コールバック
+	onProbeMode      func(bool)         // Identify(runStaggerProbe) 開始/終了時コールバック
 	knownInstances   map[string]bool    // 一度でも応答したUID
 	missedCounts     map[string]int     // UID別連続未応答カウント
 	crashedInstances map[string]bool    // クラッシュ判定済みUID（3回連続未応答）
@@ -1179,6 +1180,14 @@ func (p *Patroller) SetDeviceAssignments(assignments []GroupAssignment) {
 func (p *Patroller) SetOnChannelSwitch(fn func(uint32)) {
 	p.mu.Lock()
 	p.onChannelSwitch = fn
+	p.mu.Unlock()
+}
+
+// SetOnProbeMode は Identify(runStaggerProbe) の開始・終了時に呼ばれるコールバックを設定する。
+// true=開始, false=終了。CapDevice の probeMode 切替（SetProbeMode）に使用する。
+func (p *Patroller) SetOnProbeMode(fn func(bool)) {
+	p.mu.Lock()
+	p.onProbeMode = fn
 	p.mu.Unlock()
 }
 
@@ -1556,6 +1565,16 @@ func (p *Patroller) runStaggerProbe(ctx context.Context, serials []string, chann
 	n := len(unbound)
 	log.Printf("[Patroller][Probe] %d台が未バインド - Stagger Probe 開始", n)
 
+	// probeMode を ON にする（CapDevice が maybeSubmitPortVote で lineID を直接確定できるようにする）。
+	// defer で Identify 終了時（正常・panic 両方）に OFF へ戻す。
+	p.mu.RLock()
+	pm := p.onProbeMode
+	p.mu.RUnlock()
+	if pm != nil {
+		pm(true)
+		defer pm(false)
+	}
+
 	// 各未バインド serial に異なる CH を割り当てる（CH プールを均等分割）
 	step := len(channels) / n
 	if step < 1 {
@@ -1569,9 +1588,18 @@ func (p *Patroller) runStaggerProbe(ctx context.Context, serials []string, chann
 		serialProbeCh[ser] = probeCh
 		// ADB switch_channel 完了（~8s）より先にサーバーが新 TCP セッションを開いて
 		// 0x15 (uid+lineID) を送信してくる。SwitchGroup 後に RecordPatrolMove を呼ぶと
-		// pendingProbes が空のまま observation が来てバインド失敗するため、先に登録する。
+		// pendingProbes が空のまま observation が来てバインド失敗するため、先に登録する（§4-2.1）。
 		p.RecordPatrolMove(ser, probeCh, time.Now())
 		log.Printf("[Patroller][Probe] serial=%s → Ch%d", ser, probeCh)
+		// currentChannel=probeCh を CapDevice に通知する（No.74 と同原則: SwitchGroup より前）。
+		// probeMode=ON 中は maybeSubmitPortVote がこの currentChannel を ground-truth として
+		// 再接続セッションの sess.lineID に直接確定する。
+		p.mu.RLock()
+		cs := p.onChannelSwitch
+		p.mu.RUnlock()
+		if cs != nil {
+			cs(probeCh)
+		}
 		SwitchGroup(ctx, []string{ser}, 0, 1, probeCh, cfg, switchRes, &switchMu)
 	}
 
