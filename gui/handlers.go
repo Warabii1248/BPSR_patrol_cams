@@ -901,18 +901,20 @@ func (s *Server) handleChatReportNotify(w http.ResponseWriter, r *http.Request) 
 	writeOK(w)
 }
 
-// handlePatrolRemoveCh は検知不要プレイヤーの発言から ch を巡回リストに削除するエンドポイント。
-// Discord 通知・検知履歴追加は行わず、patrolChannels 削除と 30 分クールダウンのみ実施する。
+// handlePatrolRemoveCh は検知不要プレイヤーの発言から ch を巡回リストから削除するエンドポイント。
+// Discord 通知は行わないが、検知履歴（DETECTION:SILENT）への追加と patrolChannels 削除・30 分クールダウンを実施する。
 func (s *Server) handlePatrolRemoveCh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	var req struct {
-		Channel uint32 `json:"channel"`
-		Reason  string `json:"reason"`
-		Sender  string `json:"sender"`
-		Message string `json:"message"`
+		Channel  uint32 `json:"channel"`
+		Reason   string `json:"reason"`
+		Sender   string `json:"sender"`
+		Message  string `json:"message"`
+		Location string `json:"location"`
+		Monster  string `json:"monster"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Channel == 0 {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -952,6 +954,17 @@ func (s *Server) handlePatrolRemoveCh(w http.ResponseWriter, r *http.Request) {
 		s.patrolChannels = newChs
 	}
 	s.cooldownChs[req.Channel] = now.Add(30 * time.Minute)
+	det := notifier.Detection{
+		Source:      notifier.SourceChat,
+		ChatLineID:  req.Channel,
+		LineID:      req.Channel,
+		Location:    req.Location,
+		MonsterName: req.Monster,
+		Message:     req.Message,
+		PlayerName:  req.Sender,
+		Time:        now,
+	}
+	clients, line := s.appendDetectionHistoryLocked(det, true)
 	saveChannelsFn := s.saveChannelsFn
 	s.mu.Unlock()
 
@@ -964,6 +977,7 @@ func (s *Server) handlePatrolRemoveCh(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	broadcastSSE(clients, line)
 	writeOK(w)
 }
 

@@ -1274,7 +1274,7 @@ function appendChatToPanel(ev){
 		fetch('/api/chat-report/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:facts.channel||0,message:ev.message,location:facts.location,monster:facts.monster||'',sender:ev.sender||'',score:getChatCandidateScore(ev)})}).catch(()=>{});
   }else if(isChatExcludedPatrolHit(ev)){
     const facts=extractChatCandidateFacts(ev);
-    fetch('/api/patrol/remove-ch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:facts.channel,reason:'excluded_sender',sender:ev.sender||'',message:ev.message||''})}).catch(()=>{});
+    fetch('/api/patrol/remove-ch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:facts.channel,reason:'excluded_sender',sender:ev.sender||'',message:ev.message||'',location:facts.location||'',monster:facts.monster||''})}).catch(()=>{});
   }
 	renderChatPanel();
 }
