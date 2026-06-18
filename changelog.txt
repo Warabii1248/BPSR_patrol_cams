@@ -1,4 +1,30 @@
 ﻿====--------------------------------------------------------------------------------
+[No.71] 2026/06/18 — 検知不要プレイヤー発言でも対象chを検知履歴に記録
+
+【背景 / 原因】
+  検知不要プレイヤー（chat_report_excluded_senders）の発言で対象chが検出された場合、
+  巡回リストからの削除とクールダウンは行われていたが、検知履歴（goldBoarHistory）には
+  記録されず、chグリッドの★検知済表示にも反映されなかった。
+
+【変更内容】
+  gui/handlers.go:
+    - handlePatrolRemoveCh で appendDetectionHistoryLocked(det, true) を呼び
+      DETECTION:SILENT として検知履歴に記録するようにした
+    - broadcastSSE でリアルタイム配信を追加
+    - リクエスト構造体に Location / Monster フィールドを追加
+  gui/assets/app.js:
+    - /api/patrol/remove-ch の POST ボディに location / monster を追加
+
+【効果】
+  - 検知不要プレイヤーの発言でも対象chが検知履歴パネルに表示される
+  - chグリッドに★検知済が反映される
+  - Discord 通知は従来通り行わない
+
+【影響範囲】
+  - gui/handlers.go, gui/assets/app.js
+  - 後方互換性: 影響なし（エンドポイントへのフィールド追加のみ、欠損時は空文字）
+
+====--------------------------------------------------------------------------------
 [No.70] 2026/06/13 09:39 — 全面レビュー指摘修正（dead config 4キー削除・show_no_device_dialog 即時反映・GUI 説明文の実態整合 3 件）
 
 【背景 / 原因】
