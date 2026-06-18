@@ -305,6 +305,18 @@ func main() {
 	// デバイスIP → インスタンスラベル解決コールバックをPatrollerに設定する
 	mumuCfg.GetLabelByIP = capDevice.GetLabelByClientIP
 	guiServer.SetGetLabelByIPFn(capDevice.GetLabelByClientIP)
+	// 利用可能なキャプチャ NIC を GUI から列挙・選択できるようにする（保存先は config.json network）
+	guiServer.SetListNICsFn(func() ([]gui.NICInfo, error) {
+		infos, err := ncap.ListInterfaces()
+		if err != nil {
+			return nil, err
+		}
+		out := make([]gui.NICInfo, len(infos))
+		for i, in := range infos {
+			out[i] = gui.NICInfo{Name: in.Name, Desc: in.Desc, Addrs: in.Addrs}
+		}
+		return out, nil
+	})
 
 	// Patroller がチャンネル切替時に capDevice へ現在チャンネルを通知する
 	guiServer.SetChannelNotifyFn(func(ch uint32) {

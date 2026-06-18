@@ -556,6 +556,21 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+// handleNICs は利用可能なキャプチャ NIC 一覧を返す（GET）。
+// GUI の設定ページでキャプチャ対象アダプタを選択するために使う。
+func (s *Server) handleNICs(w http.ResponseWriter, r *http.Request) {
+	if s.listNICsFn == nil {
+		http.Error(w, "nic listing not available", http.StatusServiceUnavailable)
+		return
+	}
+	nics, err := s.listNICsFn()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]interface{}{"nics": nics})
+}
+
 // handlePatrolStart は巡回を開始する
 func (s *Server) handlePatrolStart(w http.ResponseWriter, r *http.Request) {
 	if !s.patrolEnabled {

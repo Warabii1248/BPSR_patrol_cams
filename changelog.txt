@@ -1,4 +1,38 @@
 ﻿====--------------------------------------------------------------------------------
+[No.73] 2026/06/18 21:59 — GUI からキャプチャ NIC を検出・選択・保存できるように
+
+【背景 / 原因】
+  キャプチャ NIC は config.json の network キー（"auto" / アダプタ説明文）でのみ指定可能で、
+  GUI からは変更できなかった。auto は起動時 3 秒サンプリングで最アクティブ NIC を選ぶが、
+  ゲーム側が静かな瞬間にサンプリングすると ADB 等の loopback アダプタを誤選択し、
+  ゲーム通信（192.168.0.x↔ゲームサーバ）を 1 つも捕捉できない事故が起きていた。
+  GUI から実アダプタを明示選択・保存できれば確実に回避できる。
+
+【変更内容】
+  ncap/cap_helper.go:
+    - ListInterfaces() を追加。全 NIC を 名前 / 説明 / IPアドレス付きで即時列挙
+      （サンプリングなし）。Desc は openByDescription のマッチキーと同じ
+  gui/gui.go, gui/handlers.go:
+    - NICInfo 型・listNICsFn フィールド・SetListNICsFn セッターを追加
+    - GET /api/nics エンドポイントを新設（gui は pcap 非依存のまま依存注入で実現）
+  main.go:
+    - SetListNICsFn を配線（ncap.ListInterfaces → gui.NICInfo へ変換）
+  gui/assets/app.js:
+    - 設定「その他」に「キャプチャNIC」ドロップダウン（nic-select 型）と「再検出」ボタンを追加
+    - 各 NIC を「説明 [IPアドレス]」で表示。auto（自動選択）も選択可
+    - 現在値がリストに無い場合も選択肢として保持し auto への意図しない化けを防止
+    - network は既存の全量保存フロー（{...cfgData} マージ→POST）で config.json に永続化
+
+【効果】
+  - GUI からキャプチャ対象アダプタを一覧から選んで保存できる（再起動で反映）
+  - loopback 誤選択時に GUI でゲーム通信が乗るアダプタへ即座に切り替えられる
+
+【影響範囲】
+  - ncap/cap_helper.go, gui/gui.go, gui/handlers.go, main.go, gui/assets/app.js
+  - 後方互換性: network キーは従来から存在し schema 変更なし。空/"auto" は従来どおり自動選択
+  - キャプチャは起動時に NIC を開くため変更は再起動で反映（実行中ホットスワップは対象外）
+
+====--------------------------------------------------------------------------------
 [No.72] 2026/06/18 21:29 — 巡回ロード完了シグナル欠落修正（fast-path 再接続の portMap 投票欠落）
 
 【背景 / 原因】

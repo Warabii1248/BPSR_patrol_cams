@@ -1788,6 +1788,7 @@ const CFG_FIELDS_ADB=[
   {k:'mumu_pre_keycode',label:'プリキーコード',type:'text',desc:'チャンネル入力欄を開くキーコード'},
 ];
 const CFG_FIELDS_MISC=[
+  {k:'network',label:'キャプチャNIC',type:'nic-select',desc:'パケットキャプチャするネットワークアダプタ。auto=起動時に最もアクティブなNICを自動選択（loopbackを誤選択する場合があるため、ゲーム通信が乗るアダプタの明示指定を推奨）。変更は再起動で反映'},
   // gas_enable は巡回ページ(card-patrol-control)に移設。cfg-gas_enable 要素は静的 HTML で定義済み
   {k:'gas_target_enemy',label:'GAS 対象エネミー',type:'select',options:['金ウリボ','金ナッポ'],desc:'Chrome拡張から受信するエネミー種別'},
   {k:'debug_verbose',label:'詳細デバッグログ',type:'bool',desc:'true にすると [DBG][...] プレフィックスの詳細ログを出力。不具合調査用。本番運用では false を推奨'},
@@ -1795,6 +1796,7 @@ const CFG_FIELDS_MISC=[
 ];
 const CFG_FIELDS=[...CFG_FIELDS_DISCORD,...CFG_FIELDS_PATROL,...CFG_FIELDS_GAME,...CFG_FIELDS_ADB,...CFG_FIELDS_MISC];
 let cfgData={};
+let nicList=[]; // /api/nics で取得したキャプチャNIC一覧（nic-select 描画用）
 function renderConfigFields(containerId, fields){
 	const root=document.getElementById(containerId);if(!root)return;
 	root.innerHTML=fields.map(function(f){
@@ -1816,6 +1818,23 @@ function renderConfigFields(containerId, fields){
 		if(f.type==='select'){
 			const opts=(f.options||[]).map(o=>'<option value="'+escHtml(o)+'"'+(val===o?' selected':'')+'>'+escHtml(o)+'</option>').join('');
 			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label><select id="cfg-'+f.k+'">'+opts+'</select>'+noteHtml+'</div>';
+		}
+		if(f.type==='nic-select'){
+			const cur=String(val||'auto'); // 空文字 = auto
+			let found=(cur==='auto'||cur==='');
+			let opts='<option value="auto"'+(cur==='auto'||cur===''?' selected':'')+'>auto（自動選択）</option>';
+			(nicList||[]).forEach(function(n){
+				const v=n.desc||n.name; // openByDescription マッチキー（Desc優先・空ならName）
+				const addr=(n.addrs&&n.addrs.length)?(' ['+n.addrs.join(', ')+']'):'';
+				if(v===cur)found=true;
+				opts+='<option value="'+escHtml(v)+'"'+(v===cur?' selected':'')+'>'+escHtml((n.desc||n.name)+addr)+'</option>';
+			});
+			// 現在値がリストに無い（未検出/別環境）場合も選択肢として残し、誤って auto に化けないようにする
+			if(!found&&cur)opts+='<option value="'+escHtml(cur)+'" selected>'+escHtml(cur)+'（現在値・未検出）</option>';
+			return '<div class="cfg-field"><label>'+escHtml(f.label)+'</label>'
+				+'<select id="cfg-'+f.k+'">'+opts+'</select>'
+				+'<button type="button" class="btn" style="margin-left:8px" onclick="detectNICs()">再検出</button>'
+				+noteHtml+'</div>';
 		}
 		if(f.type==='region-picker-btn'){
 			return '<div class="cfg-field"><button type="button" class="btn btn-region-picker" onclick="openScreenshotPicker()">監視矩形をドラッグで選択...</button></div>';
@@ -2099,8 +2118,18 @@ async function addChatMonsterAliasRule(){
 	await addChatMonsterAliasRuleValue(target.value,input.value);
 	input.value='';
 }
+async function detectNICs(){
+	try{
+		const d=await fetch('/api/nics').then(r=>r.json());
+		nicList=d.nics||[];
+	}catch(e){ nicList=[]; }
+	// network フィールドを含む MISC グループを再描画して候補を反映
+	renderConfigFields('cfg-form-misc',CFG_FIELDS_MISC);
+}
 async function loadConfig(){
   cfgData=await fetch('/api/config').then(r=>r.json());
+	// NIC 候補を先に取得してから設定フォームを描画（nic-select 用）
+	try{ nicList=(await fetch('/api/nics').then(r=>r.json())).nics||[]; }catch(e){ nicList=[]; }
 	renderConfigFields('cfg-chat-form',CHAT_FILTER_FIELDS);
 	renderChatRuleManagers();
 	renderConfigFields('cfg-form-discord',CFG_FIELDS_DISCORD);

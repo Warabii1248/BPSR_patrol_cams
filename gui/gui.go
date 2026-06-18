@@ -60,6 +60,7 @@ type Server struct {
 	getPortMapFn       func() []PortMapEntry // ポートマップ全件取得
 	mapChFn            func(ch uint32)       // 現在セッションを指定chにマッピング
 	mapAllFn           func() int            // 全セッションをLineIDでマッピング
+	listNICsFn         func() ([]NICInfo, error) // 利用可能なキャプチャNIC一覧
 
 	mu              sync.RWMutex
 	logLines        []string             // 検知ログ（最大200件）
@@ -364,6 +365,19 @@ func (s *Server) SetChannelNotifyFn(fn func(uint32)) {
 func (s *Server) SetConfigFns(getFn func() ([]byte, error), saveFn func([]byte) error) {
 	s.getConfigFn = getFn
 	s.saveConfigFn = saveFn
+}
+
+// NICInfo は GUI に返すキャプチャ NIC 情報。
+// Desc は config.json の network キーに保存する値（main.go の openByDescription マッチキー）。
+type NICInfo struct {
+	Name  string   `json:"name"`
+	Desc  string   `json:"desc"`
+	Addrs []string `json:"addrs"`
+}
+
+// SetListNICsFn は利用可能なキャプチャ NIC を列挙するコールバックを設定する。
+func (s *Server) SetListNICsFn(fn func() ([]NICInfo, error)) {
+	s.listNICsFn = fn
 }
 
 // SetWindowStateFns はウィンドウ位置・サイズの読み書きコールバックを設定する。
@@ -785,6 +799,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/patrol/channels/gas", s.handlePatrolChannelsGAS)
 	mux.HandleFunc("/api/test-detect", s.handleTestDetect)
 	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("/api/nics", s.handleNICs)
 	mux.HandleFunc("/api/gold-history", s.handleGoldHistory)
 	mux.HandleFunc("/api/gold-history/delete", s.handleDeleteGoldHistory)
 	mux.HandleFunc("/api/gold-history/clear", s.handleClearGoldHistory)

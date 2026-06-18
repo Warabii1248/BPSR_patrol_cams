@@ -16,6 +16,33 @@ type InterfaceStats struct {
 	ByteCount   int64  `json:"byte_count"`
 }
 
+// InterfaceInfo は GUI 向けの NIC 情報（説明・名前・IPアドレス）。
+type InterfaceInfo struct {
+	Name  string   `json:"name"`
+	Desc  string   `json:"desc"`
+	Addrs []string `json:"addrs"`
+}
+
+// ListInterfaces は利用可能な全 NIC を列挙する（サンプリングなし・即時）。
+// Desc は main.go の openByDescription のマッチキーと同じ（空のときは Name にフォールバック）。
+func ListInterfaces() ([]InterfaceInfo, error) {
+	devices, err := pcap.FindAllDevs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]InterfaceInfo, 0, len(devices))
+	for _, d := range devices {
+		info := InterfaceInfo{Name: d.Name, Desc: d.Description}
+		for _, a := range d.Addresses {
+			if a.IP != nil {
+				info.Addrs = append(info.Addrs, a.IP.String())
+			}
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
 // GetActiveNetworkCards 現在使用可能なネットワークカードを取得する
 func GetActiveNetworkCards(devices []pcap.Interface, autoCheckTime int) *InterfaceStats {
 	if len(devices) == 0 {
