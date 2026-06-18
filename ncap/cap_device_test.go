@@ -2,8 +2,14 @@ package ncap
 
 import (
 	"net"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/balrogsxt/StarResonanceAPI/pb"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestIsPlayerUUID は UUID 判定の不変条件を担保する。
@@ -257,5 +263,430 @@ func TestReleaseInstanceLabel_DoesNotReturnReservedToFreeList(t *testing.T) {
 				t.Errorf("reserved Instance-3 was returned to free-list: %v", cd.freeInstanceNums)
 			}
 		}
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────
+// No.72 Phase 1 テスト群
+// ──────────────────────────────────────────────────────────────────
+
+// newCapDeviceForVoteTest は portMap 付きの CapDevice をテスト用に生成する。
+// コールバックスパイ付き。一時ファイルに空の portMap を作成する。
+func newCapDeviceForVoteTest(t *testing.T) (*CapDevice, *callbackSpy) {
+	t.Helper()
+	cd := newCapDeviceForTest()
+
+	// 空の portMap ファイルを作成
+	tmpDir := t.TempDir()
+	pmPath := filepath.Join(tmpDir, "port_ch_map.json")
+	os.WriteFile(pmPath, []byte("{}"), 0644)
+	cd.portMap = LoadPortMap(pmPath)
+
+	spy := &callbackSpy{}
+	cd.onLineIDObserved = spy.onLineIDObserved
+	cd.onPostLoadReady = spy.onPostLoadReady
+	return cd, spy
+}
+
+// callbackSpy は onLineIDObserved / onPostLoadReady の呼出を記録するスパイ。
+type callbackSpy struct {
+	mu              sync.Mutex
+	lineIDCalls     []lineIDCall
+	postLoadCalls   []postLoadCall
+}
+
+type lineIDCall struct {
+	uid    uint64
+	lineID uint32
+	t      time.Time
+}
+
+type postLoadCall struct {
+	uid    uint64
+	lineID uint32
+	t      time.Time
+}
+
+func (s *callbackSpy) onLineIDObserved(uid uint64, lineID uint32, t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lineIDCalls = append(s.lineIDCalls, lineIDCall{uid, lineID, t})
+}
+
+func (s *callbackSpy) onPostLoadReady(uid uint64, lineID uint32, t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.postLoadCalls = append(s.postLoadCalls, postLoadCall{uid, lineID, t})
+}
+
+func (s *callbackSpy) lineIDCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.lineIDCalls)
+}
+
+func (s *callbackSpy) postLoadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.postLoadCalls)
+}
+
+// marshalSyncContainerData は SyncContainerData ペイロードを構築する。
+// charId > 0 で charId を設定。sd != nil で SceneData を設定。
+func marshalSyncContainerData(t *testing.T, charId int64, sd *pb.SceneData) []byte {
+	t.Helper()
+	cs := &pb.CharSerialize{}
+	if charId > 0 {
+		cs.CharId = charId
+	}
+	if sd != nil {
+		cs.SceneData = sd
+	}
+	msg := &pb.SyncContainerData{VData: cs}
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		t.Fatalf("proto.Marshal(SyncContainerData) failed: %v", err)
+	}
+	return data
+}
+
+// marshalSyncToMeDeltaInfo は SyncToMeDeltaInfo ペイロードを構築する。
+// uuid > 0 で UUID を設定。
+func marshalSyncToMeDeltaInfo(t *testing.T, uuid int64) []byte {
+	t.Helper()
+	delta := &pb.AoiSyncToMeDelta{}
+	if uuid > 0 {
+		delta.Uuid = &uuid
+	}
+	msg := &pb.SyncToMeDeltaInfo{
+		DeltaInfo: delta,
+	}
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		t.Fatalf("proto.Marshal(SyncToMeDeltaInfo) failed: %v", err)
+	}
+	return data
+}
+
+// ──── T-vote: maybeSubmitPortVote + portMap quorum ────
+
+// TestVote_TwoLabelsReachQuorum は2台から同一(ch, port)に投票すると
+// portMap が更新され、tryPortMapLineID で lineID が解決されることを確認する。
+func TestVote_TwoLabelsReachQuorum(t *testing.T) {
+	cd, _ := newCapDeviceForVoteTest(t)
+	now := time.Now()
+
+	// 2台分のセッションを用意（lineID=0、同一 serverIP）
+	sess1 := newSession("10.0.0.1:50001", "10.0.0.1", "Instance-1")
+	sess1.serverIP = "203.0.113.1:20045"
+	sess1.serverIPSetAt = now
+
+	sess2 := newSession("10.0.0.1:50002", "10.0.0.1", "Instance-2")
+	sess2.serverIP = "203.0.113.1:20045"
+	sess2.serverIPSetAt = now
+
+	cd.currentChannel = 45
+
+	// 各台から投票（maybeSubmitPortVote は go で非同期だが、submitPortVote を直接呼んで確定的にテスト）
+	cd.submitPortVote(45, "203.0.113.1:20045", "Instance-1", now)
+	cd.submitPortVote(45, "203.0.113.1:20045", "Instance-2", now)
+
+	// portMap が更新されたか確認
+	ch, ok := cd.portMap.LookupByPort("203.0.113.1:20045")
+	if !ok || ch != 45 {
+		t.Fatalf("portMap.LookupByPort: got ch=%d ok=%v, want ch=45 ok=true", ch, ok)
+	}
+
+	// tryPortMapLineID で lineID が解決されるか確認
+	cd.tryPortMapLineID(sess1)
+	if sess1.lineID != 45 {
+		t.Errorf("sess1.lineID after tryPortMapLineID: got %d, want 45", sess1.lineID)
+	}
+	cd.tryPortMapLineID(sess2)
+	if sess2.lineID != 45 {
+		t.Errorf("sess2.lineID after tryPortMapLineID: got %d, want 45", sess2.lineID)
+	}
+}
+
+// TestVote_MaybeSubmitPortVote_LineIDZero は maybeSubmitPortVote が lineID==0 のとき
+// のみ投票することを確認する。
+func TestVote_MaybeSubmitPortVote_LineIDZero(t *testing.T) {
+	cd, _ := newCapDeviceForVoteTest(t)
+	now := time.Now()
+
+	cd.currentChannel = 45
+
+	// lineID == 0 → 投票される
+	sess := newSession("10.0.0.1:50001", "10.0.0.1", "Instance-1")
+	sess.serverIP = "203.0.113.1:20045"
+	// maybeSubmitPortVote は go で submitPortVote を呼ぶ。テストでは直接呼んで確認。
+	// lineID == 0 であることを確認
+	if sess.lineID != 0 {
+		t.Fatalf("precondition: sess.lineID = %d, want 0", sess.lineID)
+	}
+	cd.maybeSubmitPortVote(sess, "203.0.113.1:20045", now)
+	// goroutine が投票するまで少し待つ
+	time.Sleep(50 * time.Millisecond)
+
+	// 1票だけなので quorum 未達だが投票自体は記録されている
+	cd.portVotesMu.Lock()
+	votes := cd.portVotes["20045"]
+	cd.portVotesMu.Unlock()
+	if len(votes) != 1 {
+		t.Errorf("votes count: got %d, want 1", len(votes))
+	}
+
+	// lineID != 0 → 投票されない
+	sess2 := newSession("10.0.0.1:50002", "10.0.0.1", "Instance-2")
+	sess2.lineID = 45 // 既に lineID 確定済み
+	cd.maybeSubmitPortVote(sess2, "203.0.113.1:20045", now)
+	time.Sleep(50 * time.Millisecond)
+
+	cd.portVotesMu.Lock()
+	votes2 := cd.portVotes["20045"]
+	cd.portVotesMu.Unlock()
+	// Instance-2 は投票していないので票数は変わらない（1のまま）
+	if len(votes2) != 1 {
+		t.Errorf("votes count after lineID!=0: got %d, want 1 (no new vote)", len(votes2))
+	}
+}
+
+// ──── T-No23: sd==nil + uidNewlySet + lineID!=0 → onLineIDObserved fires ────
+
+// TestNo23_SceneDataNil_UIDNewlySet_LineIDKnown は SceneData なし・charId 新規確定・
+// lineID が portMap で補完済みのケースで onLineIDObserved が発火することを確認する。
+// §4-1.4（sd==nil パスに早期 return を追加してはいけない）の不変条件ガード。
+func TestNo23_SceneDataNil_UIDNewlySet_LineIDKnown(t *testing.T) {
+	cd, spy := newCapDeviceForVoteTest(t)
+
+	sess := newSession("10.0.0.1:50001", "10.0.0.1", "Instance-1")
+	sess.serverIP = "203.0.113.1:20045"
+	sess.lineID = 45 // portMap で事前補完済み想定
+
+	// SceneData なし、charId=12345（新規）
+	payload := marshalSyncContainerData(t, 12345, nil)
+	cd.processSyncContainerData(sess, payload)
+
+	// onLineIDObserved は goroutine で呼ばれるので少し待つ
+	time.Sleep(100 * time.Millisecond)
+
+	if spy.lineIDCount() != 1 {
+		t.Fatalf("onLineIDObserved calls: got %d, want 1", spy.lineIDCount())
+	}
+	spy.mu.Lock()
+	call := spy.lineIDCalls[0]
+	spy.mu.Unlock()
+	if call.uid != 12345 {
+		t.Errorf("onLineIDObserved uid: got %d, want 12345", call.uid)
+	}
+	if call.lineID != 45 {
+		t.Errorf("onLineIDObserved lineID: got %d, want 45", call.lineID)
+	}
+}
+
+// ──── T-No34: sd==nil + uidNewlySet + lineID==0 → onLineIDObserved does NOT fire ────
+//              sd==nil + uidNewlySet + lineID!=0 → fires (covered by T-No23 above)
+
+func TestNo34_SceneDataNil_UIDNewlySet_LineIDZero_NoFire(t *testing.T) {
+	cd, spy := newCapDeviceForVoteTest(t)
+
+	sess := newSession("10.0.0.1:50001", "10.0.0.1", "Instance-1")
+	sess.serverIP = "203.0.113.1:20045"
+	// lineID == 0 (portMap 未解決)
+
+	payload := marshalSyncContainerData(t, 12345, nil)
+	cd.processSyncContainerData(sess, payload)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if spy.lineIDCount() != 0 {
+		t.Errorf("onLineIDObserved calls: got %d, want 0 (lineID=0 should not fire)", spy.lineIDCount())
+	}
+}
+
+// ──── T-No33: sd!=nil + oldCh==lineID + uidNewlySet=false → no fire ────
+
+func TestNo33_SceneDataPresent_SameLineID_NoNewUID_NoFire(t *testing.T) {
+	cd, spy := newCapDeviceForVoteTest(t)
+
+	sess := newSession("10.0.0.1:50001", "10.0.0.1", "Instance-1")
+	sess.serverIP = "203.0.113.1:20045"
+	sess.lineID = 45
+	sess.userUID = 12345 // 既存 UID（新規ではない）
+
+	// SceneData あり、lineID=45（既存と同じ）、charId は既存 UID と同じ
+	sd := &pb.SceneData{}
+	lineID := uint32(45)
+	sd.LineId = &lineID
+	payload := marshalSyncContainerData(t, 12345, sd) // charId=12345 は既存と同じ
+
+	cd.processSyncContainerData(sess, payload)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if spy.lineIDCount() != 0 {
+		t.Errorf("onLineIDObserved calls: got %d, want 0 (same lineID, no new UID)", spy.lineIDCount())
+	}
+}
+
+// ──── T-No33 variant: sd!=nil + lineID changes → fires ────
+
+func TestNo33_SceneDataPresent_LineIDChanges_Fires(t *testing.T) {
+	cd, spy := newCapDeviceForVoteTest(t)
+
+	sess := newSession("10.0.0.1:50001", "10.0.0.1", "Instance-1")
+	sess.serverIP = "203.0.113.1:20045"
+	sess.lineID = 45
+	sess.userUID = 12345
+
+	// lineID 変化: 45→50
+	sd := &pb.SceneData{}
+	lineID := uint32(50)
+	sd.LineId = &lineID
+	payload := marshalSyncContainerData(t, 12345, sd)
+
+	cd.processSyncContainerData(sess, payload)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if spy.lineIDCount() != 1 {
+		t.Fatalf("onLineIDObserved calls: got %d, want 1 (lineID changed)", spy.lineIDCount())
+	}
+	spy.mu.Lock()
+	call := spy.lineIDCalls[0]
+	spy.mu.Unlock()
+	if call.lineID != 50 {
+		t.Errorf("onLineIDObserved lineID: got %d, want 50", call.lineID)
+	}
+}
+
+// ──── T: PostLoadReady fires correctly via 0x2E ────
+
+func TestPostLoadReady_FiresOncePerLineID(t *testing.T) {
+	cd, spy := newCapDeviceForVoteTest(t)
+
+	sess := newSession("10.0.0.1:50001", "10.0.0.1", "Instance-1")
+	sess.serverIP = "203.0.113.1:20045"
+	sess.lineID = 45
+	sess.userUID = 12345
+
+	// rawUUID は uid<<16 | 640（プレイヤーマーカー）。UID = rawUUID >> 16 = 12345
+	rawUUID := int64(12345<<16 | 640)
+	payload := marshalSyncToMeDeltaInfo(t, rawUUID)
+
+	cd.sessionsMu.Lock()
+	cd.sessions["10.0.0.1:50001"] = sess
+	cd.sessionsMu.Unlock()
+
+	// 1回目: 発火する
+	cd.processSyncToMeDeltaInfo(sess, payload)
+	time.Sleep(100 * time.Millisecond)
+	if spy.postLoadCount() != 1 {
+		t.Fatalf("1st 0x2E: postLoadReady calls: got %d, want 1", spy.postLoadCount())
+	}
+
+	// 2回目: 同 lineID なので抑制（No.44 dedup）
+	cd.processSyncToMeDeltaInfo(sess, payload)
+	time.Sleep(100 * time.Millisecond)
+	if spy.postLoadCount() != 1 {
+		t.Errorf("2nd 0x2E same lineID: postLoadReady calls: got %d, want 1 (dedup)", spy.postLoadCount())
+	}
+
+	// lineID 変化後に再発火
+	sess.lineID = 50
+	cd.processSyncToMeDeltaInfo(sess, payload)
+	time.Sleep(100 * time.Millisecond)
+	if spy.postLoadCount() != 2 {
+		t.Errorf("3rd 0x2E new lineID: postLoadReady calls: got %d, want 2", spy.postLoadCount())
+	}
+}
+
+// ──── D-log: SceneData 有無ログの分岐条件テスト ────
+
+func TestVersionDetection_SceneDataFlag(t *testing.T) {
+	cd, _ := newCapDeviceForVoteTest(t)
+
+	sess := newSession("10.0.0.1:50001", "10.0.0.1", "Instance-1")
+	sess.serverIP = "203.0.113.1:20045"
+
+	// 初期状態: sceneDataSeen == 0（未観測）
+	if sess.sceneDataSeen != 0 {
+		t.Fatalf("initial sceneDataSeen: got %d, want 0", sess.sceneDataSeen)
+	}
+
+	// SceneData なしのパケットを処理
+	payload := marshalSyncContainerData(t, 12345, nil)
+	cd.processSyncContainerData(sess, payload)
+	if sess.sceneDataSeen != -1 {
+		t.Errorf("after sd==nil: sceneDataSeen = %d, want -1", sess.sceneDataSeen)
+	}
+
+	// 同じ SceneData なしを再度 → フラグは変化しない（ログスパム防止）
+	oldVal := sess.sceneDataSeen
+	cd.processSyncContainerData(sess, payload)
+	if sess.sceneDataSeen != oldVal {
+		t.Errorf("after 2nd sd==nil: sceneDataSeen changed from %d to %d", oldVal, sess.sceneDataSeen)
+	}
+
+	// SceneData ありのパケットを処理 → フラグ変化
+	sd := &pb.SceneData{}
+	lineID := uint32(45)
+	sd.LineId = &lineID
+	payloadWithSD := marshalSyncContainerData(t, 12345, sd)
+	cd.processSyncContainerData(sess, payloadWithSD)
+	if sess.sceneDataSeen != 1 {
+		t.Errorf("after sd!=nil: sceneDataSeen = %d, want 1", sess.sceneDataSeen)
+	}
+}
+
+func TestVersionDetection_DeltaUUIDFlag(t *testing.T) {
+	cd, _ := newCapDeviceForVoteTest(t)
+
+	sess := newSession("10.0.0.1:50001", "10.0.0.1", "Instance-1")
+	sess.serverIP = "203.0.113.1:20045"
+	sess.lineID = 45
+	sess.userUID = 12345
+
+	cd.sessionsMu.Lock()
+	cd.sessions["10.0.0.1:50001"] = sess
+	cd.sessionsMu.Unlock()
+
+	// 初期状態: deltaUUIDSeen == 0（未観測）
+	if sess.deltaUUIDSeen != 0 {
+		t.Fatalf("initial deltaUUIDSeen: got %d, want 0", sess.deltaUUIDSeen)
+	}
+
+	// UUID ありのパケットを処理
+	rawUUID := int64(12345<<16 | 640)
+	payload := marshalSyncToMeDeltaInfo(t, rawUUID)
+	cd.processSyncToMeDeltaInfo(sess, payload)
+	if sess.deltaUUIDSeen != 1 {
+		t.Errorf("after uuid!=nil: deltaUUIDSeen = %d, want 1", sess.deltaUUIDSeen)
+	}
+
+	// UUID なしのパケットを構築して処理
+	// DeltaInfo は存在するが Uuid フィールドが nil
+	noUUIDPayload := marshalSyncToMeDeltaInfo(t, 0) // uuid=0 → Uuid フィールドは設定されない
+	cd.processSyncToMeDeltaInfo(sess, noUUIDPayload)
+	if sess.deltaUUIDSeen != -1 {
+		t.Errorf("after uuid==nil: deltaUUIDSeen = %d, want -1", sess.deltaUUIDSeen)
+	}
+}
+
+// ──── T-No09: 同 clientIP 複数台でも投票が正しく機能する ────
+
+func TestNo09_SameClientIP_SeparateVotes(t *testing.T) {
+	cd, _ := newCapDeviceForVoteTest(t)
+	now := time.Now()
+
+	// NAT 環境: 同一 clientIP の 2 台（serial/label は別）
+	cd.currentChannel = 45
+
+	cd.submitPortVote(45, "203.0.113.1:20045", "Instance-1", now)
+	cd.submitPortVote(45, "203.0.113.1:20045", "Instance-2", now)
+
+	ch, ok := cd.portMap.LookupByPort("203.0.113.1:20045")
+	if !ok || ch != 45 {
+		t.Fatalf("portMap.LookupByPort: got ch=%d ok=%v, want ch=45 ok=true", ch, ok)
 	}
 }

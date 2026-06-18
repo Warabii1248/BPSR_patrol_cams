@@ -1,4 +1,44 @@
 ﻿====--------------------------------------------------------------------------------
+[No.72] 2026/06/18 21:29 — 巡回ロード完了シグナル欠落修正（fast-path 再接続の portMap 投票欠落）
+
+【背景 / 原因】
+  巡回中の ch 切替で MuMu 各台のロード完了シグナル（0x2E PostLoadReady）が発火せず、
+  初回待ち + 発行前追加待ちのフォールバックを毎 ch 丸ごと消化し、巡回が「滞在待機から
+  進まない」状態に陥っていた。真因の連鎖:
+    1. 現バージョンの 0x15 は SceneData を含まず、lineID(ch) の情報源は PortMap の
+       クォーラム投票のみ（[0x15/16] lineID ログが全く出ない＝sd==nil パスを常時通過）
+    2. PortMap 投票（submitPortVote）は C→S 方向の3箇所にしか無く、
+       handleServerToClientFast（fast-path・S→C）には tryPortMapLineID（PortMap を読む）は
+       あるが submitPortVote（票を投じる）が欠落していた（No.23 で読み側のみ追加・書き側を失念）
+    3. 巡回中の再接続は IDENT-P3 より先にサーバーが送る＝fast-path 経由になりやすく、
+       新セッションが投票経路に到達せず quorum(2台) 不成立 → PortMap 未更新 → lineID 固着
+    4. lineID 固着により 0x2E 発火条件 postLoadFiredForLineID != sess.lineID が false となり
+       完了シグナルが抑制される（No.44 の dedup が意図せず常時 true 判定になる）
+
+【変更内容】
+  ncap/cap_device.go:
+    - maybeSubmitPortVote ヘルパーを新設（投票判定 lineID==0 && currentChannel>0 を集約）
+    - handleClientToServer の C→S 投票2箇所をヘルパー呼出に置換（挙動同一のリファクタ）
+    - handleServerToClientFast の serverIP 変更点に maybeSubmitPortVote を追加（本修正の核心）
+    - 版検出ログ: 0x15 の SceneData 有無 / 0x2E の UUID 有無をセッション単位で初回・変化時
+      のみ出力（将来のパケット仕様変化＝消えたものの復活も含め可視化）
+  ncap/cap_device_test.go:
+    - 投票・lineID・発火条件のユニットテスト12本を追加（過去回帰 No.09/23/33/34 のガード含む）
+  docs/plan_no72_loadsignal.md:
+    - 本修正の diff 仕様書・状態遷移表・過去巡回不具合の網羅マトリクスを新規作成
+
+【効果】
+  - fast-path 再接続でも PortMap 投票が行われ quorum が成立、lineID が新 ch に更新され
+    0x2E PostLoadReady が本来どおり発火、巡回が停滞しなくなる
+  - SceneData / UUID の有無がログに残り、ゲーム更新でパケットが変化しても沈黙劣化に気付ける
+
+【影響範囲】
+  - ncap/cap_device.go, ncap/cap_device_test.go, docs/plan_no72_loadsignal.md
+  - 0x2E の dedup（postLoadFiredForLineID）・完了機構・mergeSessionIfDuplicate は無変更
+    （回帰面を投票/lineID 周辺に限定。No.44/56/39 の状態機械は触らない）
+  - 後方互換性: config.json・port_ch_map.json のスキーマ変更なし。投票は既存と同条件・同 quorum
+
+====--------------------------------------------------------------------------------
 [No.71] 2026/06/18 — 検知不要プレイヤー発言でも対象chを検知履歴に記録
 
 【背景 / 原因】

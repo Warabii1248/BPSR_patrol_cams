@@ -107,6 +107,10 @@ type session struct {
 	playerPos              *playerPosition
 	postLoadFiredForLineID uint32 // PostLoadReady を発火済みの lineID（同 lineID 内 1 回のみ）
 
+	// バージョン検出ログ用フラグ（セッション単位で初回/変化時のみログ出力）
+	sceneDataSeen    int8 // 0=未観測, 1=あり, -1=なし
+	deltaUUIDSeen    int8 // 0=未観測, 1=あり, -1=なし
+
 	// サーバー判定用シグネチャ
 	serverSignature      []byte
 	loginReturnSignature []byte
@@ -388,6 +392,23 @@ func (cd *CapDevice) SetCurrentChannel(ch uint32) {
 			}
 		}
 		cd.sessionsMu.RUnlock()
+	}
+}
+
+// maybeSubmitPortVote は lineID 未確定セッションの portMap クォーラム投票を非同期で行う。
+// 投票条件: sess.lineID == 0 かつ currentChannel > 0（巡回中）。
+// handleClientToServer（既存/新規）と handleServerToClientFast の3箇所から呼ばれる。
+// sess.mu は呼び出し元で保持している前提。
+func (cd *CapDevice) maybeSubmitPortVote(sess *session, serverAddr string, now time.Time) {
+	if sess.lineID != 0 {
+		return
+	}
+	cd.currentChannelMu.RLock()
+	patrolCh := cd.currentChannel
+	cd.currentChannelMu.RUnlock()
+	if patrolCh > 0 {
+		label := sess.label
+		go cd.submitPortVote(patrolCh, serverAddr, label, now)
 	}
 }
 
@@ -1073,15 +1094,7 @@ func (cd *CapDevice) handleClientToServer(clientIP, srcKey, revKey string, tcp *
 				log.Printf("[%s] C→S: サーバー更新 [%s] → [%s]", existing.label, prev, serverAddr)
 			}
 			// 巡回中かつ未割当セッションの場合、portMap クォーラム投票に参加
-			if existing.lineID == 0 {
-				cd.currentChannelMu.RLock()
-				patrolCh := cd.currentChannel
-				cd.currentChannelMu.RUnlock()
-				if patrolCh > 0 {
-					label := existing.label
-					go cd.submitPortVote(patrolCh, serverAddr, label, now)
-				}
-			}
+			cd.maybeSubmitPortVote(existing, serverAddr, now)
 		}
 		cd.registerConn(srcKey, revKey, clientEndpoint)
 		existing.lastAnyPacketAt = now
@@ -1122,15 +1135,7 @@ func (cd *CapDevice) handleClientToServer(clientIP, srcKey, revKey string, tcp *
 	}
 	cd.tryPortMapLineID(sess) // serverIP 確定時に portMap から ch を補完
 	// 巡回中かつ未割当セッションの場合、portMap クォーラム投票に参加
-	if sess.lineID == 0 {
-		cd.currentChannelMu.RLock()
-		patrolCh := cd.currentChannel
-		cd.currentChannelMu.RUnlock()
-		if patrolCh > 0 {
-			label := sess.label
-			go cd.submitPortVote(patrolCh, serverAddr, label, now)
-		}
-	}
+	cd.maybeSubmitPortVote(sess, serverAddr, now)
 	cd.registerConn(srcKey, revKey, clientEndpoint)
 	sess.lastAnyPacketAt = now
 	cd.reassembleTcpStream(sess, serverAddr, tcp, payload, now)
@@ -1233,6 +1238,8 @@ func (cd *CapDevice) handleServerToClientFast(srcIP, dstIP, srcKey, revKey strin
 				sess.serverIP = newServerAddr
 				sess.serverIPSetAt = time.Now()
 				cd.tryPortMapLineID(sess) // fast-path serverIP 確定時に portMap から ch を補完
+				// 巡回中かつ未割当セッションの場合、portMap クォーラム投票に参加（No.72 L1a-core）
+				cd.maybeSubmitPortVote(sess, newServerAddr, now)
 				sess.streams = make(map[string]*tcpSubStream)
 				cd.sessionsMu.Lock()
 				for k, v := range cd.activeConns {
@@ -1550,6 +1557,20 @@ func (cd *CapDevice) processSyncContainerData(sess *session, payload []byte) {
 	// portMap が serverIP → ch を解決済みなら onLineIDObserved を発火してバインドに使う。
 
 	sd := vdata.GetSceneData()
+
+	// バージョン検出ログ: SceneData の有無をセッション単位で初回/変化時のみ出力（D: No.72）
+	if sd == nil {
+		if sess.sceneDataSeen != -1 {
+			sess.sceneDataSeen = -1
+			log.Printf("[%s][0x15] SceneData=なし → portMap依存モード", sess.label)
+		}
+	} else {
+		if sess.sceneDataSeen != 1 {
+			sess.sceneDataSeen = 1
+			log.Printf("[%s][0x15] SceneData=あり", sess.label)
+		}
+	}
+
 	if sd == nil {
 		// SceneData なし。userUID が新規確定し lineID が portMap で既知なら発火（probe バインド用）。
 		if uidNewlySet && sess.userUID != 0 && sess.lineID != 0 && cd.onLineIDObserved != nil {
@@ -1701,6 +1722,20 @@ func (cd *CapDevice) processSyncToMeDeltaInfo(sess *session, payload []byte) {
 	if info == nil {
 		return
 	}
+
+	// バージョン検出ログ: UUID フィールドの有無をセッション単位で初回/変化時のみ出力（D: No.72）
+	if info.Uuid != nil {
+		if sess.deltaUUIDSeen != 1 {
+			sess.deltaUUIDSeen = 1
+			log.Printf("[%s][0x2E] UUID=あり", sess.label)
+		}
+	} else {
+		if sess.deltaUUIDSeen != -1 {
+			sess.deltaUUIDSeen = -1
+			log.Printf("[%s][0x2E] UUID=なし", sess.label)
+		}
+	}
+
 	if info.Uuid != nil {
 		if rawUUID := uint64(info.GetUuid()); rawUUID != 0 {
 			uid := rawUUID >> 16 // 永続ユーザーID（UID）
