@@ -1,4 +1,31 @@
 ﻿====--------------------------------------------------------------------------------
+[No.74] 2026/06/19 00:10 — 巡回中 portMap 投票の off-by-one 修正（currentChannel 通知を SwitchGroup 前へ）
+
+【背景 / 原因】
+  No.72 で fast-path 再接続も portMap クォーラム投票に参加するようにした結果、実機巡回で
+  投票が常に 1ch 遅れて成立する off-by-one が判明した（Ch2 へ切替中なのに quorum が ch=1 で
+  成立する等）。原因: 巡回ループが currentChannel を CapDevice へ通知する onChannelSwitch を
+  SwitchGroup（ADB 一括切替・約7s）完了後に呼んでいたため、SwitchGroup 中に再接続した
+  デバイスがまだ前 ch の currentChannel で投票し、portMap に間違った port→ch を登録していた。
+
+【変更内容】
+  mumu/mumu.go:
+    - onChannelSwitch(ch)（= CapDevice.SetCurrentChannel）の呼び出しを SwitchGroup の前
+      （RecordPatrolMove 直後・switchStartAt 時点）へ移動。No.35/56 と同じ
+      「再接続より前に正しい状態を立てる」原則
+    - SetOnChannelSwitch のドキュメントコメントを「切替開始時（ADB発行前）」に更新
+
+【効果】
+  - 再接続デバイスが正しい現在 ch で投票し、portMap が正しい port→ch を学習する
+  - off-by-one による portMap 汚染（間違った ch の保留エントリ生成）を解消
+
+【影響範囲】
+  - mumu/mumu.go のみ
+  - SetCurrentChannel の lineID==0 ガード + portVoteWindow(10s) により、前 ch の確定済み/古い
+    セッションは早期通知でも誤割当されない（patrol-flow-reviewer SAFE 確認済み）
+  - run_all.ps1 全10シナリオ PASS。後方互換性: config 影響なし
+
+====--------------------------------------------------------------------------------
 [No.73] 2026/06/18 21:59 — GUI からキャプチャ NIC を検出・選択・保存できるように
 
 【背景 / 原因】

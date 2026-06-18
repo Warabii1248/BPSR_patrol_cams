@@ -1173,8 +1173,9 @@ func (p *Patroller) SetDeviceAssignments(assignments []GroupAssignment) {
 	p.deviceAssignmentsMu.Unlock()
 }
 
-// SetOnChannelSwitch はチャンネル切替完了時に呼ばれるコールバックを設定する。
-// CapDevice への現在チャンネル通知に使用する。
+// SetOnChannelSwitch は巡回が次chへ切り替える際（ADB発行前・switchStartAt 時点）に呼ばれる
+// コールバックを設定する。CapDevice への現在chの通知に使用する（No.74: portMap 投票が
+// 再接続時に正しいchを参照できるよう、SwitchGroup より前に通知する）。
 func (p *Patroller) SetOnChannelSwitch(fn func(uint32)) {
 	p.mu.Lock()
 	p.onChannelSwitch = fn
@@ -2271,6 +2272,18 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 				p.RecordPatrolMove(ser, ch, switchStartAt)
 			}
 
+			// 現在巡回chを CapDevice に通知する（No.74）。
+			// portMap クォーラム投票は再接続セッションの lineID==0 時に currentChannel を
+			// 投票chとして使うため、ADB 発行（SwitchGroup）より前＝switchStartAt 時点で
+			// 新chを立てておく必要がある。SwitchGroup 完了後に通知すると、SwitchGroup 中に
+			// 再接続したデバイスが旧chへ投票し portMap が 1ch ずれて汚染される（off-by-one）。
+			p.mu.RLock()
+			notifyFn := p.onChannelSwitch
+			p.mu.RUnlock()
+			if notifyFn != nil {
+				go notifyFn(ch)
+			}
+
 			// デバイスをグループに分けて並列切替
 			patrolResults := make(map[string]error, len(switchTargets))
 			var patrolMu sync.Mutex
@@ -2291,14 +2304,6 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			}
 			// 全台切替完了時刻を記録（この時刻以降の[0x2E]のみカウント）
 			switchDoneAt := time.Now()
-
-			// チャンネル切替完了を CapDevice に通知（lineIDパケットが来ない場合のフォールバック用）
-			p.mu.RLock()
-			notifyFn := p.onChannelSwitch
-			p.mu.RUnlock()
-			if notifyFn != nil {
-				go notifyFn(ch)
-			}
 
 			// ADB 発行完了 → 0x2E UUID 受信待ちフェーズ
 			p.mu.Lock()
