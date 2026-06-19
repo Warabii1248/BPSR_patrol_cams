@@ -1,4 +1,34 @@
 ﻿====--------------------------------------------------------------------------------
+[No.82] 2026/06/20 01:30 — 0x2E PostLoadReady を UUID 非依存にし、screen 判定の早期中断を修正
+
+【背景 / 原因】
+  1. processSyncToMeDeltaInfo の PostLoadReady チェックが if info.Uuid != nil ブロック内に
+     あり、ch切替時に UUID なし/UUID 同値の 0x2E が来ても PostLoadReady が発火しなかった。
+     either モードの 0x2E 保険パスが事実上無機能。
+  2. either モードで 0x2E が screen より先に到着すると Phase1 が早期終了 → Phase2 マージ
+     タイマー開始 → screenCancel() が Phase2 直後に呼ばれ、残りデバイスの screen 判定が
+     中断（スクショ中断 (他戦略勝利)）。Ch48 では全 8 台の screen が間に合わず移動失敗。
+
+【変更内容】
+  ncap/cap_device.go:
+    - PostLoadReady チェックを UUID ブロックの外に移動（0x2E 受信 + lineID 変化で発火）
+    - uid ローカル変数 → sess.userUID（ログイン時確定済み）に変更
+    - PostLoadReady 発火時のデバッグログ追加
+  mumu/mumu.go:
+    - screenCancel() を Phase2 直後から extra wait ループの後に移動
+    - 0x2E が先勝ちしても screen goroutine は extra wait 中も検知を続行
+
+【効果】
+  - either モードで 0x2E が UUID なしでも completion シグナルとして機能
+  - screen 判定が 0x2E 到着に影響されず最後まで実行される
+  - postLoadFiredForLineID dedup は維持（同 lineID 内 1 回のみ）
+
+【影響範囲】
+  - 変更ファイル: ncap/cap_device.go, mumu/mumu.go
+  - 後方互換性: 設定変更なし。time/screen モードへの影響なし
+  - sim: 全 11 シナリオ PASS（burst_0x2e / either_mode 含む）
+
+====--------------------------------------------------------------------------------
 [No.81] 2026/06/19 21:35 — either を screen ベース + 0x2E 保険にする（screen/0x2E どちらか早い方で完了）
 
 【背景 / 原因】

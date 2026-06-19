@@ -2528,11 +2528,6 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 					mergeDeadline.Stop()
 				}
 
-				// No.80: 当該 ch の画面ポーリング goroutine を停止（次 ch へ残骸を漏らさない）
-				if screenCancel != nil {
-					screenCancel()
-				}
-
 				// インスタンス追跡更新（moveFailed の場合はスキップ: チャンネル切替未実施）
 				// respondedSet・knownInstances・missedCounts・crashedInstances はすべて serial をキーとする。
 				if !moveFailed {
@@ -2664,6 +2659,12 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 						}
 					}
 					extraDeadline.Stop()
+				}
+
+				// No.82: screen goroutine 停止を extra wait の後に移動。
+				// 0x2E が先に来ても screen 判定を続行させる（either モードの信頼性向上）。
+				if screenCancel != nil {
+					screenCancel()
 				}
 			}
 

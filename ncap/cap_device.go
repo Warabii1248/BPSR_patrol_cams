@@ -1849,14 +1849,20 @@ func (cd *CapDevice) processSyncToMeDeltaInfo(sess *session, payload []byte) {
 				debuglog.Vlogf("0x2E", "[%s] UUID変化 uid=%d UID=%d lineID=%d", sess.label, rawUUID, uid, sess.lineID)
 				cd.mergeSessionIfDuplicate(sess) // 同一キャラの既存セッションがあれば統合
 			}
-			// ロード 75% シグナル: lineID 変化後の初回のみ発火（同 lineID 内重複抑制）
-			if uid != 0 && sess.lineID != 0 && cd.onPostLoadReady != nil &&
-				sess.postLoadFiredForLineID != sess.lineID {
-				sess.postLoadFiredForLineID = sess.lineID
-				go cd.onPostLoadReady(uid, sess.lineID, time.Now())
-			}
 		}
 	}
+
+	// PostLoadReady: lineID 変化後の初回 0x2E で発火（UUID 有無に非依存・No.82）。
+	// ch切替時にゲームが UUID なしの 0x2E を送る場合でも completion シグナルを出す。
+	// sess.userUID はログイン時の UUID 受信で確定済み。
+	if sess.userUID != 0 && sess.lineID != 0 && cd.onPostLoadReady != nil &&
+		sess.postLoadFiredForLineID != sess.lineID {
+		debuglog.Vlogf("0x2E", "[%s] PostLoadReady発火 uid=%d lineID=%d (前回=%d)",
+			sess.label, sess.userUID, sess.lineID, sess.postLoadFiredForLineID)
+		sess.postLoadFiredForLineID = sess.lineID
+		go cd.onPostLoadReady(sess.userUID, sess.lineID, time.Now())
+	}
+
 	bd := info.GetBaseDelta()
 	if bd == nil || bd.Attrs == nil {
 		return
