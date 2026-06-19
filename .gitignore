@@ -5,6 +5,7 @@ logs/sim/
 logs/sim_run*.log
 .vscode/
 config/config.json
+config/config.local.json
 config/gold_history.json
 config/port_ch_map.json
 config/filter.json

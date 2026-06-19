@@ -1,4 +1,37 @@
 ﻿====--------------------------------------------------------------------------------
+[No.78] 2026/06/19 — go run . -l でローカル開発用 config を使うフラグを追加・配布同梱を調整
+
+【背景 / 原因】
+  No.77 で config/config.json を gitignore + 初回自動生成にしたが、開発時の
+  go run . では実 Webhook URL 入りの設定で動作確認したいケースと、配布相当の
+  クリーン設定で確認したいケースの両方がある。設定を毎回手で書き換えるのは面倒。
+
+【変更内容】
+  main.go:
+    - -l フラグを追加。go run . -l で config/config.local.json を読み込む
+      （-config を明示した場合はそちらを優先）。
+  config/config.local.json (新規・gitignore):
+    - 従来の実設定（Webhook URL 等）をこちらに退避。-l 起動時に使用。
+  config/config.json:
+    - Webhook URL 等を空にしたクリーン設定に初期化（通常の go run . / 配布相当）。
+  .gitignore:
+    - config/config.local.json を追加。
+  build.ps1:
+    - filter.json / port_ch_map.json を配布 ZIP に同梱（デフォルト設定として）。
+      config.json のみ引き続き除外（Webhook URL を含むため・初回自動生成）。
+
+【効果】
+  - go run .        … クリーン設定（配布相当・Webhook 空）で起動
+  - go run . -l     … ローカル実設定（config.local.json）で起動
+  - 配布 ZIP は filter.json / port_ch_map.json を含むためフィルタ・ポートマップが
+    初期状態から利用可能。
+
+【影響範囲】
+  - main.go, build.ps1, .gitignore
+  - config/config.local.json（新規・git 管理外）, config/config.json（初期化・git 管理外）
+  - 後方互換性: -l 未指定時は従来通り config/config.json を使用。既存利用環境に影響なし。
+
+====--------------------------------------------------------------------------------
 [No.77] 2026/06/19 — ビルドパッケージから config.json を除外・初回起動時に自動生成
 
 【背景 / 原因】

@@ -116,6 +116,16 @@ if (Test-Path "config\channels.txt") {
     Copy-Item "config\channels.txt" "$OutDir\config\channels.txt"
 }
 
+# config.json は Webhook URL を含むため同梱しない（初回起動時に自動生成）。
+# filter.json / port_ch_map.json はデフォルト設定として同梱する。
+if (Test-Path "config\filter.json") {
+    Copy-Item "config\filter.json" "$OutDir\config\filter.json"
+}
+
+if (Test-Path "config\port_ch_map.json") {
+    Copy-Item "config\port_ch_map.json" "$OutDir\config\port_ch_map.json"
+}
+
 if (Test-Path "gas_extension") {
     Copy-Item "gas_extension" "$OutDir\gas_extension" -Recurse
 }

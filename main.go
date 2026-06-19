@@ -29,6 +29,7 @@ import (
 
 var (
 	configPath    = flag.String("config", "config/config.json", "path to config.json")
+	localFlag     = flag.Bool("l", false, "use local dev config (config/config.local.json) for go run testing")
 	networkFlag   = flag.String("network", "", "NIC description (auto = auto-detect)")
 	webhookFlag   = flag.String("webhook", "", "Discord webhook URL (overrides config)")
 	autoCheckTime = flag.Int("auto-check", 0, "seconds to sample interfaces when using auto")
@@ -54,6 +55,20 @@ func main() {
 		}
 	}()
 	flag.Parse()
+
+	// -l 指定時はローカル開発用 config に切り替える（go run . -l でのテスト用）。
+	// -config を明示している場合はそちらを優先する。
+	if *localFlag {
+		explicitConfig := false
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "config" {
+				explicitConfig = true
+			}
+		})
+		if !explicitConfig {
+			*configPath = "config/config.local.json"
+		}
+	}
 
 	// ログをコンソールと logs/log.txt の両方に出力する（起動のたびに上書き）
 	if err := os.MkdirAll("logs", 0755); err != nil {
