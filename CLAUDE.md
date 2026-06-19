@@ -62,12 +62,12 @@ go run .               # 配布相当 config/config.json（クリーン設定・
 | パス | 役割 | 行数 | 触る時の慎重度 |
 |---|---|---|---|
 | `main.go` | 起動・配線（capture↔patroller↔gui の接続） | ~630 | 中 |
-| `ncap/cap_device.go` | パケット解析・session 管理・0x15/0x2E ハンドラ | ~2288 | **最高（要確認）** |
+| `ncap/cap_device.go` | パケット解析・session 管理・0x15/0x2E ハンドラ | ~2435 | **最高（要確認）** |
 | `ncap/portmap.go` | port→ch マッピングの永続化（JSON） | ~185 | 中（フォーマット互換注意） |
 | `ncap/cap_helper.go`, `byte_reader.go`, `queue.go` | バイナリ読み出しユーティリティ | 小 | 低 |
 | `pb/bp.pb.go` | protobuf 生成コード（手動編集禁止） | - | **編集禁止** |
-| `mumu/mumu.go` | Patroller（巡回ロジック）・状態機械・ADB呼出 | ~2707 | **最高（要確認）** |
-| `mumu/screen.go` | スクリーンショット取得・ADB画面操作 | ~297 | 中 |
+| `mumu/mumu.go` | Patroller（巡回ロジック）・状態機械・ADB呼出 | ~2825 | **最高（要確認）** |
+| `mumu/screen.go` | スクショ取得・ADB画面操作・ロード完了判定戦略（runScreen/Either/TimeStrategy・§4-2.6/13/14） | ~348 | 中（completion 戦略あり） |
 | `gui/gui.go` | HTTP サーバー起動・WebView2 ウィンドウ・HTML/JS/CSS | ~1012 | 高 |
 | `gui/handlers.go` | HTTP ハンドラ群（gui.go から分離） | ~1423 | 高 |
 | `appconfig/config.go` | config.json Load/Save・defaults | ~494 | **高（Load/Save 非対称の罠あり）** |
@@ -108,6 +108,9 @@ go run .               # 配布相当 config/config.json（クリーン設定・
 6. **fast-path (S→C 方向) でセッション新規作成時**: `handleClientToServer` を通らないので `tryPortMapLineID` を明示呼出が必要。さもないと `sess.lineID=0` のまま（No.23）
 7. **`processSyncContainerData` の早期 return**: SceneData nil パスに早期 return を追加してはいけない（No.33 で追加 → No.34 でリグレッション）
 8. **チャット dedup キー**: `clientIP` 単独ではなく `label+clientIP` を使う（同 IP 別インスタンス対応・No.24）
+9. **`mergeSessionIfDuplicate` の serverIP 変化時は lineID リセット**: ch切替でマージされた既存セッションに旧 ch の `lineID`/`postLoadFiredForLineID` が残ると、新 ch の 0x2E が dedup（§4-2.12 相当）で抑制され completion 不発になる。serverIP 変化時にリセットする。**ただし `newSess.lineID == 0` の時のみ**（`newSess.lineID != 0` は portMap/probe で新 ch 確定済み = probe ground-truth 保護・No.75 両立）。リセット後 `tryPortMapLineID(existing)` で再補完。`postLoadFiredForLineID` の引き継ぎも serverIP 変化時は抑止（No.79）
+10. **`applyPortMapToSessions` は sessionsMu と sess.mu を同時保持しない**: sessionsMu.RLock 下でセッションポインタをスナップショット → RUnlock → 各 sess.mu を個別ロック。`mergeSessionIfDuplicate`（`newSess.mu` → `sessionsMu.Lock` 順）とのデッドロックを避けるため（No.79）
+11. **巡回中（`patrolActive`）は portMap クォーラム成立で自動確定**: `submitPortVote` でクォーラム成立時、`patrolActive` なら GUI 手動確認を待たず `portMap.Update` + `applyPortMapToSessions` を即実行（巡回 55s タイムアウト対策）。非巡回時は従来どおり `portMapPendingFn` 確認待ち。`patrolActive` は Patroller.Start/Stop → `SetPatrolActive` で設定（No.79）
 
 ### 4-2. 巡回（mumu/mumu.go）
 
@@ -116,13 +119,19 @@ go run .               # 配布相当 config/config.json（クリーン設定・
 3. **`MatchLineChange` の Probe マッチ条件**: `changedAt >= probe.sentAt - 2s` を必ずチェック。ADB 発行前の lineID 変化（本物クライアントの操作等）を拒否（No.33）
 4. **`MatchLineChange` の二重チェック**: RLock で未バインド確認後に WriteLock 取得しても、ロック取得後に `serialToUID[bindSerial] != 0` を再チェックして early return（並走ゴルーチン対策・No.26）
 5. **`moveSignal` の時刻フィルタは `switchStartAt` 基準**: `switchDoneAt` 基準にしない。ADB done がゲームサーバ応答より遅れることがある（No.30）
-6. **完了シグナルは `0x2E UUID 受信 + 遅延`**: `NotifyPostLoadReady` → `notifyMoveSignal` 経路。遅延は自動（直近観測ベース）または手動（`PatrolLoadStabilizationSecs`）。lineID-change では発火しない（No.39）
+6. **完了シグナルの経路は `load_detect_mode` で異なる（No.39/80/81）**:
+   - **time**: `0x2E UUID 受信 + 遅延`。`NotifyPostLoadReady` → `runTimeStrategy` → `notifyMoveSignal`。遅延は自動（直近観測ベース）/手動（`PatrolLoadStabilizationSecs`）。lineID-change では発火しない（No.39）
+   - **screen**: **ch切替起点**。巡回ループが `runScreenStrategyAtSwitch` を起動（0x2E 完全非依存）。`NotifyPostLoadReady` の `case "screen"` は return、`NotifyChMovePacket` も screen で return（No.80）
+   - **either**: screen(ch切替起点) と 0x2E(`NotifyPostLoadReady`→`runTimeStrategy` / `NotifyChMovePacket`) の **先勝ち**。3経路が `notifyMoveSignal` を出すが respondedSet で重複排除（No.81）
+   - ⚠ この項目を「全モード 0x2E 起点」と読み替えて screen/either を 0x2E 依存に戻さないこと
 7. **既到達ch（`CurrentCh == 目的ch`）のデバイス**: `switchTargets` から除外、ただし `RecordPatrolMove` は呼ぶ（ExpectedCh 更新のため）、`need` も除外後の件数（No.29）
 8. **`labelToSerial` は `serialToLabel` の逆引きで常に同期更新**: `notifyMoveSignal` が serial で送るため（No.30）
 9. **`excludeUIDs`**: 本物クライアントの UID を probe マッチから除外する。永続化（config.json `exclude_uids`）（No.33）
 10. **`MatchLineChange` は `notifyMoveSignal` を発火しない**: 完了シグナルは `NotifyPostLoadReady`（0x2E UUID 受信時）が担当。MatchLineChange は ActualCh 更新のみ（No.39）
 11. **`moveSignalMsg` は `lineID` を必須携帯**: wait loop（4箇所: buffered drain / フェーズ1 / フェーズ2 / 発行前追加待ち）は `msg.lineID == 0 || msg.lineID == targetCh` かつ `!respondedSet[msg.label]` を `got++` 前にガード。stale lineID 流用と同一 serial 重複カウントを防止（No.44）
 12. **`NotifyPostLoadReady` は同 lineID 内 1 回のみ発火**: session に `postLoadFiredForLineID` を保持し、lineID 変化時にのみ再発火可能。戦闘中などで 0x2E が連射されても channel をスパムしない（No.44）
+13. **screen/either の画面判定は ch切替起点で起動**: 巡回ループ（`MoveTimeout>0` ブロック）で `LoadDetectMode == "screen" || "either"` の時 `runScreenStrategyAtSwitch` を各 switchTargets に起動し、完了待ち後 `screenCancel` で停止（次 ch へ goroutine を漏らさない）。time では起動しない（No.80/81）
+14. **`runScreenStrategyAtSwitch` は2段階**: `waitForBlackEnter`（黒入り待ち・grace=`ScreenPollInterval×6`・最低3s）→ `waitForBlackGone`（黒消失待ち）→ `notifyMoveSignal(serial, ch)`。ch切替直後の通常画面を即「ロード完了」と誤検知しないため黒入り待ちが必須。`ScreenDetectTimeout` 超過時は強制進行（screen 無反応の保険）。grace 値は実機のロード遷移ラグ依存の調整ポイント（No.80）
 
 ### 4-3. 設定（appconfig/config.go）
 
@@ -157,6 +166,8 @@ go run .               # 配布相当 config/config.json（クリーン設定・
 | Load/Save 非対称 | bool デフォルト値が消える | No.31 | JSON マップで部分更新 |
 | ガード追加 | 正常経路を遮断 | No.12 (`!HasBinding()`) | 二重カウント防止は別レイヤで担保 |
 | NAT 環境 | 全インスタンス同 IP | No.09, 24, 25 | 識別キーから clientIP を外す |
+| マージ時 lineID 残存 | 新 ch の 0x2E が dedup で抑制され completion 不発 | No.79 | serverIP 変化時に lineID リセット（`newSess.lineID==0` のみ・probe ground-truth 保護） |
+| completion 経路を全モード共通と誤読 | screen/either を 0x2E 依存に戻す | No.80/81 | §4-2.6 は mode 別。screen/either は ch切替起点 |
 
 ---
 
@@ -169,7 +180,7 @@ ncap/ または mumu/ を変更する場合、コミット前に以下を確認:
 - [ ] 変更したハンドラの全呼び出しパスを確認した（grep で全 caller 確認）
 - [ ] **§4 不変条件** を新規に破っていないか確認
 - [ ] **§5 過去罠リスト** で類似ケースが過去にないか changelog 検索
-- [ ] **mumu/ 変更時**: `.\run_all.ps1` 全7シナリオ PASS（§10。FAIL したらまず1回再実行 = flake 切り分け）
+- [ ] **mumu/ 変更時**: `.\run_all.ps1` 全8シナリオ PASS（§10。FAIL したらまず1回再実行 = flake 切り分け）
 - [ ] **ncap/ 変更時**: golden があれば `pcap-replay -golden` で回帰比較（§10）
 - [ ] changelog 追記要否を判定（バグ修正/仕様変更/機能追加のみ追記。誤字・環境整備・保守は不要）。追記する場合は背景・原因・変更・効果・影響範囲を含む
 - [ ] **secret チェック**: changelog 追記内容・コミットメッセージ・`git diff --cached` 全文に非公開情報（メール・アカウント名・webhook・実サーバIP・実プレイヤー名・個人名・社名）が無いか確認
@@ -251,7 +262,7 @@ skill 経由でも実行できる: `/sim [シナリオ名]`（Level 1・flake �
 `NotifyLineIDChange` / `NotifyPostLoadReady` を直接呼んで疑似パケットシグナルを注入する。
 
 ```powershell
-.\run_all.ps1                                          # 全7シナリオ（約7分・ログは logs\sim\<name>.log）
+.\run_all.ps1                                          # 全8シナリオ（約7分・ログは logs\sim\<name>.log）
 .\release\patrol-sim.exe -scenario scenarios\X.json    # 個別（-v で verbose）
 ```
 
@@ -262,7 +273,8 @@ skill 経由でも実行できる: `/sim [シナリオ名]`（Level 1・flake �
 | burst_0x2e | 0x2E 10連射で moveSignal がスパムしないか（§4-2.12） |
 | silent_one | 1台無応答時にタイムアウト処理が正しく動くか |
 | slow_signal | 9s 遅延シグナルでも巡回が破綻しないか |
-| screen_mode | load_detect_mode=screen の画面判定パス |
+| screen_mode | load_detect_mode=screen の画面判定パス（ch切替起点・No.80） |
+| either_mode | load_detect_mode=either の screen+0x2E 先勝ち（respondedSet 重複排除・No.81） |
 
 ### Level 1.5: gui-sim（GUI API 層・実機/実ゲーム不要）
 
