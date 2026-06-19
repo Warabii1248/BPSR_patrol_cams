@@ -54,6 +54,7 @@ type Server struct {
 	saveChannelsFn     func([]uint32) error
 	channelNotifyFn    func(uint32) // Patrollerのチャンネル切替時コールバック
 	probeModeNotifyFn  func(bool)   // Identify(runStaggerProbe) 開始/終了時コールバック
+	patrolActiveNotifyFn func(bool) // 巡回 Start/Stop 時コールバック
 	getConfigFn        func() ([]byte, error)
 	saveConfigFn       func([]byte) error
 	loadWindowStateFn  func() (*appconfig.WindowState, error)
@@ -194,6 +195,15 @@ func NewWithOptions(port int, mumuCfg mumu.Config, patrolChannels []uint32, patr
 		s.patroller.SetOnProbeMode(func(on bool) {
 			s.mu.RLock()
 			fn := s.probeModeNotifyFn
+			s.mu.RUnlock()
+			if fn != nil {
+				fn(on)
+			}
+		})
+		// 巡回 Start/Stop を patrolActiveNotifyFn に転送する
+		s.patroller.SetOnPatrolActive(func(on bool) {
+			s.mu.RLock()
+			fn := s.patrolActiveNotifyFn
 			s.mu.RUnlock()
 			if fn != nil {
 				fn(on)
@@ -375,6 +385,12 @@ func (s *Server) SetChannelNotifyFn(fn func(uint32)) {
 // CapDevice の probeMode 切替（SetProbeMode）に使用する。true=開始, false=終了。
 func (s *Server) SetProbeModeNotifyFn(fn func(bool)) {
 	s.probeModeNotifyFn = fn
+}
+
+// SetPatrolActiveNotifyFn は巡回の開始・停止時に呼ばれるコールバックを設定する。
+// CapDevice の patrolActive 切替（SetPatrolActive）に使用する。true=開始, false=停止。
+func (s *Server) SetPatrolActiveNotifyFn(fn func(bool)) {
+	s.patrolActiveNotifyFn = fn
 }
 
 // SetConfigFns は config.json の読み書きコールバックを設定する。

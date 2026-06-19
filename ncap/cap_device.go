@@ -190,6 +190,10 @@ type CapDevice struct {
 	// currentChannelMu で保護する（currentChannel と同じロック）。
 	probeMode bool
 
+	// patrolActive は巡回中のみ true。true の間は submitPortVote が quorum 成立時に
+	// portMap を GUI 確認なしで自動確定する。currentChannelMu で保護する。
+	patrolActive bool
+
 	// サーバーポート→ch番号のルックアップテーブル（巡回訪問時に自動更新）
 	portMap *PortMap
 
@@ -355,11 +359,37 @@ func (cd *CapDevice) SetPortMapPendingFn(fn func(ch uint32, newServerIP, oldServ
 	cd.portMapPendingFn = fn
 }
 
+// applyPortMapToSessions は serverIP 一致かつ lineID 未確定のセッションへ ch を反映する。
+// sessionsMu と sess.mu を同時保持しないようスナップショット方式で実装する
+// （mergeSessionIfDuplicate の newSess.mu→sessionsMu 順とのデッドロック回避）。
+func (cd *CapDevice) applyPortMapToSessions(ch uint32, serverIP string) {
+	cd.sessionsMu.RLock()
+	seen := make(map[*session]bool, len(cd.sessions))
+	snapshot := make([]*session, 0, len(cd.sessions))
+	for _, sess := range cd.sessions {
+		if !seen[sess] {
+			seen[sess] = true
+			snapshot = append(snapshot, sess)
+		}
+	}
+	cd.sessionsMu.RUnlock()
+
+	for _, sess := range snapshot {
+		sess.mu.Lock()
+		if sess.serverIP == serverIP && sess.lineID == 0 {
+			sess.lineID = ch
+			log.Printf("[%s] PortMap確定: lineID=Ch%d (serverIP=%s)", sess.label, ch, serverIP)
+		}
+		sess.mu.Unlock()
+	}
+}
+
 // ApplyPortMapUpdate はポートマップへの変更を適用する。GUI からの確認後に呼ぶ。
 func (cd *CapDevice) ApplyPortMapUpdate(ch uint32, serverIP string) {
 	if cd.portMap != nil {
 		cd.portMap.Update(ch, serverIP)
 	}
+	cd.applyPortMapToSessions(ch, serverIP)
 }
 
 // PortMapEntries はポートマップの全エントリを返す（GUI向け）。
@@ -417,6 +447,14 @@ func (cd *CapDevice) SetCurrentChannel(ch uint32) {
 func (cd *CapDevice) SetProbeMode(on bool) {
 	cd.currentChannelMu.Lock()
 	cd.probeMode = on
+	cd.currentChannelMu.Unlock()
+}
+
+// SetPatrolActive は巡回の開始/停止を通知する。
+// true の間、portMap クォーラム成立は GUI 確認を待たず自動確定される。
+func (cd *CapDevice) SetPatrolActive(active bool) {
+	cd.currentChannelMu.Lock()
+	cd.patrolActive = active
 	cd.currentChannelMu.Unlock()
 }
 
@@ -519,8 +557,22 @@ func (cd *CapDevice) submitPortVote(ch uint32, serverIP, label string, now time.
 		winServerIP := existing[len(existing)-1].serverIP
 		delete(cd.portVotes, port)
 
+		cd.currentChannelMu.RLock()
+		patrolling := cd.patrolActive
+		cd.currentChannelMu.RUnlock()
+
 		fn := cd.portMapPendingFn
-		if fn != nil {
+		if patrolling {
+			// 巡回中は GUI 確認を待たず自動確定（55秒タイムアウト対策）
+			log.Printf("[PortMap] クォーラム成立: ch=%d port=%s serverIP=%s (%d台) → 巡回中自動確定", ch, port, winServerIP, voteCount)
+			if cd.portMap != nil {
+				cd.portMap.Update(ch, winServerIP)
+			}
+			cd.applyPortMapToSessions(ch, winServerIP)
+			if fn != nil {
+				go fn(ch, winServerIP, oldIP, voteCount) // GUI 表示は継続（確認は不要）
+			}
+		} else if fn != nil {
 			log.Printf("[PortMap] クォーラム成立: ch=%d port=%s serverIP=%s (%d台確認) → 確認待ち", ch, port, winServerIP, voteCount)
 			go fn(ch, winServerIP, oldIP, voteCount)
 		} else {
@@ -796,13 +848,27 @@ func (cd *CapDevice) mergeSessionIfDuplicate(newSess *session) {
 		existing.serverConfirmed = true
 		existing.confirmedAt = time.Now()
 	}
+	serverIPChanged := false
 	if newSess.serverIP != "" {
+		serverIPChanged = existing.serverIP != newSess.serverIP
+		// サーバー変更（ch切替）かつ newSess も lineID 未確定の時のみ旧 lineID を破棄して再決定。
+		// newSess.lineID != 0（portMap/probe で新 ch を確定済み）なら上の L845 ブロックで
+		// existing.lineID にコピー済みのため、ここでリセットすると probe の ground-truth が壊れる（No.75）。
+		if serverIPChanged && newSess.lineID == 0 {
+			log.Printf("[%s] マージ: serverIP変化 [%s]→[%s], lineID=%d リセット",
+				existing.label, existing.serverIP, newSess.serverIP, existing.lineID)
+			existing.lineID = 0
+			existing.postLoadFiredForLineID = 0
+		}
 		existing.serverIP = newSess.serverIP
 		existing.serverIPSetAt = newSess.serverIPSetAt
+		cd.tryPortMapLineID(existing) // portMap に既登録なら即 lineID 補完
 	}
 	existing.userUID = newSess.userUID
-	// ロード完了シグナルの dedup 状態を引き継ぐ（同一 lineID 二重発火防止・No.44 関連）
-	if newSess.postLoadFiredForLineID != 0 {
+	// ロード完了シグナルの dedup 状態を引き継ぐ（同一 lineID 二重発火防止・No.44 関連）。
+	// ただし serverIP 変化（ch切替）時は新 ch で再発火させるため引き継がない
+	// （旧 ch の postLoadFiredForLineID を残すと新 ch の 0x2E が抑制される）。
+	if !serverIPChanged && newSess.postLoadFiredForLineID != 0 {
 		existing.postLoadFiredForLineID = newSess.postLoadFiredForLineID
 	}
 	if existing.lineIDChangedAt.Before(newSess.lineIDChangedAt) {

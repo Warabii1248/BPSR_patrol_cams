@@ -901,6 +901,7 @@ type Patroller struct {
 	moveSignal       chan moveSignalMsg // [0x2E]パケット受信シグナル（UID付き）
 	onChannelSwitch  func(uint32)       // チャンネル切替完了時コールバック
 	onProbeMode      func(bool)         // Identify(runStaggerProbe) 開始/終了時コールバック
+	onPatrolActive   func(bool)         // 巡回 Start/Stop 時コールバック
 	knownInstances   map[string]bool    // 一度でも応答したUID
 	missedCounts     map[string]int     // UID別連続未応答カウント
 	crashedInstances map[string]bool    // クラッシュ判定済みUID（3回連続未応答）
@@ -1188,6 +1189,14 @@ func (p *Patroller) SetOnChannelSwitch(fn func(uint32)) {
 func (p *Patroller) SetOnProbeMode(fn func(bool)) {
 	p.mu.Lock()
 	p.onProbeMode = fn
+	p.mu.Unlock()
+}
+
+// SetOnPatrolActive は巡回の開始・停止時に呼ばれるコールバックを設定する。
+// true=開始, false=停止。CapDevice の patrolActive 切替（SetPatrolActive）に使用する。
+func (p *Patroller) SetOnPatrolActive(fn func(bool)) {
+	p.mu.Lock()
+	p.onPatrolActive = fn
 	p.mu.Unlock()
 }
 
@@ -1924,6 +1933,13 @@ func (p *Patroller) Stop() {
 	if cancel != nil {
 		log.Println("[MuMu] 巡回停止")
 	}
+	// 巡回停止を ncap へ通知（デッドロック回避のためローカル変数経由・mu 解放後に呼ぶ）
+	p.mu.RLock()
+	fn := p.onPatrolActive
+	p.mu.RUnlock()
+	if fn != nil {
+		fn(false)
+	}
 }
 
 // Identify は対象 serial の既存バインドを破棄してからデバイス識別フェーズ（Stagger Probe）を実行する。
@@ -2121,6 +2137,15 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 		if fi, err := os.Stat(channelsFile); err == nil {
 			lastModTime = fi.ModTime()
 		}
+	}
+
+	// 巡回開始を ncap へ通知（巡回状態確定後・goroutine 起動前。
+	// デッドロック回避のためローカル変数経由・mu 解放後に呼ぶ）
+	p.mu.RLock()
+	patrolActiveFn := p.onPatrolActive
+	p.mu.RUnlock()
+	if patrolActiveFn != nil {
+		patrolActiveFn(true)
 	}
 
 	p.wg.Add(1)

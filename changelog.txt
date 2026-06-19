@@ -1,4 +1,49 @@
 ﻿====--------------------------------------------------------------------------------
+[No.79] 2026/06/19 19:55 — ch切替後 PostLoadReady 不発火を修正（マージ時 lineID リセット + 巡回中 portMap 自動確定）
+
+【背景 / 原因】
+  portMap 未登録のチャンネルへ巡回切替すると全デバイスがタイムアウトし次chへスキップ
+  していた（port_ch_map.json に既登録の ch のみ成功）。原因は2点:
+  (1) ch切替時、新規 fast-path セッションが 0x15 受信で既存セッションにマージされるが、
+      マージ後も既存セッションの lineID=旧ch・postLoadFiredForLineID=旧ch が残存していた。
+      新 ch サーバーの 0x2E が届いても dedup 条件（postLoadFiredForLineID != lineID）を
+      満たせず moveSignal が発火せず、巡回が完了シグナルを受け取れずタイムアウトしていた。
+  (2) portMap 確定が GUI 手動確認のみで、巡回の 55 秒タイムアウトに間に合わなかった。
+
+【変更内容】
+  ncap/cap_device.go:
+    - mergeSessionIfDuplicate: serverIP 変化（ch切替）かつ newSess.lineID==0 の時のみ、
+      existing の lineID / postLoadFiredForLineID を 0 リセットして tryPortMapLineID で再補完。
+      newSess.lineID!=0（portMap/probe で新ch確定済み）はリセットせず probe の ground-truth
+      lineID を保護（No.75 両立）。postLoadFiredForLineID の引き継ぎも serverIP 変化時は抑止。
+    - applyPortMapToSessions（新規）: serverIP 一致 && lineID==0 のセッションへ ch を反映。
+      sessionsMu と sess.mu を同時保持しないスナップショット方式（mergeSessionIfDuplicate の
+      ロック順とのデッドロック回避）。
+    - ApplyPortMapUpdate: portMap 確定後に applyPortMapToSessions を呼び既存セッションへ即反映。
+    - submitPortVote: 巡回中（patrolActive）はクォーラム成立で GUI 確認を待たず自動確定し
+      applyPortMapToSessions まで実行。非巡回時は従来通り（確認待ち / 直接更新）。
+    - patrolActive フラグ + SetPatrolActive 追加（currentChannelMu で保護）。
+  mumu/mumu.go:
+    - onPatrolActive コールバック + SetOnPatrolActive 追加。Start で true / Stop で false 発火。
+  gui/gui.go:
+    - patrolActiveNotifyFn + SetPatrolActiveNotifyFn 追加。Patroller→GUI へ巡回状態を中継。
+  main.go:
+    - SetPatrolActiveNotifyFn → capDevice.SetPatrolActive を配線。
+
+【効果】
+  - portMap 未登録の ch でもクォーラム成立（約5秒）で lineID を即確定し、0x2E PostLoadReady が
+    発火 → 巡回タイムアウト前に次 ch へ進めるようになった。
+  - ch切替を跨いだセッションマージでも新 ch の完了シグナルが正しく発火する。
+
+【影響範囲】
+  - ncap/cap_device.go, mumu/mumu.go, gui/gui.go, main.go
+  - 後方互換性: config スキーマ変更なし。portMap 登録済み ch は従来通り（session 作成時に
+    tryPortMapLineID で即確定し本変更の分岐に到達しない）。非巡回時の portMap 確認フローも不変。
+  - 検証: go build / go vet クリーン。patrol-sim 全7シナリオ PASS。gui-sim は config_reflect /
+    interference_buttons PASS（baseline はマシン負荷起因の dwell 超過で flake・本変更非依存を
+    HEAD 版で確認済み）。packet-analyst / patrol-flow-reviewer レビュー SAFE。
+
+====--------------------------------------------------------------------------------
 [No.78] 2026/06/19 — go run . -l でローカル開発用 config を使うフラグを追加・配布同梱を調整
 
 【背景 / 原因】
