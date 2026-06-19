@@ -70,6 +70,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("config load error: %v", err)
 	}
+	if _, statErr := os.Stat(*configPath); os.IsNotExist(statErr) {
+		if saveErr := appconfig.Save(*configPath, cfg); saveErr != nil {
+			log.Printf("warn: config.json 自動生成失敗: %v", saveErr)
+		} else {
+			log.Printf("config.json を新規作成しました（Discord Webhook URL 等を設定してください）: %s", *configPath)
+		}
+	}
 	debuglog.Verbose = cfg.DebugVerbose
 	if *networkFlag != "" {
 		cfg.Network = *networkFlag

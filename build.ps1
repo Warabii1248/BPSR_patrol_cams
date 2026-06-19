@@ -108,24 +108,12 @@ Write-Host "Copying distribution files ..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Force "$OutDir\config" | Out-Null
 New-Item -ItemType Directory -Force "$OutDir\logs"   | Out-Null
 
-if (Test-Path "config\config.json") {
-    Copy-Item "config\config.json" "$OutDir\config\config.json"
-}
-
 if (Test-Path "data\locations.json") {
     Copy-Item "data\locations.json" "$OutDir\data\locations.json"
 }
 
 if (Test-Path "config\channels.txt") {
     Copy-Item "config\channels.txt" "$OutDir\config\channels.txt"
-}
-
-if (Test-Path "config\filter.json") {
-    Copy-Item "config\filter.json" "$OutDir\config\filter.json"
-}
-
-if (Test-Path "config\port_ch_map.json") {
-    Copy-Item "config\port_ch_map.json" "$OutDir\config\port_ch_map.json"
 }
 
 if (Test-Path "gas_extension") {
@@ -145,7 +133,7 @@ $readmeLines = @(
     "  Double-click BPSR_patrol_cams.exe",
     "",
     "[Config files]",
-    "  config\config.json         - Discord Webhook URL and other settings",
+    "  config\config.json         - Auto-generated on first launch. Set Discord Webhook URL etc.",
     "  config\channels.txt        - Channel numbers to patrol (one per line)",
     "  data\locations.json        - Map location name data",
     "",
