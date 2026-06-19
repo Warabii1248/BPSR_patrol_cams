@@ -36,6 +36,10 @@ Windows / Go 1.23+ / CGO (Npcap)。
 go build ./...         # 型・ビルドエラーだけ確認したい時
 go vet ./...           # 静的解析
 
+# 実機起動（実パケットキャプチャ走行）
+go run . -l            # ★実機検証はこれ★ → config/config.local.json（ローカル実設定）を使用
+go run .               # 配布相当 config/config.json（クリーン設定・Webhook 空）
+
 # 実機レス検証（詳細は §10）
 .\run_all.ps1                                          # Level 1+1.5: 全シナリオ一括（mumu/gui 変更時必須・約8分）
 .\release\patrol-sim.exe -scenario scenarios\X.json    # Level 1: 個別シナリオ
@@ -45,6 +49,11 @@ go vet ./...           # 静的解析
 ```
 
 要件: Go 1.23+ / MinGW-w64 GCC (PATH 通っている事) / Npcap SDK (`C:\npcap-sdk`)。
+
+> **⚠ 実機ログ調査の前提（必読）**: ユーザーの実機は **`go run . -l` で起動 → `config/config.local.json` を使用**する（No.78 で導入）。
+> `logs/log.txt` をデバッグする時は **`config/config.json`（配布クリーン版）ではなく `config/config.local.json` の設定値を前提**にすること。
+> 例: 実機の `load_detect_mode` は config.local.json 側の値（=`screen`）であって config.json の `time` ではない。
+> 両ファイルで `patrol_*`（load_detect_mode / stabilization / screen_region 等）が乖離しているため、混同すると原因を誤判定する。
 
 ---
 

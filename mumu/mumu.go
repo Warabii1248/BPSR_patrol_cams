@@ -955,6 +955,15 @@ type Patroller struct {
 // uid が判明している場合は除外UID・バインドを検証し、phantom シグナル（同一PC上の
 // ネイティブクライアント等）を弾く。uid==0（解析不能な行）は従来動作を維持する。
 func (p *Patroller) NotifyChMovePacket(instanceLabel string, uid uint64) {
+	// No.80: screen モードでは 0x2E ログ起点の即時 moveSignal を無効化する
+	// （ch切替起点の画面判定のみで完了を判定するため）。
+	p.mu.RLock()
+	cmMode := strings.ToLower(p.cfg.LoadDetectMode)
+	p.mu.RUnlock()
+	if cmMode == "screen" {
+		return
+	}
+
 	if uid != 0 {
 		// 除外 UID → 破棄
 		p.excludeUIDsMu.RLock()
@@ -1135,7 +1144,9 @@ func (p *Patroller) NotifyPostLoadReady(uid uint64, lineID uint32, t time.Time) 
 		defer cancel()
 		switch mode {
 		case "screen":
-			p.runScreenStrategy(ctx, serial, lineID, t, cfg)
+			// No.80: screen は ch切替起点（runScreenStrategyAtSwitch）で起動するため
+			// 0x2E 起点では何もしない（二重 moveSignal 防止）。
+			return
 		case "either":
 			p.runEitherStrategy(ctx, serial, lineID, fireAt, cfg)
 		default: // "time" または未知値
@@ -2384,6 +2395,18 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			// ・インスタンスごとに応答を追跡し、3回連続未応答でクラッシュ判定
 			moveFailed := false
 			if currentCfg.MoveTimeout > 0 {
+				// No.80: screen モードは ch切替起点で各台の画面判定を起動する（0x2E 非依存）。
+				// time/either は従来どおり 0x2E（NotifyPostLoadReady / NotifyChMovePacket）起点。
+				var screenCancel context.CancelFunc
+				if strings.ToLower(currentCfg.LoadDetectMode) == "screen" {
+					screenCtx, cancel := context.WithCancel(ctx)
+					screenCancel = cancel
+					for _, ser := range switchTargets {
+						ser := ser
+						go p.runScreenStrategyAtSwitch(screenCtx, ser, ch, switchDoneAt, currentCfg)
+					}
+				}
+
 				// 期待台数 = スイッチ実行台数（既到達スキップ分は除く）
 				// セッションマージによって複数デバイスが同じインスタンスへ統合される可能性があるため、
 				// knownInstances数ではなくADB上の実デバイス数を期待値とする。
@@ -2499,6 +2522,11 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 						}
 					}
 					mergeDeadline.Stop()
+				}
+
+				// No.80: 当該 ch の画面ポーリング goroutine を停止（次 ch へ残骸を漏らさない）
+				if screenCancel != nil {
+					screenCancel()
 				}
 
 				// インスタンス追跡更新（moveFailed の場合はスキップ: チャンネル切替未実施）

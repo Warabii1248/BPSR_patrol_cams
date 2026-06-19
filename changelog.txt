@@ -1,4 +1,41 @@
 ﻿====--------------------------------------------------------------------------------
+[No.80] 2026/06/19 20:45 — screen 判定を 0x2E 非依存にする（ch切替起点の画面判定）
+
+【背景 / 原因】
+  load_detect_mode=screen での実機巡回で、最初の ch 以外がすべて「移動失敗（完了シグナルなし）」
+  でスキップされていた。原因は completion（移動完了判定）が 0x2E 受信を起点にしていたこと:
+  (1) 正規経路: 0x2E → NotifyPostLoadReady → strategy(screen/time/either) → notifyMoveSignal
+  (2) fallback: guiWriter が "[0x2E] UUID=" ログを検出 → NotifyChMovePacket → notifyMoveSignal（即時）
+  screen モードでも 0x2E が来ないと画面判定（runScreenStrategy）が起動しない。実機では 0x2E が
+  最初の ch しか届かず、以降の ch で画面判定が一切動かずタイムアウトしていた。
+
+【変更内容】
+  mumu/screen.go:
+    - waitForBlackEnter（新規）: ロード画面（黒）に入るまで grace 上限までポーリング。
+      ch切替直後の通常画面を黒消失と誤検知しないよう、黒消失待ちの前段に挟む。
+    - runScreenStrategyAtSwitch（新規）: ch切替起点の2段階画面判定（段階1=黒入り待ち →
+      段階2=黒消失待ち → notifyMoveSignal(serial, ch)）。0x2E 非依存。
+  mumu/mumu.go:
+    - 巡回ループ: SwitchGroup 完了後、screen モードなら switchTargets 各台へ
+      runScreenStrategyAtSwitch を起動（screenCtx=WithCancel(ctx)）。完了待ち後に screenCancel で停止。
+    - NotifyPostLoadReady: case "screen" を return に変更（screen は巡回ループ側で起動するため
+      0x2E 起点では何もしない・二重 moveSignal 防止）。time/either は不変。
+    - NotifyChMovePacket: screen モード時は冒頭で return（0x2E ログ fallback の即時 moveSignal 抑制）。
+
+【効果】
+  - screen モードは ch切替を起点に画面（ロード画面の黒→ゲーム画面）で完了判定するようになり、
+    0x2E が来ない ch でも巡回が進む。time/either モードは従来どおり 0x2E 起点。
+
+【影響範囲】
+  - mumu/mumu.go, mumu/screen.go
+  - 後方互換性: 変更は load_detect_mode=screen 時のみ。time/either の completion 経路は不変。
+  - 検証: go build / go vet クリーン。patrol-sim screen_mode PASS（ch切替起点の画面判定で完了確認）。
+    patrol-flow-reviewer SAFE。
+  - 実機調整ポイント: waitForBlackEnter の grace（ScreenPollInterval×6・最低3s）はロード画面に
+    入るまでのラグに依存。grace 内に黒を観測できないと段階2が初回非黒で即完了しうるため、
+    実機ログ（[Screen] 初回非黒 → 即完了 が switch 直後に出ないか）で調整する。
+
+====--------------------------------------------------------------------------------
 [No.79] 2026/06/19 19:55 — ch切替後 PostLoadReady 不発火を修正（マージ時 lineID リセット + 巡回中 portMap 自動確定）
 
 【背景 / 原因】

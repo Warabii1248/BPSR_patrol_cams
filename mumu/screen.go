@@ -208,6 +208,35 @@ func (p *Patroller) waitForBlackGone(ctx context.Context, serial string, cfg Con
 	}
 }
 
+// waitForBlackEnter はロード画面（黒）に入るまで、または grace 上限までポーリングする。
+// 戻り値: true=黒検知、false=grace 超過（黒未観測）または ctx.Done。
+// ch切替直後はまだ通常画面（非黒）の可能性があるため、黒消失待ちの前にこれを挟む。
+func (p *Patroller) waitForBlackEnter(ctx context.Context, serial string, cfg Config) bool {
+	if p.captureIsBlack(ctx, serial, cfg) {
+		return true // 既に黒（ロード画面イン済み）
+	}
+	grace := cfg.ScreenPollInterval * 6
+	if grace < 3*time.Second {
+		grace = 3 * time.Second
+	}
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
+	ticker := time.NewTicker(cfg.ScreenPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false // grace 超過: 黒を観測せず段階2へ直行
+		case <-ticker.C:
+			if p.captureIsBlack(ctx, serial, cfg) {
+				return true
+			}
+		}
+	}
+}
+
 // runTimeStrategy は従来動作（time.Sleep 後に notifyMoveSignal）。ctx.Done で即離脱。
 func (p *Patroller) runTimeStrategy(ctx context.Context, serial string, lineID uint32, fireAt time.Time) {
 	d := time.Until(fireAt)
@@ -240,6 +269,28 @@ func (p *Patroller) runScreenStrategy(ctx context.Context, serial string, lineID
 	} else {
 		debuglog.Vlogf("0x2E", "[PostLoad] mode=screen serial=%s 黒消失検知 経過%.1fs",
 			serial, time.Since(startedAt).Seconds())
+	}
+	p.notifyMoveSignal(serial, lineID, time.Now())
+}
+
+// runScreenStrategyAtSwitch は ch切替起点の画面判定（0x2E 非依存・No.80）。
+// 段階1で黒入りを待ち、段階2で黒消失（ロード完了）を待って notifyMoveSignal する。
+// time/either の 0x2E 起点 strategy とは独立に、巡回ループから直接起動される。
+func (p *Patroller) runScreenStrategyAtSwitch(ctx context.Context, serial string, lineID uint32, startedAt time.Time, cfg Config) {
+	// 段階1: ロード画面（黒）に入るのを待つ（grace 超過なら段階2へ直行）
+	p.waitForBlackEnter(ctx, serial, cfg)
+	if ctx.Err() != nil {
+		return
+	}
+	// 段階2: 黒画面が消える（ロード完了）のを待つ
+	ok := p.waitForBlackGone(ctx, serial, cfg)
+	if ctx.Err() != nil {
+		return
+	}
+	if !ok {
+		log.Printf("[MuMu] 画面判定タイムアウト serial=%s → 強制進行", serial)
+	} else {
+		debuglog.Vlogf("0x2E", "[Screen] serial=%s ロード完了検知 経過%.1fs", serial, time.Since(startedAt).Seconds())
 	}
 	p.notifyMoveSignal(serial, lineID, time.Now())
 }
