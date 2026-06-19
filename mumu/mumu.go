@@ -1148,7 +1148,9 @@ func (p *Patroller) NotifyPostLoadReady(uid uint64, lineID uint32, t time.Time) 
 			// 0x2E 起点では何もしない（二重 moveSignal 防止）。
 			return
 		case "either":
-			p.runEitherStrategy(ctx, serial, lineID, fireAt, cfg)
+			// No.81: either の screen 判定は ch切替起点（巡回ループ）が担当。
+			// 0x2E はその保険として 0x2E + 安定化遅延で completion を出す（先に来た方が先勝ち）。
+			p.runTimeStrategy(ctx, serial, lineID, fireAt)
 		default: // "time" または未知値
 			p.runTimeStrategy(ctx, serial, lineID, fireAt)
 		}
@@ -2395,10 +2397,12 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			// ・インスタンスごとに応答を追跡し、3回連続未応答でクラッシュ判定
 			moveFailed := false
 			if currentCfg.MoveTimeout > 0 {
-				// No.80: screen モードは ch切替起点で各台の画面判定を起動する（0x2E 非依存）。
-				// time/either は従来どおり 0x2E（NotifyPostLoadReady / NotifyChMovePacket）起点。
+				// No.80/81: screen と either は ch切替起点で画面判定を起動する（0x2E 非依存）。
+				// either は加えて 0x2E（NotifyPostLoadReady / NotifyChMovePacket）も保険として
+				// completion に使う（respondedSet が先勝ちで重複排除）。time は従来どおり 0x2E 起点のみ。
 				var screenCancel context.CancelFunc
-				if strings.ToLower(currentCfg.LoadDetectMode) == "screen" {
+				ldMode := strings.ToLower(currentCfg.LoadDetectMode)
+				if ldMode == "screen" || ldMode == "either" {
 					screenCtx, cancel := context.WithCancel(ctx)
 					screenCancel = cancel
 					for _, ser := range switchTargets {

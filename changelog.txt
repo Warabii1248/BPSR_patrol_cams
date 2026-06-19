@@ -1,4 +1,35 @@
 ﻿====--------------------------------------------------------------------------------
+[No.81] 2026/06/19 21:35 — either を screen ベース + 0x2E 保険にする（screen/0x2E どちらか早い方で完了）
+
+【背景 / 原因】
+  No.80 で screen は ch切替起点（0x2E 非依存）に直したが、either は runEitherStrategy のまま
+  0x2E 起点だった。0x2E が来ない/遅い ch では either の screen 側も時間側も起動せず詰まる。
+  ユーザー要望: either は screen 判定をメインに、0x2E を「screen 不具合時の保険」として併用する。
+  screen が無反応でも 0x2E/時間経過で進み、0x2E が来なくても screen 判定で進む（OR・先勝ち）。
+
+【変更内容】
+  mumu/mumu.go:
+    - 巡回ループ: 画面判定（runScreenStrategyAtSwitch）の ch切替起点起動を screen に加え either でも
+      行う（load_detect_mode == "screen" || "either"）。screenCancel も同ブロックで停止。
+    - NotifyPostLoadReady: case "either" を runEitherStrategy → runTimeStrategy に変更。either の
+      screen 側は巡回ループが担当し、0x2E 側は 0x2E+安定化遅延で completion を出す保険にする。
+    - NotifyChMovePacket は screen のみ return のまま（either は通過＝0x2E ログ fallback も保険）。
+  scenarios/either_mode.json:
+    - 新規（screen_mode ベース・load_detect_mode=either）。
+
+【効果】
+  - either は3経路（screen=ch切替起点 / 0x2E正規=NotifyPostLoadReady / 0x2E fallback=NotifyChMovePacket）
+    が並走し、先に成立した1つで完了（巡回完了待ちの respondedSet が serial 単位で重複排除）。
+  - screen が無反応でも 0x2E/screen タイムアウト強制進行で進み、0x2E が来なくても screen 判定で進む。
+
+【影響範囲】
+  - mumu/mumu.go, scenarios/either_mode.json
+  - 後方互換性: 変更は load_detect_mode=either 時のみ。screen / time の completion 経路は不変。
+  - 検証: go build / go vet クリーン。patrol-sim either_mode PASS（screen 先勝ち＋0x2E 保険を確認）。
+    patrol-flow-reviewer SAFE（全12不変条件 PASS・3経路の二重カウントなし）。
+  - 残置: runEitherStrategy（旧・0x2E起点の time+screen 並走）は未使用化したが影響最小化のため残置。
+
+====--------------------------------------------------------------------------------
 [No.80] 2026/06/19 20:45 — screen 判定を 0x2E 非依存にする（ch切替起点の画面判定）
 
 【背景 / 原因】
