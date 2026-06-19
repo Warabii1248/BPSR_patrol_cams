@@ -325,6 +325,13 @@ func (s *Server) handlePatrolChannelsGAS(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	log.Printf("[GASSync] 受信: 全%d件 → 対象(%s): %d件", len(req.Entries), target, len(chs))
+	if len(chs) == 0 && len(req.Entries) > 0 {
+		nameCounts := make(map[string]int)
+		for _, e := range req.Entries {
+			nameCounts[e.Enemy]++
+		}
+		log.Printf("[GASSync] 受信エネミー名一覧: %v", nameCounts)
+	}
 	s.UpdateChannelsFromGAS(chs)
 	writeOK(w)
 }

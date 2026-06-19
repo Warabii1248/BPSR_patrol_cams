@@ -8,6 +8,10 @@
     const GO_SERVER_URL = 'http://localhost:8080/api/patrol/channels/gas';
     const FETCH_INTERVAL_MS = 10 * 60 * 1000; // 10分
     const SPAWN_THRESHOLD_HOURS = 20.0;
+    // サイト表記 → アプリ内名称の正規化マップ
+    const ENEMY_NAME_MAP = {
+        'ウリボ・ゴールド': '金ウリボ',
+    };
     // ================
 
     function parseElapsedSeconds(timerStr) {
@@ -49,10 +53,11 @@
                 enemy = nameEl ? nameEl.textContent.trim() : (card.dataset.name || '');
             }
 
-            const key = `${ch}:${enemy}`;
+            const normalizedEnemy = ENEMY_NAME_MAP[enemy] || enemy;
+            const key = `${ch}:${normalizedEnemy}`;
             if (!seen.has(key)) {
                 seen.add(key);
-                entries.push({ channel: ch, enemy });
+                entries.push({ channel: ch, enemy: normalizedEnemy });
             }
         });
 
