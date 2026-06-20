@@ -125,42 +125,169 @@ function updateIdentifiedBadge() {
   }).catch(()=>{});
 }
 let _identifyPollTimer = null;
+let _mapSweepPollTimer = null;  // 全chマッピングスイープの進捗ポーリング
+let _autoFlowChs = null;        // 自動フローで巡回対象とする ch リスト
+let _autoFlowSerials = null;    // 自動フローで認識・巡回する対象 serial
+let _autoFlowPolls = 0;         // ポーリング回数（タイムアウト判定用）
+const _AUTO_FLOW_MAX_POLLS = 60; // 60回×5s = 5分でタイムアウト
 function stopIdentifyPolling() {
   if (_identifyPollTimer) { clearInterval(_identifyPollTimer); _identifyPollTimer = null; }
 }
-function startIdentifyPolling() {
+// startAutoPatrolFlow は serials を対象にデバイス認識を自動実行し、
+// /api/devices/memory で全 serial のバインド成立（uid!=0）を待ってから
+// 分担計算 → 巡回開始まで自動進行する。
+// 注: /api/devices/identified の total は巡回開始まで 0 のため判定には使わない（serial の真実源は呼び出し側が確定）。
+//     device-map の confirmed は idle timeout で不安定なため判定に使わない（バインド成立=serialToUID登録を真実源とする）。
+async function startAutoPatrolFlow(serials, chs) {
   if (_identifyPollTimer) return;
+  if (!Array.isArray(serials) || serials.length === 0) {
+    portmapSetStatus('⚠ 対象デバイスがありません', true);
+    return;
+  }
+  _autoFlowSerials = serials.slice();
+  _autoFlowChs = (Array.isArray(chs) && chs.length > 0) ? chs.slice() : null;
+  _autoFlowPolls = 0;
+  // デバイス認識を自動実行（serials / channels 付き・バックグラウンド・最大数分）
+  portmapSetStatus('デバイス認識を自動実行中...（最大数分）', false);
+  const body = {serials: _autoFlowSerials};
+  if (_autoFlowChs) body.channels = _autoFlowChs;
+  await fetch('/api/patrol/identify', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}).catch(()=>{});
+  // バインド成立を /api/devices/memory で判定（uid!=0・serialToUID 登録）。ADB を呼ばず軽量。
   _identifyPollTimer = setInterval(async () => {
     try {
-      const d = await fetch('/api/devices/identified').then(r=>r.json());
+      _autoFlowPolls++;
+      const res = await fetch('/api/devices/memory').then(r=>r.json()).catch(()=>[]);
+      const list = Array.isArray(res) ? res : [];
+      const bySerial = {};
+      list.forEach(e => { if (e && e.serial) bySerial[e.serial] = e; });
+      let ready = 0;
+      for (const ser of _autoFlowSerials) {
+        const e = bySerial[ser];
+        if (e && e.uid) ready++;
+      }
       updateIdentifiedBadge();
-      if (d.identified) {
+      const total = _autoFlowSerials.length;
+      if (ready >= total) {
         stopIdentifyPolling();
-        const ok = confirm('✅ 全デバイス認識完了 ('+d.total+'台)\n1〜100ch を巡回リストに反映しますか？\n（デバイス分担設定も自動で計算されます）');
-        if (!ok) return;
-        const chs = Array.from({length:100},(_,i)=>i+1);
-        const r = await fetch('/api/patrol/channels', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({channels:chs})});
-        const rd = await r.json();
-        if (!rd.ok) { portmapSetStatus('✗ 巡回リスト保存失敗', true); return; }
-        const ad = await fetch('/api/devices/assignments/compute', {method:'POST'}).then(r=>r.json()).catch(()=>({ok:false}));
-        if (ad.ok) {
-          portmapSetStatus('✓ 1〜100ch 反映 + '+ad.device_count+'台を'+ad.groups+'グループに分担設定', false);
-        } else {
-          portmapSetStatus('✓ 1〜100ch を巡回リストに反映しました', false);
-        }
-        if (typeof loadPatrolChannels === 'function') loadPatrolChannels();
+        await finishAutoPatrolFlow(total);
+        return;
+      }
+      portmapSetStatus('デバイス認識中... ('+ready+'/'+total+')', false);
+      if (_autoFlowPolls >= _AUTO_FLOW_MAX_POLLS) {
+        stopIdentifyPolling();
+        portmapSetStatus('⚠ デバイス認識がタイムアウトしました ('+ready+'/'+total+')。手動で確認してください', true);
       }
     } catch(e) {}
   }, 5000);
+}
+// finishAutoPatrolFlow は全デバイス認識完了後、全chマッピング専用スイープ（逐次）を起動する。
+// スイープは対象 ch を1つずつ巡回して portMap を埋め、完了したら停止する（巡回はしない）。
+async function finishAutoPatrolFlow(total) {
+  portmapSetStatus('✓ 認識完了 ('+total+'台) → 全chマッピング開始...', false);
+  const body = {serials: _autoFlowSerials};
+  if (_autoFlowChs && _autoFlowChs.length > 0) body.channels = _autoFlowChs;
+  await fetch('/api/portmap/sweep', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}).catch(()=>{});
+  startMapSweepPolling();
+}
+// startMapSweepPolling は /api/patrol/status を監視し、マッピング進捗を表示して完了時に停止案内を出す。
+// マッピングは一巡パトロール（Start・LoopMode=false）として実行されるため running と current_index で判定する。
+// 起動直後はまだ running=false の可能性があるため、一度 running=true を観測してから完了判定する。
+function startMapSweepPolling() {
+  if (_mapSweepPollTimer) return;
+  let sawRunning = false;
+  _mapSweepPollTimer = setInterval(async () => {
+    try {
+      const st = await fetch('/api/patrol/status').then(r=>r.json()).catch(()=>null);
+      if (!st) return;
+      if (st.running) {
+        sawRunning = true;
+        portmapSetStatus('全chマッピング中... ('+(st.current_index||0)+'/'+(st.total_channels||0)+' ch)', false);
+      } else if (sawRunning) {
+        stopMapSweepPolling();
+        portmapSetStatus('✓ 全chマッピング完了。巡回は手動で開始してください', false);
+        if (typeof loadPortMapEntries === 'function') loadPortMapEntries();
+      }
+    } catch(e) {}
+  }, 2000);
+}
+function stopMapSweepPolling() {
+  if (_mapSweepPollTimer) { clearInterval(_mapSweepPollTimer); _mapSweepPollTimer = null; }
+}
+function selectMapAllMode(mode) {
+  const el = document.querySelector('input[name="mapall-ch-mode"][value="'+mode+'"]');
+  if (el) el.checked = true;
+}
+function openMapAllChModal() {
+  const cnt = document.getElementById('mapall-ch-list-count');
+  if (cnt) {
+    const n = (typeof patrolChannels !== 'undefined' && Array.isArray(patrolChannels)) ? patrolChannels.length : 0;
+    cnt.textContent = '('+n+'件)';
+  }
+  const ov = document.getElementById('mapall-ch-overlay');
+  if (ov) ov.style.display = 'flex';
+}
+function mapAllChCancel() {
+  const ov = document.getElementById('mapall-ch-overlay');
+  if (ov) ov.style.display = 'none';
+}
+// mapAllChConfirm は3択（1-100 / 範囲 / 巡回リスト）から巡回対象 ch を確定し、
+// 巡回リストへ設定したうえで自動フロー（認識→分担→巡回）を起動する。
+async function mapAllChConfirm() {
+  const mode = (document.querySelector('input[name="mapall-ch-mode"]:checked') || {}).value || 'all';
+  let chs = [];
+  if (mode === 'all') {
+    chs = Array.from({length:100}, (_,i)=>i+1);
+  } else if (mode === 'range') {
+    const start = parseInt((document.getElementById('mapall-ch-start')||{}).value) || 0;
+    const end = parseInt((document.getElementById('mapall-ch-end')||{}).value) || 0;
+    if (start <= 0 || end <= 0 || start > end) { portmapSetStatus('範囲が不正です（開始≦終了の正の値）', true); return; }
+    for (let i=start; i<=end; i++) chs.push(i);
+  } else if (mode === 'list') {
+    try {
+      const r = await fetch('/api/patrol/channels').then(r=>r.json());
+      chs = (r && Array.isArray(r.channels)) ? r.channels : [];
+    } catch(e) { portmapSetStatus('巡回リストの取得に失敗しました', true); return; }
+    if (chs.length === 0) { portmapSetStatus('巡回チャンネルリストが空です', true); return; }
+  }
+  mapAllChCancel();
+  // 対象デバイスを確定: UI選択中 → 検出済み全台 → ADBスキャン の順でフォールバック。
+  // /api/devices/identified の total は巡回開始まで 0 のため、serial はここで確定する。
+  let serials = selectedSerials();
+  if (serials.length === 0 && typeof currentDevices !== 'undefined' && Array.isArray(currentDevices) && currentDevices.length > 0) {
+    serials = currentDevices.slice();
+  }
+  if (serials.length === 0) {
+    try {
+      const r = await fetch('/api/devices').then(r=>r.json());
+      serials = Array.isArray(r) ? r : ((r && r.devices) || []);
+    } catch(e) {}
+  }
+  if (!serials || serials.length === 0) {
+    portmapSetStatus('⚠ デバイスが検出されていません。再スキャンしてください', true);
+    return;
+  }
+  // patrolStart が selectedSerials() を参照するため UI 選択へ同期する
+  serials.forEach(s => selectedDevices.add(s));
+  if (typeof renderDeviceList === 'function') renderDeviceList();
+  // 巡回リストへ設定（identify と最終巡回の両方が参照する）
+  portmapSetStatus('巡回リストに '+chs.length+' ch を設定中...', false);
+  try {
+    const r = await fetch('/api/patrol/channels', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({channels:chs})});
+    const rd = await r.json();
+    if (!rd.ok) { portmapSetStatus('✗ 巡回リスト保存失敗', true); return; }
+  } catch(e) { portmapSetStatus('✗ 巡回リスト保存エラー', true); return; }
+  if (typeof loadPatrolChannels === 'function') loadPatrolChannels();
+  // デバイス認識 → 分担 → 巡回 を自動進行
+  startAutoPatrolFlow(serials, chs);
 }
 async function portmapMapAll() {
   portmapSetStatus('全chマッピング実行中...', false);
   try {
     const d = await fetch('/api/portmap/map-all', {method:'POST'}).then(r=>r.json());
-    portmapSetStatus('完了: '+d.mapped+' 件をマッピング → デバイス認識を確認中...', false);
+    portmapSetStatus('完了: '+d.mapped+' 件をマッピング', false);
     loadPortMapEntries();
     updateIdentifiedBadge();
-    startIdentifyPolling();
+    openMapAllChModal();
   } catch(e) { portmapSetStatus('エラーが発生しました', true); }
 }
 function portmapMapCh() {

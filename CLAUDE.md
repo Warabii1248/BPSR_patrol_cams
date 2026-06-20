@@ -132,6 +132,7 @@ go run .               # 配布相当 config/config.json（クリーン設定・
 12. **`NotifyPostLoadReady` は同 lineID 内 1 回のみ発火**: session に `postLoadFiredForLineID` を保持し、lineID 変化時にのみ再発火可能。戦闘中などで 0x2E が連射されても channel をスパムしない（No.44）
 13. **screen/either の画面判定は ch切替起点で起動**: 巡回ループ（`MoveTimeout>0` ブロック）で `LoadDetectMode == "screen" || "either"` の時 `runScreenStrategyAtSwitch` を各 switchTargets に起動し、完了待ち後 `screenCancel` で停止（次 ch へ goroutine を漏らさない）。time では起動しない（No.80/81）
 14. **`runScreenStrategyAtSwitch` は2段階**: `waitForBlackEnter`（黒入り待ち・grace=`ScreenPollInterval×6`・最低3s）→ `waitForBlackGone`（黒消失待ち）→ `notifyMoveSignal(serial, ch)`。ch切替直後の通常画面を即「ロード完了」と誤検知しないため黒入り待ちが必須。`ScreenDetectTimeout` 超過時は強制進行（screen 無反応の保険）。grace 値は実機のロード遷移ラグ依存の調整ポイント（No.80）
+15. **⚠ ロード中に次の移動を発行しない（多発・No.83）**: ch切替後の「次のアクション可否」は **必ずロード完了シグナル（0x2E/screen の完了機構）で判定**する。`CurrentCh==ch`（= portMap/lineID 解決）を移動完了の代わりに使ってはいけない。**portMap 解決はロード完了より大幅に早い**（実機 screen モードで lineID 解決 ≈数〜10s に対しロード完了 ≈40s）。早期の portMap 解決で次 ch 切替を発行すると、デバイスがまだロード画面のため ADB ナビゲーションタップが取りこぼされ移動失敗する。逐次に ch を進める処理（全chマッピング MapSweep 等）は **独自の待ちを書かず、巡回ループ（`Start`・必要なら `LoopMode=false` 一巡）を再利用**して既存の完了待ち（§4-2.6）に乗せること。MapSweep が独自 `CurrentCh==ch` 待ちで失敗 → Start 再利用へ作り直したのが No.83。
 
 ### 4-3. 設定（appconfig/config.go）
 
@@ -168,6 +169,7 @@ go run .               # 配布相当 config/config.json（クリーン設定・
 | NAT 環境 | 全インスタンス同 IP | No.09, 24, 25 | 識別キーから clientIP を外す |
 | マージ時 lineID 残存 | 新 ch の 0x2E が dedup で抑制され completion 不発 | No.79 | serverIP 変化時に lineID リセット（`newSess.lineID==0` のみ・probe ground-truth 保護） |
 | completion 経路を全モード共通と誤読 | screen/either を 0x2E 依存に戻す | No.80/81 | §4-2.6 は mode 別。screen/either は ch切替起点 |
+| ロード中に次の移動を発行（多発） | `CurrentCh==ch`(portMap解決) を移動完了と誤用→ロード未完で次ch切替→ADBタップ取りこぼし | No.83 | 次アクション可否はロード完了シグナル(0x2E/screen)で判定。逐次ch進行は Start を再利用（§4-2.15） |
 
 ---
 

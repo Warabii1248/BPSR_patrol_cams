@@ -595,5 +595,32 @@
     </div>
   </div>
 </div>
+<div id="mapall-ch-overlay" class="pm-overlay" style="display:none">
+  <div class="pm-modal">
+    <div class="pm-modal-title" style="color:var(--text1)">巡回対象chを選択</div>
+    <div class="pm-body">
+      <div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:12px">マッピング完了。どのchを巡回対象にするか選んでください。<br>選択後、デバイス認識→分担→巡回開始まで自動実行します。</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer">
+        <input type="radio" name="mapall-ch-mode" value="all" checked>
+        <span>1〜100ch</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer">
+        <input type="radio" name="mapall-ch-mode" value="range">
+        <span>範囲指定</span>
+        <input type="number" id="mapall-ch-start" min="1" max="999" value="1" style="width:64px" onclick="selectMapAllMode('range')">
+        <span>〜</span>
+        <input type="number" id="mapall-ch-end" min="1" max="999" value="50" style="width:64px" onclick="selectMapAllMode('range')">
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:4px;cursor:pointer">
+        <input type="radio" name="mapall-ch-mode" value="list">
+        <span>巡回チャンネルリストにあるch <span id="mapall-ch-list-count" style="color:var(--text3)"></span></span>
+      </label>
+    </div>
+    <div class="pm-btns">
+      <button class="btn" onclick="mapAllChCancel()">キャンセル</button>
+      <button class="btn primary" onclick="mapAllChConfirm()">決定して巡回開始</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

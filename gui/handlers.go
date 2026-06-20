@@ -619,6 +619,45 @@ func (s *Server) handlePatrolStart(w http.ResponseWriter, r *http.Request) {
 	writeOK(w)
 }
 
+// handlePortMapSweep は全chマッピング専用の逐次スイープを開始する。
+// bound 済みデバイスで対象 ch を1つずつ巡回し portMap を全埋めして停止する（巡回はしない）。
+// バックグラウンド実行で即 200 を返す。
+func (s *Server) handlePortMapSweep(w http.ResponseWriter, r *http.Request) {
+	if !s.patrolEnabled {
+		http.Error(w, "patrol disabled", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	if s.patroller.Status().Running {
+		http.Error(w, "巡回/マッピング中は開始できません", http.StatusConflict)
+		return
+	}
+	var req struct {
+		Serials  []string `json:"serials"`
+		Channels []uint32 `json:"channels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	channels := req.Channels
+	if len(channels) == 0 {
+		s.mu.RLock()
+		channels = make([]uint32, len(s.patrolChannels))
+		copy(channels, s.patrolChannels)
+		s.mu.RUnlock()
+	}
+	if len(channels) == 0 {
+		writeJSON(w, map[string]interface{}{"ok": false, "error": "チャンネルリストが空です"})
+		return
+	}
+	go s.patroller.MapSweep(req.Serials, channels)
+	writeOK(w)
+}
+
 // handleTestDetect はテスト用ウリボ・ゴールド検知を発火する
 func (s *Server) handleTestDetect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1284,7 +1323,15 @@ func (s *Server) handleComputeAssignments(w http.ResponseWriter, r *http.Request
 		writeJSON(w, map[string]interface{}{"ok": false, "error": "デバイス未検出"})
 		return
 	}
-	assignments := mumu.ComputeDeviceAssignments(deviceCount, 100)
+	s.mu.RLock()
+	channels := make([]uint32, len(s.patrolChannels))
+	copy(channels, s.patrolChannels)
+	s.mu.RUnlock()
+	if len(channels) == 0 {
+		writeJSON(w, map[string]interface{}{"ok": false, "error": "チャンネルリストが空です"})
+		return
+	}
+	assignments := mumu.ComputeDeviceAssignments(deviceCount, channels)
 	s.mu.RLock()
 	file := s.assignmentsFile
 	s.mu.RUnlock()

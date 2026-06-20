@@ -804,19 +804,20 @@ type DeviceAssignments struct {
 }
 
 // ComputeDeviceAssignments はデバイス台数に応じてペア単位のch分担を計算する。
-// totalCh 本のチャンネルをペア数で等分する。奇数台の場合は最後の1台がアイドル。
-func ComputeDeviceAssignments(deviceCount, totalCh int) []GroupAssignment {
+// 渡された channels（実際の巡回対象ch）をペア数で等分する。奇数台の場合は最後の1台がアイドル。
+// 連番 1..N ではなく実 ch を分割するため、巡回対象が 31ch 開始や飛び飛びでも各ペアが担当chを持つ。
+func ComputeDeviceAssignments(deviceCount int, channels []uint32) []GroupAssignment {
+	totalCh := len(channels)
 	if deviceCount <= 0 || totalCh <= 0 {
 		return nil
 	}
-	allChs := make([]uint32, totalCh)
-	for i := range allChs {
-		allChs[i] = uint32(i + 1)
-	}
+	allChs := append([]uint32{}, channels...)
 	if deviceCount == 1 {
 		return []GroupAssignment{{Group: 0, DeviceIndices: []int{0}, Channels: allChs}}
 	}
 	pairs := deviceCount / 2
+	// 巡回対象ch数 < ペア数 の場合 chPerGroup=0 となり前半グループが空chになる（最終グループに集約）。
+	// 実用上ch数はペア数を上回るため許容。旧実装(1..100固定)と同挙動でリグレッションではない。
 	chPerGroup := totalCh / pairs
 	var assignments []GroupAssignment
 	for g := 0; g < pairs; g++ {
@@ -2167,6 +2168,12 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			p.mu.Lock()
 			p.status.Running = false
 			p.mu.Unlock()
+			// 一巡モード(LoopMode=false)の自動停止では Stop() を経由しないため、
+			// ここで patrolActive を落とす（Stop 経由なら冪等）。さもないと巡回後も
+			// ncap が quorum 自動確定を続けてしまう。
+			if patrolActiveFn != nil {
+				patrolActiveFn(false)
+			}
 			p.wg.Done()
 			log.Println("[MuMu] 巡回終了")
 		}()
@@ -2741,6 +2748,50 @@ func (p *Patroller) Start(serials []string, channels []uint32, channelsFile stri
 			idx += step
 		}
 	}()
+}
+
+// mapSweepQuorum は未登録ch を portMap に書くのに必要な最小台数。
+// ncap の portVoteQuorum（未登録ch学習に必要な投票数=2）と一致させる。
+const mapSweepQuorum = 2
+
+// MapSweep は全chマッピングを行う。並列化は ncap の単一グローバル currentChannel 制約で不可
+// （全台を別chへ同時移動すると投票 ch が一意でなくなり portMap が汚染される）。
+// そのため 2台1ペアだけを使い、実証済みの巡回ループ（Start・LoopMode=false=一巡）で対象 ch を
+// 逐次に巡回させて portMap を埋める。残りのデバイスはアイドルのまま。
+//
+// なぜ巡回ループを再利用するか:
+//   - 各 ch の完了待ち（0x2E/screen）が「ロード完了」を保証するため、ロード未完了のまま次 ch へ
+//     移動してしまう問題（独自スイープで発生）が起きない。
+//   - 巡回中（patrolActive=true）は quorum 成立で portMap.Update + applyPortMapToSessions が
+//     自動実行される（No.79）。ペア2台が同一chへ入ることで quorum(2) が成立し未登録chを学習する。
+//   - LoopMode=false なので一巡で自動停止する（マッピングは一回限りのセットアップ）。
+//
+// 並列化（全台を活かした高速化）は ncap の per-uid 投票ch対応が前提のため将来対応とする。
+func (p *Patroller) MapSweep(serials []string, channels []uint32) {
+	if len(channels) == 0 {
+		log.Println("[MuMu] 全chマッピング: チャンネルリストが空のため開始しない")
+		return
+	}
+	if len(serials) == 0 {
+		log.Println("[MuMu] 全chマッピング: 対象デバイスが無いため開始しない")
+		return
+	}
+	// 2台1ペアだけ使う（quorum=2 を満たす最小構成・並列不可のため残りは動かさない）。
+	pair := serials
+	if len(pair) > mapSweepQuorum {
+		pair = pair[:mapSweepQuorum]
+	}
+	if len(pair) < mapSweepQuorum {
+		log.Printf("[MuMu] 全chマッピング: 警告 利用可能 %d台 < quorum%d。未登録chは確定できない場合がある",
+			len(pair), mapSweepQuorum)
+	}
+	// 分担フィルタを無効化（ペアのみを動かすため・stale assignment の影響も排除）。
+	p.SetDeviceAssignments(nil)
+	log.Printf("[MuMu] 全chマッピング: ペア%v で %d ch を逐次マッピング（一巡で停止・他デバイスはアイドル）",
+		pair, len(channels))
+	// 巡回ループを一巡モードで起動。各 ch の完了待ち（0x2E/screen）がロード完了を保証し、
+	// patrolActive 中の quorum 自動確定（No.79）で portMap が埋まる。
+	p.Start(pair, channels, "", PatrolOptions{LoopMode: false})
 }
 
 // Tapper は指定座標への連続タップを管理する。

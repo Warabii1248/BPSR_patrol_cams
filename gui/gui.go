@@ -851,6 +851,7 @@ func (s *Server) startHTTP(ctx context.Context) (string, error) {
 	mux.HandleFunc("/api/portmap/entries", s.handlePortMapEntries)
 	mux.HandleFunc("/api/portmap/map-ch", s.handlePortMapMapCh)
 	mux.HandleFunc("/api/portmap/map-all", s.handlePortMapMapAll)
+	mux.HandleFunc("/api/portmap/sweep", s.handlePortMapSweep)
 	mux.HandleFunc("/api/portmap/manual", s.handlePortMapManual)
 	mux.HandleFunc("/api/devices/identified", s.handleDevicesIdentified)
 	mux.HandleFunc("/api/devices/memory", s.handleDevicesMemory)

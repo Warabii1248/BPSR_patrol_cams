@@ -1,4 +1,47 @@
 ﻿====--------------------------------------------------------------------------------
+[No.83] 2026/06/20 22:40 — 全chマッピングをペア2台・一巡巡回ループ再利用で実装（ロード中移動を解消）
+
+【背景 / 原因】
+  「全chマッピング」自動フローが意図通り動かなかった。実機ログで判明:
+  (1) compute-assignments が Status().Serials（巡回開始まで空）→ ConnectSerials（空）で ok:false を返し
+      JS が無視 → 起動時ロードの古い assignment で巡回 → 8台中2台のみ稼働。
+  (2) 監視巡回ループは 1tick=1ch で分担フィルタは台を絞るだけ。並列に進められず「1ペアしか動かない」。
+  実機追検証で判明: (3) 全台が移動してしまう (4) ロード未完了のまま次chへ移動（多発）。
+  根本制約: portMap を永続化する quorum 投票chが ncap の単一グローバル currentChannel 依存のため
+  並列マッピングは不可。完了判定に CurrentCh==ch（portMap解決≈10s）を使うとロード完了（screen≈40s）前に
+  次ch切替を発行し、ロード画面で ADB ナビゲーションタップが取りこぼされ移動失敗していた。
+
+【変更内容】
+  mumu/mumu.go:
+    - MapSweep を新設。並列不可のため 2台1ペアだけ使い、SetDeviceAssignments(nil) で分担フィルタを
+      無効化し、実証済みの巡回ループ Start を LoopMode=false（一巡）で起動。各 ch の完了待ち
+      （0x2E/screen）がロード完了を保証し、patrolActive 中の quorum 自動確定（No.79）で portMap が
+      埋まる。一巡で自動停止する（残りデバイスはアイドル）。
+    - 巡回 goroutine の defer に onPatrolActive(false) を追加。LoopMode=false の自動停止は Stop() を
+      経由せず patrolActive=true が残っていた既存の漏れを修正（Stop 経由でも冪等）。
+    - park 関連（PatrolOptions.ParkBeforePatrol / pickParkChannel / Start 内退避ブロック）を撤去。
+    - ComputeDeviceAssignments の署名を (deviceCount, channels []uint32) に変更（実ch等分・将来の分担並列化用）。
+  gui/handlers.go, gui/gui.go:
+    - POST /api/portmap/sweep を新設（MapSweep をバックグラウンド起動）。
+  gui/assets/app.js, gui/assets/index.html:
+    - 対象ch選択モーダル（1-100 / n-n / リスト）→ デバイス認識 → /api/portmap/sweep。
+      /api/patrol/status を running で監視（一巡パトロールとして実行）し、完了時に
+      「巡回は手動で開始してください」を案内。
+  CLAUDE.md:
+    - §4-2.15 と §5 罠リストに「ロード中に次の移動を発行しない」注意事項を追加（多発・本件起因）。
+
+【効果】
+  全chマッピングがペア2台で逐次に、各 ch のロード完了を待ちつつ portMap を埋め、一巡で停止する。
+  ロード中移動による移動失敗が解消。以後の監視巡回は ch 判定が即時化する。
+
+【影響範囲】
+  - 変更: mumu/mumu.go, mumu/mumu_test.go, gui/handlers.go, gui/gui.go, gui/assets/app.js,
+          gui/assets/index.html, CLAUDE.md
+  - 追加: docs/plan_mapping_sweep.md
+  - 後方互換: 新 API・新メソッドの追加 + 一巡停止時の patrolActive 漏れ修正。config スキーマ変更なし。ncap 無改修。
+  - 既知の制約: 全台並列マッピング（高速化）は ncap の per-uid 投票ch対応が前提で将来対応とする。
+
+====--------------------------------------------------------------------------------
 [No.82] 2026/06/20 01:30 — 0x2E PostLoadReady を UUID 非依存にし、screen 判定の早期中断を修正
 
 【背景 / 原因】

@@ -135,15 +135,24 @@ func TestParallelLimit(t *testing.T) {
 	}
 }
 
+// seqCh は start..end（両端含む）の連番 ch スライスを生成するテストヘルパ。
+func seqCh(start, end uint32) []uint32 {
+	var chs []uint32
+	for c := start; c <= end; c++ {
+		chs = append(chs, c)
+	}
+	return chs
+}
+
 func TestComputeDeviceAssignments(t *testing.T) {
 	// 1台: 全範囲
-	got := ComputeDeviceAssignments(1, 10)
+	got := ComputeDeviceAssignments(1, seqCh(1, 10))
 	if len(got) != 1 || len(got[0].Channels) != 10 || got[0].Channels[9] != 10 {
 		t.Errorf("1 device 10 ch: got %+v", got)
 	}
 
 	// 2台 (1ペア): 全範囲
-	got = ComputeDeviceAssignments(2, 100)
+	got = ComputeDeviceAssignments(2, seqCh(1, 100))
 	if len(got) != 1 {
 		t.Fatalf("2 devices: groups expected 1, got %d", len(got))
 	}
@@ -152,7 +161,7 @@ func TestComputeDeviceAssignments(t *testing.T) {
 	}
 
 	// 4台 (2ペア): 50 ch ずつ
-	got = ComputeDeviceAssignments(4, 100)
+	got = ComputeDeviceAssignments(4, seqCh(1, 100))
 	if len(got) != 2 {
 		t.Fatalf("4 devices: groups expected 2, got %d", len(got))
 	}
@@ -167,7 +176,7 @@ func TestComputeDeviceAssignments(t *testing.T) {
 	}
 
 	// 6台 (3ペア): 33ch + 33ch + 34ch（最終グループに余り）
-	got = ComputeDeviceAssignments(6, 100)
+	got = ComputeDeviceAssignments(6, seqCh(1, 100))
 	if len(got) != 3 {
 		t.Fatalf("6 devices: groups expected 3, got %d", len(got))
 	}
@@ -176,11 +185,36 @@ func TestComputeDeviceAssignments(t *testing.T) {
 	}
 
 	// 0台・負数: nil
-	if got := ComputeDeviceAssignments(0, 100); got != nil {
+	if got := ComputeDeviceAssignments(0, seqCh(1, 100)); got != nil {
 		t.Errorf("0 devices: expected nil, got %+v", got)
 	}
-	if got := ComputeDeviceAssignments(2, 0); got != nil {
+	if got := ComputeDeviceAssignments(2, nil); got != nil {
 		t.Errorf("0 ch: expected nil, got %+v", got)
+	}
+
+	// 回帰: 巡回対象が 31ch 開始に偏っても全ペアが担当chを持つ（連番1..100ではなく実chを等分）
+	got = ComputeDeviceAssignments(4, seqCh(31, 100)) // 70ch, 2ペア
+	if len(got) != 2 {
+		t.Fatalf("offset 31-100: groups expected 2, got %d", len(got))
+	}
+	if len(got[0].Channels) == 0 || len(got[1].Channels) == 0 {
+		t.Errorf("offset 31-100: both pairs must own channels, got %d / %d", len(got[0].Channels), len(got[1].Channels))
+	}
+	if got[0].Channels[0] != 31 {
+		t.Errorf("offset 31-100: group0 first ch expected 31, got %d", got[0].Channels[0])
+	}
+	if got[1].Channels[len(got[1].Channels)-1] != 100 {
+		t.Errorf("offset 31-100: group1 last ch expected 100, got %d", got[1].Channels[len(got[1].Channels)-1])
+	}
+
+	// 回帰: 飛び飛びのch（GAS連携等）でも実ch順で等分される
+	sparse := []uint32{31, 35, 40, 55, 70, 99}
+	got = ComputeDeviceAssignments(4, sparse) // 6ch, 2ペア → 3ch ずつ
+	if len(got) != 2 || len(got[0].Channels) != 3 || len(got[1].Channels) != 3 {
+		t.Errorf("sparse: expected 2 groups of 3 ch, got %+v", got)
+	}
+	if got[0].Channels[0] != 31 || got[1].Channels[2] != 99 {
+		t.Errorf("sparse: boundaries wrong: %+v", got)
 	}
 }
 
